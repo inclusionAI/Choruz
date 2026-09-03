@@ -1,0 +1,18 @@
+[package]
+name = "choruz-events"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Event envelope and topic payload definitions for the Choruz durable bus"
+
+[dependencies]
+chrono.workspace = true
+choruz-ids = { path = "../choruz-ids" }
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,25 @@
+[package]
+name = "choruz-replay"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Replay CLI: query and re-display conversation_events for debugging and auditing"
+
+[[bin]]
+name = "choruz-replay"
+path = "src/main.rs"
+
+[dependencies]
+chrono.workspace = true
+choruz-common = { path = "../../crates/choruz-common" }
+choruz-ids = { path = "../../crates/choruz-ids" }
+choruz-infrastructure = { path = "../../crates/choruz-infrastructure" }
+choruz-store = { path = "../../crates/choruz-store" }
+choruz-session = { path = "../../crates/choruz-session" }
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

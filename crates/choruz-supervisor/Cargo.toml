@@ -1,0 +1,22 @@
+[package]
+name = "choruz-supervisor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Shared host-side plumbing for Choruz: embedded Postgres + child-process supervisor + resource paths. Used by choruz-server (headless SSH target)."
+
+[dependencies]
+choruz-common = { path = "../choruz-common" }
+reqwest = { workspace = true, features = ["blocking"] }
+tokio = { workspace = true }
+tokio-postgres.workspace = true
+tracing.workspace = true
+dirs = "6"
+libc = "0.2"
+postgresql_embedded = { version = "0.20", default-features = false, features = ["rustls", "theseus", "tokio"] }
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

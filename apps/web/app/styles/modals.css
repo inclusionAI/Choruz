@@ -1,0 +1,303 @@
+/* Accent-dim hairline along the card's top edge. */
+.modal-card::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(
+    to right,
+    transparent 0%,
+    var(--accent-dim) 40%,
+    var(--accent-dim) 60%,
+    transparent 100%
+  );
+  border-top-left-radius: inherit;
+  border-top-right-radius: inherit;
+  pointer-events: none;
+}
+
+@keyframes modal-card-in {
+  from { opacity: 0; transform: translateY(8px) scale(0.98); }
+  to   { opacity: 1; transform: translateY(0)   scale(1);    }
+}
+
+/* Dialog header (components/ui/modal.tsx): title block, optional actions,
+ * close button. */
+.modal-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+  margin-bottom: 20px;
+}
+.modal-heading {
+  flex: 1;
+  min-width: 0;
+}
+.modal-header h2 {
+  margin: 0;
+  font-size: var(--fs-xl);
+  font-weight: 700;
+}
+/* Uppercase accent kicker above a heading (dialog headers, pairing panels). */
+.eyebrow {
+  display: block;
+  margin-bottom: var(--space-1);
+  color: var(--accent);
+  font: 600 var(--fs-xs)/1.2 var(--font-brand);
+  letter-spacing: .09em;
+  text-transform: uppercase;
+}
+.modal-description {
+  margin: var(--space-1) 0 0;
+  max-width: 580px;
+  color: var(--text-secondary);
+  line-height: var(--lh-base);
+}
+.modal-close {
+  color: var(--text-secondary);
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+.modal-close:hover:not(:disabled) {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+.modal-close:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Flush cards: no card padding; the header and footer draw hairlines and
+ * the caller lays out the body. Two classes so this outranks the phone
+ * rule that re-pads .modal-card. */
+.modal-card.modal-card--flush {
+  padding: 0;
+}
+.modal-card--flush .modal-header {
+  margin: 0;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.modal-card--flush .modal-actions {
+  margin: 0;
+  padding: 12px 20px;
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.modal-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.modal-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: var(--fs-md);
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.modal-form input,
+.modal-form textarea {
+  padding: var(--space-3) var(--space-4);
+  font-size: var(--fs-base);
+}
+
+.modal-form textarea {
+  resize: vertical;
+  min-height: 64px;
+}
+
+.modal-form-error {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  color: var(--danger-soft);
+  font-size: var(--fs-md);
+  background: var(--error-dim);
+  border-left: 3px solid var(--error);
+  border-radius: var(--radius-sm);
+}
+
+.modal-form-warning {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  color: var(--warn);
+  font-size: var(--fs-md);
+  background: color-mix(in srgb, var(--warn) 14%, transparent);
+  border-left: 3px solid var(--warn);
+  border-radius: var(--radius-sm);
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: var(--space-1);
+}
+
+/* Shared button family — used by modal footers and by inline actions
+ * (skill scan, provisioning resume) alike. */
+.btn-primary,
+.btn-secondary,
+.btn-cancel {
+  padding: 10px 20px;
+  border-radius: var(--radius-md);
+  font-weight: 600;
+  font-size: var(--fs-base);
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.btn-cancel,
+.btn-secondary {
+  background: var(--bg);
+  border: 1px solid var(--border);
+}
+
+.btn-cancel {
+  color: var(--text-secondary);
+}
+
+.btn-secondary {
+  color: var(--text);
+}
+
+.btn-cancel:hover,
+.btn-secondary:hover {
+  background: var(--bg-elevated);
+  color: var(--text);
+}
+
+.btn-primary {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.btn-primary:hover {
+  background: var(--accent-hover);
+}
+
+.btn-primary:disabled,
+.btn-secondary:disabled,
+.btn-cancel:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* Mobile modals and the folder picker enter from the bottom edge. */
+@keyframes modal-slide-up {
+  from { transform: translateY(100%); }
+  to { transform: translateY(0); }
+}
+
+/* ---- Empty state ---- */
+
+.empty-state {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  color: var(--text-secondary);
+  padding: var(--space-7);
+  text-align: center;
+}
+
+/* Empty-state icon container: subtle amber-teal halo marks welcome / idle
+ * states as part of the shell's atmosphere rather than floating glyphs. */
+.empty-state .empty-icon {
+  width: 88px;
+  height: 88px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-full);
+  background:
+    radial-gradient(circle at 35% 30%, rgba(6, 165, 144, 0.18), transparent 60%),
+    radial-gradient(circle at 70% 75%, rgba(217, 119, 6, 0.14), transparent 60%);
+  color: var(--text-secondary);
+  margin-bottom: var(--space-2);
+}
+.empty-state .empty-icon svg {
+  opacity: 0.85;
+  margin-bottom: 0;
+}
+
+.empty-state h3 {
+  font-family: var(--font-brand);
+  font-size: var(--fs-xl);
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  color: var(--text);
+  margin-top: var(--space-2);
+}
+
+.empty-state p {
+  font-size: var(--fs-base);
+  max-width: 300px;
+  color: var(--text-secondary);
+}
+
+/* Inline empty-state — used inside scroll containers (sidebar list,
+ * detail panel sections). Same style, smaller padding. */
+.empty-state--inline {
+  padding: var(--space-5);
+  flex: 0 0 auto;
+}
+
+/* Sidebar batch-delete action. Active state uses --error; inactive shows a
+ * neutral muted fill so the button doesn't read as a "warning" when
+ * nothing is selected. */
+.batch-delete-btn {
+  background: var(--error);
+  color: var(--on-accent);
+  border: none;
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3);
+  cursor: pointer;
+  font-size: var(--fs-md);
+  font-weight: 600;
+  transition: background var(--transition-fast), opacity var(--transition-fast);
+}
+.batch-delete-btn.is-empty {
+  background: var(--border-light);
+  cursor: not-allowed;
+}
+.batch-delete-btn.is-loading {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+.batch-delete-btn:not(.is-empty):not(.is-loading):hover {
+  background: #dc2626;
+}
+
+/* ---- Spinner keyframe ---- */
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ---- Mobile toggle ---- */
+
+.mobile-menu-btn {
+  display: none;
+  width: 44px;
+  height: 44px;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  cursor: pointer;
+  font-size: var(--fs-lg);
+  color: var(--on-accent);
+  flex-shrink: 0;
+  font-weight: 700;
+  letter-spacing: 1px;
+}

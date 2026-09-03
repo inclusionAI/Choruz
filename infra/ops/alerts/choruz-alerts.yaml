@@ -1,0 +1,24 @@
+groups:
+  - name: choruz-core
+    rules:
+      - alert: ChoruzApiGatewayDown
+        expr: absent(choruz_principals_total)
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: choruz-api-gateway metrics endpoint is unavailable
+      - alert: ChoruzEventBacklogGrowing
+        expr: choruz_event_backlog_total > 500
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: event backlog exceeds steady-state threshold
+      - alert: ChoruzAuditLogsMissing
+        expr: increase(choruz_audit_logs_total[15m]) == 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: no audit logs observed in the last 15 minutes

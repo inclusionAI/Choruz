@@ -1,0 +1,278 @@
+/* =======================================================================
+   Server manager modal (server-manager.tsx)
+   Uses the shared modal-overlay + modal-card family so the "Add SSH
+   server" panel matches the rest of the app's modals.
+   ======================================================================= */
+
+.server-manager-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  height: var(--control-md);
+  padding: 0 var(--space-3);
+  font-size: var(--fs-md);
+  font-family: inherit;
+  font-weight: 500;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  color: var(--text);
+  cursor: pointer;
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+}
+.server-manager-btn:hover:not(:disabled) {
+  background: var(--bg-surface);
+  border-color: var(--accent);
+}
+.server-manager-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.server-manager-btn--primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+}
+.server-manager-btn--primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+.server-manager-btn--danger {
+  background: var(--error);
+  border-color: var(--error);
+  color: var(--on-accent);
+}
+.server-manager-btn--danger:hover:not(:disabled) {
+  background: #dc2626;
+  border-color: #dc2626;
+}
+
+.server-manager-host-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+  margin-bottom: var(--space-2);
+}
+.server-manager-host-card .host-name {
+  font-size: var(--fs-base);
+  font-weight: 600;
+}
+.server-manager-host-card .host-meta {
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+}
+.server-manager-host-card .host-status {
+  font-size: var(--fs-xs);
+  color: var(--success);
+  margin-top: var(--space-1);
+}
+
+.server-manager-card {
+  max-width: 700px;
+  min-width: min(520px, 100%);
+}
+.server-manager-hint {
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+}
+.server-manager-error {
+  font-size: var(--fs-sm);
+  color: var(--danger-soft);
+}
+
+.server-manager-intro {
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  margin: 0 0 var(--space-4);
+}
+
+.server-manager-error-block {
+  padding: var(--space-3);
+  background: var(--error-dim);
+  border-left: 3px solid var(--error);
+  border-radius: var(--radius-sm);
+  margin-bottom: var(--space-3);
+}
+.server-manager-error-block p {
+  margin: 0;
+  font-size: var(--fs-md);
+  color: var(--danger-soft);
+}
+
+.server-manager-hide-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: var(--fs-base);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+.server-manager-hide-btn:hover {
+  background: var(--bg);
+  color: var(--text);
+}
+
+/* Remote control is a separate control-plane plugin, but deliberately reuses
+   the server-manager button/input language so plugin settings feel native. */
+.remote-control-card { width: min(680px, calc(100vw - 32px)); max-height: min(820px, calc(100vh - 32px)); overflow: auto; }
+.remote-control-row, .remote-control-device { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
+.remote-control-section { padding: 16px 0; border-top: 1px solid var(--border); }
+.remote-control-section h3 { margin: 0 0 10px; }
+.remote-control-device span { display: grid; gap: 3px; }
+.remote-control-device small { color: var(--text-secondary); line-height: var(--lh-snug); }
+.remote-pairing-code { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 12px; text-align: center; }
+.remote-pairing-code > span { padding: 12px; border: 1px solid var(--border-light); border-radius: var(--radius-md); font: 700 28px/1 var(--font-mono); letter-spacing: .12em; }
+.remote-pairing-code > code { grid-column: 1 / -1; overflow-wrap: anywhere; padding: 12px; border: 1px solid var(--border-light); border-radius: var(--radius-md); font: 600 var(--fs-sm)/1.5 var(--font-mono); user-select: all; }
+.remote-pairing-code small { grid-column: 1 / -1; color: var(--text-secondary); }
+.remote-control-device { padding: 10px 0; }
+.remote-control-connect-form { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-3); }
+.remote-control-code-input { min-width: 0; height: var(--control-md); padding: 0 var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg); color: var(--text); font: 600 var(--fs-base)/1 var(--font-mono); letter-spacing: .12em; transition: border-color var(--transition-fast), box-shadow var(--transition-fast); }
+.remote-control-code-input:focus { border-color: var(--accent); box-shadow: var(--ring-accent); outline: none; }
+
+/* Company Machines is intentionally separate from Remote Access: one owns
+   compute placement, the other owns paired browsers. The surface stays dense
+   and operational without reading like an infrastructure admin table. */
+.machines-card {
+  width: min(760px, calc(100vw - 32px));
+  max-height: min(880px, calc(100vh - 32px));
+  overflow: auto;
+}
+.icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--control-md);
+  height: var(--control-md);
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: border-color var(--transition-fast), background-color var(--transition-fast), color var(--transition-fast);
+}
+.icon-button:hover { border-color: var(--border-light); background: var(--bg-elevated); color: var(--text); }
+.icon-button:disabled { cursor: not-allowed; opacity: .45; }
+.icon-button--danger:hover { border-color: var(--error); background: var(--error-dim); color: var(--danger-soft); }
+.machines-overview {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  margin: var(--space-4) var(--space-5) 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--bg-elevated) 54%, transparent);
+}
+.machines-overview > div { display: grid; gap: 2px; padding: var(--space-3) var(--space-4); }
+.machines-overview > div + div { border-left: 1px solid var(--border); }
+.machines-overview strong { font: 600 var(--fs-xl)/1.1 var(--font-brand); }
+.machines-overview span { color: var(--text-secondary); font-size: var(--fs-xs); }
+.machines-toolbar {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding: var(--space-5) var(--space-5) var(--space-3);
+}
+.machines-toolbar h3 { margin: 0 0 3px; font-size: var(--fs-base); }
+.machines-toolbar p { margin: 0; color: var(--text-secondary); font-size: var(--fs-sm); }
+.machines-add { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.machine-pairing {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-2) var(--space-5);
+  margin: 0 var(--space-5) var(--space-3);
+  padding: var(--space-4);
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
+  border-radius: var(--radius-lg);
+  background: var(--accent-dim);
+}
+.machine-pairing h3 { margin: 3px 0 5px; font-size: var(--fs-base); }
+.machine-pairing p { margin: 0; color: var(--text-secondary); font-size: var(--fs-sm); line-height: var(--lh-snug); }
+.machine-pairing > small { grid-column: 1 / -1; color: var(--text-secondary); }
+.machine-pairing-code { display: flex; align-items: center; gap: var(--space-2); }
+.machine-pairing-code code { font: 700 var(--fs-xl)/1 var(--font-mono); letter-spacing: .13em; white-space: nowrap; }
+.machine-list { display: grid; gap: var(--space-2); padding: 0 var(--space-5) var(--space-5); }
+.machine-card {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 78px;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-surface);
+  transition: border-color var(--transition-fast), background-color var(--transition-fast), transform var(--transition-fast);
+}
+.machine-card:hover { border-color: var(--border-light); background: var(--bg-elevated); transform: translateY(-1px); }
+.machine-card--local { border-color: color-mix(in srgb, var(--accent) 28%, var(--border)); }
+.machine-icon { display: grid; place-items: center; width: 42px; height: 42px; border-radius: var(--radius-md); background: var(--bg-elevated); color: var(--text-secondary); }
+.machine-card--local .machine-icon { background: var(--accent-dim); color: var(--accent); }
+.machine-copy { min-width: 0; }
+.machine-title-row { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
+.machine-title-row h3 { overflow: hidden; margin: 0; font-size: var(--fs-base); text-overflow: ellipsis; white-space: nowrap; }
+.machine-copy p { display: flex; align-items: center; gap: 7px; margin: 5px 0 2px; color: var(--text-secondary); font-size: var(--fs-sm); }
+.machine-copy small { color: var(--text-muted); font-size: var(--fs-xs); }
+.machine-pill { background: var(--bg-elevated); color: var(--text-secondary); text-transform: capitalize; }
+.machine-pill--local, .machine-pill--online { background: var(--accent-dim); color: var(--accent); }
+.machine-pill--offline { background: var(--bg-elevated); color: var(--text-muted); }
+.machine-actions { display: flex; gap: 6px; }
+.machine-rename-input { width: min(280px, 100%); height: var(--control-md); padding: 0 var(--space-2); border: 1px solid var(--accent); border-radius: var(--radius-md); background: var(--bg); color: var(--text); font: inherit; box-shadow: var(--ring-accent); }
+.machines-loading { margin: var(--space-2) 0 0; color: var(--text-secondary); text-align: center; }
+
+@media (max-width: 600px) {
+  .machines-card .modal-header, .machines-toolbar { padding-left: var(--space-4); padding-right: var(--space-4); }
+  .machines-overview { margin-left: var(--space-4); margin-right: var(--space-4); }
+  .machine-list { padding-left: var(--space-4); padding-right: var(--space-4); }
+  .machine-pairing { grid-template-columns: 1fr; margin-left: var(--space-4); margin-right: var(--space-4); }
+  .machine-pairing > small { grid-column: auto; }
+  .machines-toolbar { align-items: flex-start; flex-direction: column; }
+  .machine-card { grid-template-columns: 38px minmax(0, 1fr); }
+  .machine-actions { grid-column: 2; }
+}
+.workspace-session-import-card { width: min(780px, calc(100vw - 32px)); max-height: min(900px, calc(100vh - 32px)); overflow: auto; }
+.workspace-session-scope { display: grid; gap: 14px; }
+
+.workspace-session-folder-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.workspace-session-folder-row > div:first-child {
+  flex: 1;
+  min-width: 0;
+}
+.workspace-session-section-heading, .workspace-session-results-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.workspace-session-section-heading h3, .workspace-session-results-heading h3 { margin-bottom: 2px; }
+.workspace-session-scan-status { flex: none; margin-top: 2px; padding: 5px 9px; border: 1px solid var(--border); border-radius: var(--radius-full); color: var(--text-secondary); font: 600 var(--fs-xs)/1 var(--font-mono); }
+.workspace-session-harnesses { display: flex; flex-wrap: wrap; gap: 8px; margin: 0; padding: 0; border: 0; }
+.workspace-session-harnesses legend { width: 100%; margin-bottom: 4px; color: var(--text-secondary); font-size: var(--fs-sm); }
+.workspace-session-harnesses label { display: inline-flex; align-items: center; gap: 7px; padding: 7px 10px; border: 1px solid var(--border); border-radius: var(--radius-full); background: var(--bg-surface); cursor: pointer; }
+.workspace-session-harnesses label:hover { border-color: var(--border-light); background: var(--bg-elevated); }
+.workspace-session-warnings { margin: 0 0 12px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-md); color: var(--text-secondary); }
+.workspace-session-warnings p { margin: 0; }
+.workspace-session-warnings p + p { margin-top: 5px; }
+.workspace-session-results { display: grid; gap: 12px; }
+.workspace-session-search { padding: 10px 12px; }
+.workspace-session-list { display: grid; max-height: min(430px, 48vh); overflow: auto; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--bg-surface); }
+.workspace-session-row { display: flex; align-items: flex-start; gap: 11px; min-width: 0; padding: 12px 14px; cursor: pointer; }
+.workspace-session-row + .workspace-session-row { border-top: 1px solid var(--border); }
+.workspace-session-row:hover { background: var(--bg-elevated); }
+.workspace-session-row input { flex: none; margin-top: 3px; }
+.workspace-session-row-content { display: grid; min-width: 0; flex: 1; gap: 3px; }
+.workspace-session-row-title { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; }
+.workspace-session-row-title strong, .workspace-session-row small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workspace-session-harness-badge { background: var(--accent-dim); color: var(--accent); font-family: var(--font-mono); }
+.workspace-session-row-workspace { font-family: var(--font-mono); }
+.workspace-session-row small { color: var(--text-secondary); }
+.workspace-session-loading { height: 180px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: linear-gradient(100deg, transparent 20%, color-mix(in srgb, var(--bg-elevated) 75%, transparent) 45%, transparent 70%) var(--bg-surface); background-size: 220% 100%; animation: workspace-session-loading 1.2s ease-in-out infinite; }
+@keyframes workspace-session-loading { to { background-position-x: -120%; } }

@@ -1,0 +1,193 @@
+/* ============================================================
+   File Tree (Explorer panel)
+   ============================================================ */
+
+.file-tree-container {
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  max-height: 50%;
+  display: flex;
+  flex-direction: column;
+}
+
+.file-tree-section-header {
+  display: flex;
+  align-items: center;
+  padding-right: var(--space-2);
+  flex-shrink: 0;
+  transition: background var(--transition-fast);
+}
+
+.file-tree-section-header:hover {
+  background: var(--bg-elevated);
+}
+
+/* The collapse toggle is the row's main target; the action buttons sit
+ * beside it rather than inside it. */
+.file-tree-section-toggle {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: var(--space-2) var(--space-3);
+  cursor: pointer;
+  user-select: none;
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  color: var(--text-secondary);
+  text-align: left;
+}
+
+.file-tree-section-chevron {
+  display: flex;
+  align-items: center;
+  color: var(--text-muted);
+  transition: transform var(--transition-fast);
+}
+
+.file-tree-section-chevron.expanded {
+  transform: rotate(90deg);
+}
+
+.file-tree-section-title {
+  flex-shrink: 0;
+}
+
+.file-tree-section-subtitle {
+  color: var(--text-muted);
+  font-weight: 400;
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+}
+
+.file-tree-refresh-btn {
+  width: var(--control-sm);
+  height: var(--control-sm);
+  color: var(--text-muted);
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.file-tree-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.file-tree-refresh-btn:hover {
+  background: var(--bg-elevated);
+  color: var(--text);
+}
+
+.file-tree-content {
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+  padding-bottom: 4px;
+}
+
+.file-tree-content::-webkit-scrollbar { width: 4px; }
+.file-tree-content::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: var(--radius-sm);
+}
+
+/* Rows scroll inside the tree, so the focus ring draws inward. */
+.file-tree-node:focus-visible {
+  outline-offset: -2px;
+}
+
+.file-tree-node {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 2px 8px;
+  cursor: default;
+  font-size: var(--fs-md);
+  color: var(--text);
+  white-space: nowrap;
+  transition: background var(--transition-fast);
+  user-select: none;
+  min-height: var(--control-sm);
+}
+
+.file-tree-node.is-dir {
+  cursor: pointer;
+}
+
+.file-tree-node:hover {
+  background: var(--bg-elevated);
+}
+
+.file-tree-chevron {
+  display: flex;
+  align-items: center;
+  width: 14px;
+  flex-shrink: 0;
+  color: var(--text-muted);
+  transition: transform var(--transition-fast);
+}
+
+.file-tree-chevron.expanded {
+  transform: rotate(90deg);
+}
+
+.file-tree-chevron-placeholder {
+  width: 14px;
+  flex-shrink: 0;
+}
+
+.file-tree-icon {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  color: var(--text-secondary);
+}
+
+/* File icon colour by extension (set as data-ext on the icon span). */
+.file-tree-icon[data-ext="ts"], .file-tree-icon[data-ext="tsx"] { color: var(--icon-ts); }
+.file-tree-icon[data-ext="js"], .file-tree-icon[data-ext="jsx"] { color: var(--icon-js); }
+.file-tree-icon[data-ext="rs"] { color: var(--icon-rust); }
+.file-tree-icon[data-ext="py"] { color: var(--icon-python); }
+.file-tree-icon[data-ext="md"] { color: var(--icon-md); }
+.file-tree-icon[data-ext="json"] { color: var(--icon-json); }
+.file-tree-icon[data-ext="toml"], .file-tree-icon[data-ext="yaml"], .file-tree-icon[data-ext="yml"] { color: var(--icon-config); }
+.file-tree-icon[data-ext="css"], .file-tree-icon[data-ext="scss"] { color: var(--icon-css); }
+.file-tree-icon[data-ext="html"] { color: var(--icon-html); }
+.file-tree-icon[data-ext="sql"] { color: var(--icon-sql); }
+.file-tree-icon[data-ext="sh"], .file-tree-icon[data-ext="bash"], .file-tree-icon[data-ext="zsh"] { color: var(--icon-shell); }
+.file-tree-icon[data-ext="lock"], .file-tree-icon[data-ext="gitignore"], .file-tree-icon[data-ext="env"] { color: var(--text-tertiary); }
+
+.file-tree-folder-icon {
+  color: var(--icon-folder);
+}
+
+.file-tree-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.file-tree-loading,
+.file-tree-error {
+  padding: var(--space-3) var(--space-4);
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.file-tree-error {
+  color: var(--error);
+}
+
+.file-tree-empty {
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  font-style: italic;
+  padding: 2px 0;
+}

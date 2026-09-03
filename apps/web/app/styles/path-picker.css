@@ -1,0 +1,56 @@
+/* =======================================================================
+   Path picker — workspace/folder chooser (path-picker.tsx)
+   ======================================================================= */
+
+.path-picker-input {
+  padding: var(--space-2) var(--space-5) var(--space-2) var(--space-3);
+  font-family: var(--font-brand);
+  box-sizing: border-box;
+}
+.path-picker-loading {
+  position: absolute;
+  right: var(--space-2);
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+  pointer-events: none;
+}
+
+.path-picker-dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  max-height: 240px;
+  overflow-y: auto;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-top: none;
+  border-radius: 0 0 var(--radius-md) var(--radius-md);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  z-index: var(--z-menu);
+  box-shadow: var(--shadow-md);
+}
+
+.path-picker-option {
+  padding: var(--space-2) var(--space-3);
+  cursor: pointer;
+  color: var(--text);
+  font-family: var(--font-brand);
+  font-size: var(--fs-md);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  transition: background var(--transition-fast);
+}
+.path-picker-option.is-selected,
+.path-picker-option:hover {
+  background: var(--bg-elevated);
+}
+.path-picker-option-icon {
+  opacity: 0.6;
+  font-size: var(--fs-sm);
+}

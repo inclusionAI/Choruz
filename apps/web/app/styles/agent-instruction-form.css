@@ -1,0 +1,88 @@
+/* =======================================================================
+   Agent instruction form (components/agents/agent-instruction-form.tsx)
+   ======================================================================= */
+
+.instruction-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.instruction-field-heading {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin-bottom: 2px;
+}
+.instruction-field-label {
+  display: block;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+/* The info icon shows its `data-help` text on hover and keyboard focus. */
+.instruction-field-help {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  font-size: 10px;
+  font-weight: 700;
+  font-style: italic;
+  line-height: 1;
+  color: var(--text-secondary);
+  cursor: help;
+  user-select: none;
+}
+.instruction-field-help:hover,
+.instruction-field-help:focus-visible {
+  border-color: var(--accent);
+  color: var(--accent);
+  outline: none;
+}
+.instruction-field-help::after {
+  content: attr(data-help);
+  position: absolute;
+  left: 0;
+  top: calc(100% + 6px);
+  z-index: 10;
+  width: max-content;
+  max-width: 320px;
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--fs-xs);
+  font-weight: 400;
+  font-style: normal;
+  line-height: 1.4;
+  color: var(--text);
+  background: var(--bg-elevated, var(--bg-surface));
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-md, 0 4px 12px rgba(0, 0, 0, 0.12));
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--transition-fast);
+}
+.instruction-field-help:hover::after,
+.instruction-field-help:focus-visible::after {
+  opacity: 1;
+}
+.instruction-field-textarea {
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  font-family: inherit;
+  font-size: var(--fs-sm);
+  color: var(--text);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  outline: none;
+  resize: vertical;
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+.instruction-field-textarea:focus-visible {
+  border-color: var(--accent);
+  box-shadow: var(--ring-accent);
+}

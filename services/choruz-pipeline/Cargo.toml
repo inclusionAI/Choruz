@@ -1,0 +1,48 @@
+[package]
+name = "choruz-pipeline"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "New message pipeline runner: CDC -> Router -> Session -> Executor -> Writer -> Fanout"
+
+[[bin]]
+name = "choruz-pipeline"
+path = "src/main.rs"
+
+[dependencies]
+async-trait.workspace = true
+axum.workspace = true
+base64.workspace = true
+chrono.workspace = true
+choruz-agent-runtime = { path = "../../crates/choruz-agent-runtime" }
+choruz-application = { path = "../../crates/choruz-application" }
+choruz-common = { path = "../../crates/choruz-common" }
+choruz-events = { path = "../../crates/choruz-events" }
+choruz-executor = { path = "../../crates/choruz-executor" }
+choruz-fanout = { path = "../../crates/choruz-fanout" }
+choruz-tools = { path = "../../crates/choruz-tools" }
+choruz-ids = { path = "../../crates/choruz-ids" }
+choruz-infrastructure = { path = "../../crates/choruz-infrastructure" }
+choruz-router = { path = "../../crates/choruz-router" }
+choruz-session = { path = "../../crates/choruz-session" }
+choruz-store = { path = "../../crates/choruz-store" }
+choruz-writer = { path = "../../crates/choruz-writer" }
+hex.workspace = true
+regex = "1"
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tokio.workspace = true
+tokio-postgres.workspace = true
+futures-util.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { workspace = true, features = ["full", "test-util"] }
+futures-util.workspace = true
+tokio-postgres.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,128 @@
+/* ============================================================
+   File editor
+   ============================================================ */
+.file-editor { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.file-editor-toolbar {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: var(--space-2) var(--space-3); background: var(--bg-surface); border-bottom: 1px solid var(--border);
+  font-size: var(--fs-sm);
+}
+.file-editor-path { color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-editor-actions { display: flex; align-items: center; gap: var(--space-2); }
+.file-editor-dirty { color: var(--accent); font-size: var(--fs-xs); }
+.file-editor-save-btn {
+  min-height: var(--control-sm); padding: 0 10px; border-radius: var(--radius-sm); border: 1px solid var(--border);
+  background: var(--bg-elevated); color: var(--text); font-size: var(--fs-xs); cursor: pointer;
+}
+.file-editor-save-btn:hover { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+.file-editor-save-btn:disabled { opacity: 0.4; cursor: default; }
+.file-editor-save-btn:disabled:hover { background: var(--bg-elevated); color: var(--text); border-color: var(--border); }
+.file-editor-cm {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.file-editor-cm .cm-editor {
+  height: 100%;
+}
+.file-editor-cm .cm-editor.cm-focused {
+  outline: none;
+}
+.file-editor-loading, .file-editor-error {
+  padding: var(--space-5); text-align: center; color: var(--text-muted); font-size: var(--fs-base);
+  flex: 1; display: flex; align-items: center; justify-content: center;
+}
+.file-editor-error { color: var(--error); }
+
+/* Markdown preview mode */
+.file-editor-preview {
+  flex: 1; min-height: 0; overflow: auto;
+  padding: 24px 32px; font-size: var(--fs-base); line-height: var(--lh-base);
+  color: var(--text);
+  background: var(--bg);
+}
+.file-editor-preview h1,
+.file-editor-preview h2,
+.file-editor-preview h3,
+.file-editor-preview h4 { color: var(--text); margin: 1.2em 0 0.5em; font-weight: 600; }
+.file-editor-preview h1 { font-size: 1.6em; border-bottom: 1px solid var(--border); padding-bottom: 0.3em; }
+.file-editor-preview h2 { font-size: 1.35em; border-bottom: 1px solid var(--border); padding-bottom: 0.2em; }
+.file-editor-preview h3 { font-size: 1.15em; }
+.file-editor-preview p { margin: 0.6em 0; }
+.file-editor-preview a { color: var(--accent); text-decoration: underline; }
+.file-editor-preview code {
+  background: rgba(255,255,255,0.08); padding: 2px 5px; border-radius: var(--radius-sm);
+  font-family: "SF Mono", "Fira Code", monospace; font-size: 0.9em;
+}
+.file-editor-preview pre {
+  background: rgba(255,255,255,0.04); border: 1px solid var(--border);
+  padding: 12px 14px; border-radius: var(--radius-md); overflow-x: auto; margin: 0.8em 0;
+}
+.file-editor-preview pre code { background: transparent; padding: 0; }
+.file-editor-preview blockquote {
+  border-left: 3px solid var(--accent); padding-left: 12px;
+  color: var(--text-muted); margin: 0.8em 0;
+}
+.file-editor-preview ul, .file-editor-preview ol { padding-left: 1.6em; margin: 0.6em 0; }
+.file-editor-preview li { margin: 0.2em 0; }
+.file-editor-preview table {
+  border-collapse: collapse; margin: 0.8em 0;
+}
+.file-editor-preview th, .file-editor-preview td {
+  border: 1px solid var(--border); padding: 6px 10px;
+}
+.file-editor-preview th { background: rgba(255,255,255,0.04); font-weight: 600; }
+.file-editor-preview hr { border: 0; border-top: 1px solid var(--border); margin: 1.2em 0; }
+.file-editor-preview img { max-width: 100%; }
+
+/* Shared dropdown menu (sidebar plus-menu, user-menu, future contexts).
+ * Use instead of inline `borderRadius/boxShadow` per invocation. */
+/* Click-away layer behind a dropdown; sits just under the menu. */
+.dropdown-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-menu-backdrop);
+}
+
+.dropdown-menu {
+  position: absolute;
+  top: 100%;
+  z-index: var(--z-menu);
+  min-width: 120px;
+  padding: var(--space-1) 0;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+}
+.dropdown-menu.align-left  { left: 0; }
+.dropdown-menu.align-right { right: 0; }
+
+/* Positioning context for a dropdown anchored to its trigger. */
+.menu-anchor {
+  position: relative;
+}
+
+.dropdown-menu-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-2) 14px;
+  background: none;
+  border: none;
+  color: var(--text);
+  font-size: var(--fs-md);
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+}
+.dropdown-menu-item:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.dropdown-menu-divider {
+  height: 1px;
+  margin: var(--space-1) 0;
+  background: var(--border);
+}

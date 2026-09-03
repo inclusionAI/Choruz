@@ -1,0 +1,385 @@
+/* Virtualization adds one measured wrapper around each timeline item. Keep
+ * that wrapper as the flex alignment context used by self/system messages;
+ * otherwise `align-self: flex-end` is ignored and own bubbles drift inward. */
+.virtual-message-row {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.msg-group {
+  display: flex;
+  gap: 10px;
+  max-width: clamp(280px, 65vw, 800px);
+  margin-bottom: var(--space-1);
+}
+
+.msg-group.self {
+  align-self: flex-end;
+  flex-direction: row-reverse;
+}
+
+.msg-group .msg-avatar-col {
+  flex-shrink: 0;
+  width: 40px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding-top: 4px;
+}
+
+.msg-group.self .msg-avatar-col {
+  display: none;
+}
+
+.msg-group .msg-content-col {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.msg-sender {
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: 2px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.msg-group.self .msg-sender {
+  display: none;
+}
+
+.msg-group.continuation .msg-sender {
+  display: none;
+}
+
+.msg-group.continuation .msg-avatar-col {
+  visibility: hidden;
+}
+
+/* ---- Pills / badges: one size, one weight, one radius ---- */
+.agent-badge,
+.conv-kind-badge,
+.runtime-status-pill,
+.machine-pill,
+.workspace-session-harness-badge,
+.company-archived-badge,
+.company-hidden-badge,
+.conv-thread-unread,
+.member-row-skill {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border-radius: var(--radius-full);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  line-height: var(--lh-base);
+}
+
+.agent-badge {
+  background: var(--agent-dim);
+  color: var(--agent);
+  text-transform: uppercase;
+}
+
+.msg-bubble {
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-lg);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  word-wrap: break-word;
+  overflow-wrap: anywhere;
+  font-size: var(--fs-base);
+  line-height: var(--lh-base);
+  position: relative;
+  transition: transform var(--transition-fast), box-shadow var(--transition-fast), border-color var(--transition-fast);
+}
+
+.msg-bubble:hover {
+  border-color: var(--border-light);
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-sm);
+}
+
+/* Markdown rendering inside message bubbles */
+.msg-markdown { white-space: normal; }
+.msg-markdown p { margin: 0 0 8px 0; }
+.msg-markdown p:last-child { margin-bottom: 0; }
+.msg-markdown code {
+  background: rgba(255,255,255,0.08);
+  padding: 1px 5px;
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-md);
+  font-family: var(--font-mono);
+}
+.msg-markdown pre {
+  background: rgba(0,0,0,0.3);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+  overflow-x: auto;
+  margin: 8px 0;
+}
+.msg-markdown pre code {
+  background: none;
+  padding: 0;
+  font-size: var(--fs-md);
+}
+.msg-markdown ul, .msg-markdown ol {
+  margin: 4px 0;
+  padding-left: 20px;
+}
+.msg-markdown li { margin: 2px 0; }
+.msg-markdown table {
+  border-collapse: collapse;
+  margin: 8px 0;
+  font-size: var(--fs-md);
+}
+.msg-markdown th, .msg-markdown td {
+  border: 1px solid var(--border);
+  padding: var(--space-1) var(--space-2);
+}
+.msg-markdown th { background: rgba(255,255,255,0.05); }
+.msg-markdown blockquote {
+  border-left: 3px solid var(--accent);
+  margin: 8px 0;
+  padding: 4px 12px;
+  color: var(--text-secondary);
+}
+.msg-markdown a { color: var(--accent); text-decoration: underline; }
+.msg-markdown h1, .msg-markdown h2, .msg-markdown h3 {
+  margin: 12px 0 6px 0;
+  font-weight: 600;
+}
+.msg-markdown h1 { font-size: var(--fs-lg); }
+.msg-markdown h2 { font-size: var(--fs-lg); }
+.msg-markdown h3 { font-size: var(--fs-base); }
+.msg-markdown img, .msg-inline-img {
+  max-width: 100%;
+  max-height: 400px;
+  border-radius: var(--radius-md);
+  margin: 6px 0;
+  display: block;
+}
+.msg-group.self .msg-markdown code { background: rgba(255,255,255,0.15); }
+.msg-group.self .msg-markdown pre { background: rgba(0,0,0,0.2); }
+.msg-group.self .msg-markdown a { color: var(--on-accent); }
+
+.msg-group.self .msg-bubble {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+}
+
+.msg-group.agent .msg-bubble {
+  /* Agent zone: a whisper of amber tint to keep human vs machine
+   * distinguishable, but no chunky left bar / amber border / glow.
+   * The original styling read as "warning sign" rather than "different
+   * voice"; the sender name (mono-display, amber) and avatar already
+   * carry the signal. */
+  background: var(--bg-surface) var(--agent-surface);
+  position: relative;
+}
+
+/* Sender name above agent bubbles: mono-display + luminous amber.
+ * Tiny change but immediately reads as "this is a machine voice". */
+.msg-group.agent .msg-sender {
+  font-family: var(--font-brand);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--agent-luminous);
+}
+
+.msg-bubble .msg-time {
+  display: block;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  margin-top: var(--space-1);
+  text-align: right;
+}
+
+.msg-group.self .msg-bubble .msg-time {
+  color: rgba(255,255,255,0.55);
+}
+
+/* Attachment messages */
+.msg-attachment {
+  margin: 4px 0;
+}
+
+/* Inline image / video attachments */
+.msg-attachment-media {
+  display: block;
+  width: min(100%, 480px);
+  aspect-ratio: 16 / 9;
+  max-height: 400px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  object-fit: contain;
+}
+.msg-attachment-audio-control {
+  width: 100%;
+  min-width: 240px;
+}
+.msg-attachment-image img {
+  display: block;
+  cursor: pointer;
+  border: 1px solid var(--border);
+}
+.msg-attachment-meta {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  margin-top: var(--space-1);
+}
+.msg-attachment-file {
+  display: inline-block;
+}
+.msg-attachment-link {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: var(--space-3) var(--space-4);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  text-decoration: none;
+  color: var(--text);
+  transition: background var(--transition-fast);
+}
+.msg-attachment-link:hover {
+  background: var(--bg-surface);
+}
+.msg-attachment-icon {
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  padding: var(--space-1) var(--space-2);
+  background: var(--accent);
+  color: var(--on-accent);
+  border-radius: var(--radius-sm);
+  letter-spacing: 0.5px;
+}
+.msg-attachment-name {
+  font-size: var(--fs-md);
+  font-weight: 500;
+}
+.msg-attachment-size {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+
+/* System messages */
+/* Date separators between messages from different days */
+.msg-date-sep {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: 16px 0 8px;
+  align-self: stretch;
+}
+.msg-date-sep span {
+  font-size: var(--fs-md);
+  font-weight: 500;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.msg-date-sep::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
+.msg-system {
+  text-align: center;
+  padding: 8px 0;
+  align-self: center;
+}
+
+.msg-system span {
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  background: var(--bg-surface);
+  padding: 4px 14px;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--border);
+}
+
+/* Terminal transcript messages */
+.msg-terminal {
+  background: #0d1117;
+  border: 1px solid #30363d;
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+  margin: 4px 0;
+  overflow-x: auto;
+}
+
+.msg-terminal pre {
+  margin: 0;
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  font-size: var(--fs-md);
+  line-height: var(--lh-base);
+  color: #c9d1d9;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* ---- Input bar ---- */
+
+.chat-input-bar {
+  padding: 14px 24px 18px;
+  border-top: 1px solid var(--border);
+  /* Glass surface — semi-translucent over the ambient body wash. */
+  background: var(--glass-bg);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  flex-shrink: 0;
+  position: sticky;
+  bottom: 0;
+  z-index: var(--z-raised);
+}
+
+.chat-input-row {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-3);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-input);
+  padding: var(--space-3) var(--space-3);
+  transition: background-color var(--transition-fast), border-color var(--transition-fast), box-shadow var(--transition-fast), transform var(--transition-fast);
+}
+
+.chat-input-row:hover {
+  background: #242424;
+  border-color: var(--border-light);
+}
+
+.chat-input-row:focus-within {
+  border-color: var(--accent);
+  background: #1a1a1a;
+  box-shadow: var(--glow-input-focus);
+}
+
+.chat-input-row textarea {
+  flex: 1;
+  resize: none;
+  border: none;
+  background: none;
+  color: var(--text);
+  font-size: var(--fs-base);
+  line-height: var(--lh-base);
+  max-height: 120px;
+  min-height: 20px;
+  padding: 4px 0;
+}
+
+.chat-input-row textarea::placeholder {
+  color: var(--text-muted);
+}

@@ -1,0 +1,26 @@
+[package]
+name = "choruz-fanout"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Fanout Gateway: WS/SSE connection management, conversation event push, cursor-based replay for reconnect"
+
+[dependencies]
+axum.workspace = true
+chrono.workspace = true
+choruz-common = { path = "../choruz-common" }
+choruz-events = { path = "../choruz-events" }
+choruz-ids = { path = "../choruz-ids" }
+choruz-store = { path = "../choruz-store" }
+futures-util.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util"] }
+
+[lints]
+workspace = true

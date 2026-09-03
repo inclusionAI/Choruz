@@ -1,0 +1,129 @@
+/* ============================================================
+   Group member picker (WeChat-style)
+   ============================================================ */
+
+.modal-card-lg {
+  max-width: 480px;
+  width: 90vw;
+}
+
+.selected-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 4px 10px;
+  background: var(--accent-dim);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-full);
+  font-size: var(--fs-sm);
+  color: var(--accent-hover);
+  cursor: pointer;
+  transition: background var(--transition-fast);
+}
+
+.chip:hover {
+  background: rgba(6,165,144,0.25);
+}
+
+.chip-remove {
+  opacity: 0.6;
+}
+
+.member-search {
+  padding: 10px 12px;
+  font-size: var(--fs-base);
+}
+
+.member-picker {
+  max-height: 280px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+}
+
+.picker-empty {
+  padding: var(--space-5);
+  text-align: center;
+  color: var(--text-muted);
+  font-size: var(--fs-md);
+}
+
+.picker-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  cursor: pointer;
+  transition: background var(--transition-fast);
+  border-bottom: 1px solid var(--border);
+  width: 100%;
+  color: inherit;
+  background: transparent;
+  text-align: left;
+  font: inherit;
+}
+
+.picker-item:last-child {
+  border-bottom: none;
+}
+
+.picker-item:hover {
+  background: var(--bg-elevated);
+}
+
+.picker-item.selected {
+  background: var(--accent-dim);
+}
+
+.picker-check {
+  width: 20px;
+  height: 20px;
+  border: 2px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--fs-sm);
+  color: transparent;
+  flex-shrink: 0;
+  transition: background-color var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
+}
+
+.picker-check.checked {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+}
+
+.picker-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.picker-name {
+  font-size: var(--fs-base);
+  font-weight: 500;
+  color: var(--text);
+}
+
+.picker-meta {
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+}
+
+.picker-id {
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  font-family: monospace;
+  flex-shrink: 0;
+}

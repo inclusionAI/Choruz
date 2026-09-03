@@ -1,0 +1,18 @@
+[package]
+name = "choruz-auth"
+version.workspace = true
+edition.workspace = true
+description = "HMAC session tokens and agent secret primitives for the API gateway"
+license.workspace = true
+
+[dependencies]
+base64.workspace = true
+hmac.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+subtle.workspace = true
+uuid.workspace = true
+
+[lints]
+workspace = true

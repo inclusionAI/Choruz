@@ -1,0 +1,6 @@
+[Unit]
+Description=Choruz database backup
+
+[Service]
+Type=oneshot
+ExecStart=/srv/choruz/releases/current/infra/ops/bin/backup.sh

@@ -1,0 +1,16 @@
+[package]
+name = "choruz-common"
+version.workspace = true
+edition.workspace = true
+description = "Shared error, PostgreSQL configuration, metrics registry, plugin id and id helpers for the Choruz packages"
+license.workspace = true
+
+[dependencies]
+chrono.workspace = true
+prometheus.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,848 @@
+/* ============================================================
+   Chat application shell
+   ============================================================ */
+
+.chat-shell {
+  display: flex;
+  height: 100vh;
+  overflow: hidden;
+  /* Workspace atmosphere: cool teal wash top-left (operator zone) meeting a
+   * warm amber wash bottom-right (agent zone). Mirrors the product's
+   * human-plus-agent thesis directly in the shell background. The washes
+   * are low-alpha so foreground surfaces stay legible. */
+  background:
+    radial-gradient(ellipse 60% 50% at 0% 0%,     rgba(6, 165, 144, 0.055), transparent 55%),
+    radial-gradient(ellipse 55% 45% at 100% 100%, rgba(217, 119, 6, 0.045), transparent 55%),
+    var(--bg);
+}
+
+/* ---- Sidebar ---- */
+
+/* The drag-resized width arrives as --sidebar-width (set inline by
+ * chat-app.tsx). Registering it as non-inherited keeps a drag from
+ * invalidating styles on every sidebar descendant. */
+@property --sidebar-width {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 320px;
+}
+
+.chat-sidebar {
+  width: var(--sidebar-width, 320px);
+  min-width: 240px;
+  max-width: 480px;
+  display: flex;
+  flex-direction: column;
+  /* Translucent surface lets the shell wash bleed through — sidebar reads
+   * as a pane of glass over the atmosphere, not a flat grey block. */
+  background: rgba(22, 22, 22, 0.72);
+  backdrop-filter: blur(14px) saturate(120%);
+  -webkit-backdrop-filter: blur(14px) saturate(120%);
+  border-right: 1px solid var(--border);
+  overflow: hidden;
+  transition: transform var(--transition-smooth);
+  flex-shrink: 0;
+}
+
+/* ---- Sidebar resize handle ---- */
+.sidebar-resize-handle {
+  width: 4px;
+  cursor: col-resize;
+  background: transparent;
+  flex-shrink: 0;
+  position: relative;
+  z-index: var(--z-raised);
+  transition: background var(--transition-fast);
+}
+
+.sidebar-resize-handle::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 1px;
+  width: 2px;
+  background: transparent;
+  transition: background var(--transition-fast);
+}
+
+.sidebar-resize-handle:hover::after,
+.sidebar-resize-handle.dragging::after {
+  background: var(--accent);
+}
+
+.sidebar-resize-handle:hover,
+.sidebar-resize-handle.dragging {
+  background: var(--accent-tint);
+}
+
+/* Horizontal resize handle between explorer and conversation list */
+.explorer-resize-handle {
+  height: 4px;
+  cursor: row-resize;
+  background: transparent;
+  flex-shrink: 0;
+  position: relative;
+  z-index: var(--z-raised);
+  transition: background var(--transition-fast);
+}
+.explorer-resize-handle::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 1px;
+  height: 2px;
+  background: transparent;
+  transition: background var(--transition-fast);
+}
+.explorer-resize-handle:hover::after {
+  background: var(--accent);
+}
+.explorer-resize-handle:hover {
+  background: var(--accent-tint);
+}
+
+/* Disable transition while actively dragging to prevent lag */
+.chat-sidebar.resizing {
+  transition: none;
+}
+
+.sidebar-brand {
+  min-height: 66px;
+  padding: 20px 20px 12px;
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.sidebar-brand-lockup {
+  display: block;
+  width: 156px;
+  height: auto;
+}
+
+.sidebar-brand-lockup-dark {
+  display: none;
+}
+
+[data-theme="dark"] .sidebar-brand-lockup-light {
+  display: none;
+}
+
+[data-theme="dark"] .sidebar-brand-lockup-dark {
+  display: block;
+}
+
+.sidebar-header {
+  padding: 20px 20px 16px;
+  border-bottom: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+}
+
+.sidebar-header .user-info {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.user-menu-trigger {
+  display: inline-flex;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.sidebar-header .user-info span {
+  font-weight: 600;
+  font-size: var(--fs-lg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sidebar-actions {
+  display: flex;
+  gap: var(--space-2);
+}
+
+/* Explicit class rather than a descendant selector: the "+" dropdown
+ * menu nests its own buttons inside this row and must not inherit the
+ * square icon-button sizing. */
+.sidebar-action-btn {
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+  font-size: var(--fs-lg);
+  font-weight: 700;
+  color: var(--text-secondary);
+}
+
+.sidebar-action-btn:hover {
+  background: var(--border);
+  border-color: var(--border-light);
+  color: var(--text);
+}
+
+/* Text variant for the manage-mode "All / None / Cancel" actions. */
+.sidebar-action-btn.is-text {
+  width: auto;
+  padding: 0 var(--space-3);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+}
+
+.sidebar-search {
+  padding: 12px 20px;
+  flex-shrink: 0;
+}
+
+/* ---- Text inputs: one shape everywhere; per-class rules only adjust
+ * padding/size. Focus ring comes from the global :focus-visible rule. ---- */
+.sidebar-search input,
+.detail-input,
+.add-skill-input,
+.modal-form input,
+.modal-form textarea,
+.member-search,
+.folder-picker-path-input input,
+.path-picker-input,
+.workspace-session-search {
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg);
+  color: var(--text);
+  font-size: var(--fs-md);
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+.sidebar-search input::placeholder,
+.detail-input::placeholder,
+.add-skill-input::placeholder,
+.modal-form input::placeholder,
+.modal-form textarea::placeholder,
+.member-search::placeholder,
+.folder-picker-path-input input::placeholder,
+.path-picker-input::placeholder,
+.workspace-session-search::placeholder {
+  color: var(--text-tertiary);
+}
+
+.sidebar-search input {
+  padding: var(--space-3) var(--space-4);
+}
+
+/* --- Company Selector (ChatGPT-style dropdown) --- */
+.company-selector {
+  position: relative;
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--border);
+}
+
+.company-selector-btn {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  color: var(--text);
+  font-size: var(--fs-md);
+  font-weight: 600;
+  transition: background var(--transition-fast);
+}
+.company-selector-btn:hover {
+  background: var(--bg-elevated);
+}
+
+.company-selector-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  text-align: left;
+}
+
+.company-selector-arrow {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  margin-left: 8px;
+  flex-shrink: 0;
+}
+
+.company-dropdown {
+  position: absolute;
+  top: 100%;
+  left: 12px;
+  right: 12px;
+  z-index: var(--z-menu);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  margin-top: var(--space-1);
+  max-height: 300px;
+  overflow-y: auto;
+  box-shadow: var(--shadow-md);
+  padding: var(--space-1) 0;
+}
+
+.company-dropdown-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-2) var(--space-3);
+  position: relative;
+}
+
+.company-dropdown-item.active {
+  background: var(--bg-surface);
+}
+
+.company-dropdown-item.archived {
+  opacity: 0.7;
+}
+
+.company-dropdown-item-name {
+  flex: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+  font-size: var(--fs-md);
+  color: var(--text);
+  padding: 0;
+  min-height: var(--control-sm);
+  text-align: left;
+}
+
+.company-dropdown-item-name span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.company-check {
+  color: var(--accent);
+  font-size: var(--fs-base);
+  flex-shrink: 0;
+}
+
+.company-archived-badge {
+  color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+}
+
+.company-hidden-badge {
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--text-muted) 12%, transparent);
+}
+
+.company-dots-btn {
+  width: var(--control-sm);
+  height: var(--control-sm);
+  color: var(--text-muted);
+  opacity: 0;
+  transition: opacity var(--transition-fast);
+}
+.company-dropdown-item:hover .company-dots-btn {
+  opacity: 1;
+}
+.company-dots-btn:hover {
+  background: var(--bg-surface);
+}
+
+.company-context-menu {
+  position: absolute;
+  right: 8px;
+  top: 32px;
+  z-index: var(--z-menu);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+  min-width: 140px;
+  padding: 4px 0;
+}
+
+.company-context-menu button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: var(--space-2) var(--space-3);
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: var(--fs-md);
+}
+.company-context-menu button:hover {
+  background: var(--bg-surface);
+}
+
+.company-context-menu .company-context-danger {
+  color: var(--error);
+}
+
+.company-show-hidden {
+  display: block;
+  width: 100%;
+  text-align: center;
+  padding: var(--space-2) var(--space-3);
+  background: none;
+  border: none;
+  border-top: 1px solid var(--border);
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: var(--fs-sm);
+}
+.company-show-hidden:hover {
+  color: var(--text-secondary);
+  background: var(--bg-surface);
+}
+
+/* Batch bar shown under the company list in manage mode. */
+.company-batch-bar,
+.sidebar-batch-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-top: 1px solid var(--border);
+}
+.company-batch-count,
+.sidebar-batch-count {
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+}
+.company-batch-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.company-batch-btn.is-danger {
+  color: var(--error);
+}
+.company-select-checkbox {
+  margin-right: var(--space-2);
+}
+
+/* Batch bar at the bottom of the conversation list in manage mode. */
+.sidebar-batch-bar {
+  justify-content: space-between;
+  padding: 10px var(--space-4);
+}
+
+.company-rename-input {
+  flex: 1;
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--accent);
+  background: var(--bg-surface);
+  color: var(--text);
+  font-size: var(--fs-md);
+  min-width: 0;
+  outline: none;
+}
+
+.conversation-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 12px 12px;
+}
+
+.conversation-list::-webkit-scrollbar { width: 4px; }
+.conversation-list::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.conversation-load-more {
+  width: 100%;
+  margin-top: var(--space-2);
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.conversation-load-more:hover:not(:disabled) {
+  background: var(--bg-elevated);
+  color: var(--text);
+}
+
+.conversation-load-more:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.conversation-section {
+  margin-bottom: var(--space-2);
+}
+
+.conversation-section-header {
+  width: 100%;
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: var(--fs-sm);
+  font-weight: 700;
+  text-align: left;
+  text-transform: uppercase;
+  transition: color var(--transition-fast), background-color var(--transition-fast), border-color var(--transition-fast);
+}
+
+.conversation-section-header:hover {
+  background: var(--surface-hover);
+  border-color: var(--border);
+  color: var(--text-secondary);
+}
+
+.conversation-section-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conversation-section-count {
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+}
+
+.conversation-section-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.conversation-section-empty {
+  margin: 2px 0 6px;
+  padding: var(--space-4);
+  color: var(--text-muted);
+}
+
+.conversation-section-empty p {
+  font-size: var(--fs-md);
+}
+
+.conv-item {
+  --conv-item-hover-bg: rgba(255, 255, 255, 0.04);
+  --conv-item-active-bg: rgba(6, 165, 144, 0.06);
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 0;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  outline: none;
+  transition: background-color var(--transition-fast), border-color var(--transition-fast), box-shadow var(--transition-fast);
+  position: relative;
+}
+
+.conv-item:hover {
+  background-color: var(--conv-item-hover-bg);
+  border-color: var(--border);
+}
+
+/* One outer shell owns the selected surface for every conversation type. */
+.conv-item.active {
+  background-color: var(--conv-item-active-bg);
+  border-color: var(--border);
+}
+
+.conv-item.selected {
+  background: var(--accent-tint);
+  border-color: rgba(6, 165, 144, 0.3);
+}
+
+.conv-item:has(.conv-item-main:focus-visible) {
+  border-color: var(--accent);
+  box-shadow: var(--ring-accent);
+}
+
+.conv-item-main {
+  flex: 1;
+  min-width: 0;
+  min-height: 58px;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: none;
+  border-radius: inherit;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  outline: none;
+  text-align: left;
+}
+
+/* AI conversation rows keep their mono name and warm state tint without
+ * layering a second selected surface or decorative edge over the row. */
+.conv-item:has(.conv-ai-badge) {
+  --conv-item-hover-bg: rgba(217, 119, 6, 0.05);
+  --conv-item-active-bg: rgba(217, 119, 6, 0.08);
+}
+.conv-item:has(.conv-ai-badge) .conv-name {
+  font-family: var(--font-brand);
+  letter-spacing: 0.01em;
+}
+
+.conv-item .conv-meta {
+  flex: 1;
+  min-width: 0;
+}
+
+.conv-item .conv-name {
+  font-weight: 600;
+  font-size: var(--fs-base);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: block;
+}
+
+.conv-item .conv-preview {
+  color: var(--text-secondary);
+  font-size: var(--fs-md);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: block;
+  margin-top: 2px;
+}
+
+.conv-item .conv-time {
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+  white-space: nowrap;
+  flex-shrink: 0;
+  align-self: flex-start;
+  margin-top: 2px;
+  margin-right: 2px;
+}
+
+/* Trailing badges sit on the timestamp's line, not the row's centre; the
+ * row's gap already spaces them. */
+.conv-item .conv-unread {
+  flex-shrink: 0;
+  align-self: flex-start;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: var(--radius-full);
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: var(--fs-sm);
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.conv-item-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  flex: 0 0 auto;
+  margin-right: 6px;
+}
+
+/* Manage-mode select checkbox */
+.conv-select-checkbox {
+  width: 16px;
+  height: 16px;
+  margin: 0 8px 0 0;
+  flex-shrink: 0;
+}
+
+/* AI status indicator: the literal "AI" text is replaced by a luminous
+ * pulsing amber dot. Reads as a live signal, not a SaaS-style text chip.
+ * The element's text content ("AI") is visually hidden via font-size: 0
+ * while remaining in the accessibility tree. */
+.conv-ai-badge {
+  align-self: center;
+  flex-shrink: 0;
+  margin-left: -6px;
+  width: 6px;
+  height: 6px;
+  padding: 0;
+  border-radius: 50%;
+  background: var(--agent-luminous);
+  box-shadow:
+    0 0 0 2px rgba(217, 119, 6, 0.18),
+    0 0 10px rgba(251, 191, 36, 0.55);
+  font-size: 0;
+  color: transparent;
+  animation: ai-pulse 2.8s ease-in-out infinite;
+}
+
+@keyframes ai-pulse {
+  0%, 100% { opacity: 0.6;  transform: scale(1); }
+  50%      { opacity: 1;    transform: scale(1.18); }
+}
+
+/* Agent avatar ring: a faint amber halo around the avatar of any AI
+ * conversation row. With the dot indicator, this is what actually
+ * signals "this thread is an agent" at a glance — stronger than a chip. */
+.conv-item:has(.conv-ai-badge) .avatar {
+  box-shadow:
+    0 0 0 1.5px rgba(217, 119, 6, 0.55),
+    0 0 14px rgba(217, 119, 6, 0.22);
+}
+
+/* Channel prefix + group kind badge */
+.conv-channel-prefix {
+  margin-right: 6px;
+  color: var(--text-muted);
+  font-size: var(--fs-md);
+  font-weight: 600;
+}
+.conv-item:hover .conv-channel-prefix,
+.conv-item.active .conv-channel-prefix {
+  color: var(--accent);
+}
+.conv-kind-badge {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  text-transform: uppercase;
+}
+
+.conv-item-action-btn {
+  border: 1px solid transparent;
+  color: var(--text-muted);
+  opacity: 0.74;
+  transition: color var(--transition-fast), background-color var(--transition-fast), border-color var(--transition-fast), opacity var(--transition-fast);
+}
+
+.conv-item-action-btn:hover,
+.conv-item-action-btn:focus-visible {
+  background: var(--surface-hover);
+  border-color: var(--border);
+  color: var(--text-secondary);
+  opacity: 1;
+}
+
+.conv-item-action-btn.active {
+  color: var(--accent);
+  opacity: 1;
+}
+
+.conv-item-action-btn.pending,
+.conv-item-action-btn:disabled {
+  cursor: wait;
+  opacity: 0.45;
+}
+
+/* ---- Avatar ---- */
+
+.avatar {
+  width: 40px;
+  height: 40px;
+  min-width: 40px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: var(--fs-lg);
+  color: var(--on-accent);
+  text-transform: uppercase;
+  flex-shrink: 0;
+}
+
+/* Clickable avatar: lift + ring, not a shadow. */
+.msg-avatar-col.clickable {
+  cursor: pointer;
+}
+.msg-avatar-col.clickable .avatar {
+  transition: transform var(--transition-smooth), box-shadow var(--transition-smooth);
+}
+.msg-avatar-col.clickable:hover .avatar {
+  transform: translateY(-1px);
+  box-shadow: 0 0 0 2px rgba(6, 165, 144, 0.4);
+}
+
+.avatar.small {
+  width: 32px;
+  height: 32px;
+  min-width: 32px;
+  font-size: var(--fs-md);
+}
+
+.avatar.tiny {
+  width: 24px;
+  height: 24px;
+  min-width: 24px;
+  font-size: var(--fs-xs);
+}
+
+/* ---- Chat area ---- */
+
+.chat-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  /* Translucent core canvas: the chat-shell wash reaches the middle of
+   * the product, so the amber/teal atmosphere is not only at the
+   * perimeter. A very subtle top-down vignette seats the messages in a
+   * container without reintroducing a flat slab. */
+  background:
+    linear-gradient(180deg, rgba(14, 14, 14, 0.35) 0%, rgba(10, 10, 10, 0.5) 50%, rgba(10, 10, 10, 0.65) 100%);
+}
+
+.chat-header {
+  padding: clamp(16px, 1.5vw, 20px) clamp(12px, 2vw, 24px);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+  /* Header as a pane of glass over the shell wash — matches sidebar
+   * translucency for a unified atmospheric language. */
+  background: rgba(22, 22, 22, 0.66);
+  backdrop-filter: blur(14px) saturate(120%);
+  -webkit-backdrop-filter: blur(14px) saturate(120%);
+}
+
+/* Left group: menu button, avatar, title. */
+.chat-header-left {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+}

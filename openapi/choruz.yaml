@@ -1,0 +1,2003 @@
+openapi: 3.1.0
+info:
+  title: Choruz API
+  version: 0.1.0
+  description: >
+    Implementation route inventory for the local Choruz API Gateway. Routes
+    classified under x-choruz-route-classes.humanOperatorInternal or
+    x-choruz-route-classes.operationalInternal are documented so the console and
+    operator tooling contract is visible; they are not ordinary third-party API
+    integration endpoints.
+servers:
+  - url: http://localhost:3000
+x-choruz-route-classes:
+  humanOperatorInternal:
+    description: >
+      Human-only routes gated by require_human_operator. These surfaces are
+      intended for the local console, runtime operation, and local tooling.
+    operations:
+      - PATCH /v1/principals/{principalId}/workspace
+      - POST /v1/agents/batch-disable
+      - GET /v1/agents/{agentId}/tasks
+      - GET /v1/agents/{agentId}/cron
+      - POST /v1/agents/{agentId}/cron
+      - PATCH /v1/agents/{agentId}/cron/{jobId}
+      - DELETE /v1/agents/{agentId}/cron/{jobId}
+      - GET /v1/runtime/bindings
+      - POST /v1/runtime/bindings
+      - GET /v1/runtime/bindings/{bindingId}
+      - POST /v1/runtime/bindings/{bindingId}/rebind
+      - GET /v1/runtime/policies/{conversationId}
+      - PUT /v1/runtime/policies/{conversationId}
+      - GET /v1/conversations/{conversationId}/runtime-status
+      - PATCH /v1/conversations/{conversationId}/workspace
+      - POST /v1/companies/{companyId}/reset-sessions
+      - GET /v1/filesystem/list
+      - GET /v1/filesystem/stat
+      - GET /v1/filesystem/home
+      - GET /v1/filesystem/read
+      - POST /v1/filesystem/write
+      - GET /v1/ssh/hosts
+      - POST /v1/ssh/tunnel
+      - GET /v1/ssh/tunnels
+      - DELETE /v1/ssh/tunnel/{id}
+      - POST /v1/ssh/connect-choruz
+  operationalInternal:
+    description: >
+      Local service health, telemetry, console, and terminal-control surfaces.
+      These routes support the deployed Choruz application and are not presented
+      as stable third-party integration APIs.
+    operations:
+      - GET /healthz
+      - GET /readyz
+      - GET /metrics
+      - GET /v1/status
+      - GET /v1/bootstrap
+      - GET /v1/console
+      - POST /v1/webhooks/flush
+      - POST /v1/telemetry
+      - GET /v1/ws/terminals/{bindingId}
+      - POST /v1/terminals/{bindingId}/ensure
+      - POST /v1/terminals/{bindingId}/input
+paths:
+  /healthz:
+    get:
+      operationId: healthCheck
+      responses:
+        "200":
+          description: Process is alive and serving HTTP
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HostServiceStatus"
+  /readyz:
+    get:
+      operationId: readinessCheck
+      responses:
+        "200":
+          description: Service dependencies are ready
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HostServiceStatus"
+        "503":
+          description: Service is alive but not ready
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HostServiceStatus"
+  /metrics:
+    get:
+      operationId: metricsSnapshot
+      responses:
+        "200":
+          description: Prometheus metrics
+  /v1/status:
+    get:
+      operationId: phaseStatus
+      responses:
+        "200":
+          description: Product phase status
+  /v1/auth/local/login:
+    post:
+      operationId: localLogin
+      responses:
+        "200":
+          description: Local user session created
+  /v1/auth/local/signup:
+    post:
+      operationId: localSignup
+      responses:
+        "201":
+          description: Local account created
+  /v1/me:
+    get:
+      operationId: getCurrentPrincipal
+      responses:
+        "200":
+          description: Current authenticated principal
+  /v1/console:
+    get:
+      operationId: fetchConsoleSnapshot
+      responses:
+        "200":
+          description: Console snapshot
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                properties:
+                  pinned_conversations:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/PinnedConversation"
+                  archived_conversations:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ArchivedConversation"
+  /v1/bootstrap:
+    get:
+      operationId: fetchDashboardBootstrap
+      parameters:
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+        - in: query
+          name: after
+          schema:
+            type: string
+          description: Opaque cursor returned by the preceding page
+      responses:
+        "200":
+          description: Bounded, activity-ordered dashboard bootstrap page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [principal, companies, agents, conversations, sync_cursor, snapshot_at]
+                additionalProperties: true
+                properties:
+                  conversations:
+                    type: object
+                    required: [items, has_more]
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          type: object
+                          additionalProperties: true
+                      next_cursor:
+                        oneOf:
+                          - type: string
+                          - type: "null"
+                      has_more:
+                        type: boolean
+                  sync_cursor:
+                    type: integer
+                    format: int64
+                    minimum: 0
+                    description: >-
+                      Durable change-feed high-water captured before the snapshot.
+                      Replay /v1/sync after this cursor; duplicate state is possible,
+                      missed concurrent mutations are not.
+        "400":
+          description: Invalid pagination cursor
+        "401":
+          description: Authentication required
+  /v1/sync:
+    get:
+      operationId: listSyncChanges
+      description: >-
+        Non-destructive, principal-scoped dashboard gap-fill feed. Each client
+        persists its own cursor; reading this endpoint never acknowledges or
+        hides events from another client.
+      parameters:
+        - in: query
+          name: cursor
+          schema:
+            type: integer
+            format: int64
+            minimum: 0
+            default: 0
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 100
+      responses:
+        "200":
+          description: Oldest-unseen-first page of durable dashboard changes
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [changes, next_cursor, head_cursor, has_more]
+                properties:
+                  changes:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: false
+                      required: [cursor, event_type, entity_type, entity_id, payload, created_at]
+                      properties:
+                        cursor:
+                          type: integer
+                          format: int64
+                        event_type:
+                          type: string
+                        entity_type:
+                          type: string
+                        entity_id:
+                          type: string
+                        conversation_id:
+                          oneOf:
+                            - type: string
+                            - type: "null"
+                        payload:
+                          type: object
+                          additionalProperties: true
+                        created_at:
+                          type: string
+                          format: date-time
+                  next_cursor:
+                    type: integer
+                    format: int64
+                  head_cursor:
+                    type: integer
+                    format: int64
+                  has_more:
+                    type: boolean
+        "400":
+          description: Invalid cursor
+        "401":
+          description: Authentication required
+  /v1/ws/sync:
+    get:
+      operationId: connectDashboardSync
+      description: >-
+        Upgrade to the authenticated dashboard WebSocket. Server frames replay
+        durable changes oldest-first; clients persist progress by sending
+        {"type":"sync_ack","cursor":N}. Delivery alone never advances the
+        per-device acknowledgement.
+      parameters:
+        - in: query
+          name: device_id
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 128
+        - in: query
+          name: cursor
+          schema:
+            type: integer
+            format: int64
+            minimum: 0
+            default: 0
+      responses:
+        "101":
+          description: WebSocket upgrade accepted
+        "400":
+          description: Invalid device or cursor
+        "401":
+          description: Authentication required
+        "500":
+          description: Durable wakeup listener unavailable
+  /v1/runtime/bindings:
+    get:
+      operationId: listRuntimeBindings
+      responses:
+        "200":
+          description: Runtime binding list
+    post:
+      operationId: createRuntimeBinding
+      responses:
+        "201":
+          description: Runtime binding created
+  /v1/runtime/bindings/{bindingId}:
+    parameters:
+      - name: bindingId
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      operationId: getRuntimeBinding
+      responses:
+        "200":
+          description: Runtime binding details
+  /v1/runtime/bindings/{bindingId}/rebind:
+    parameters:
+      - name: bindingId
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      operationId: rebindRuntimeBinding
+      responses:
+        "200":
+          description: Runtime binding rebound
+  /v1/runtime/policies/{conversationId}:
+    parameters:
+      - name: conversationId
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      operationId: getRuntimePolicy
+      responses:
+        "200":
+          description: Runtime policy details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RuntimePolicy"
+    put:
+      operationId: upsertRuntimePolicy
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpsertRuntimePolicyRequest"
+      responses:
+        "200":
+          description: Runtime policy upserted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RuntimePolicy"
+  /v1/principals/{principalId}/disable:
+    post:
+      operationId: disablePrincipal
+      parameters:
+        - name: principalId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Principal disabled
+  /v1/principals/{principalId}/workspace:
+    patch:
+      operationId: migratePrincipalWorkspace
+      parameters:
+        - name: principalId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Principal workspace migrated
+  /v1/agents:
+    post:
+      operationId: createAgent
+      responses:
+        "201":
+          description: Agent created
+  /v1/agents/batch-disable:
+    post:
+      operationId: batchDisableAgents
+      responses:
+        "200":
+          description: Agents disabled
+  /v1/agents/{agentId}/rotate-secret:
+    post:
+      operationId: rotateAgentSecret
+      parameters:
+        - name: agentId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Secret rotated
+  /v1/agents/{agentId}/tasks:
+    get:
+      operationId: getAgentTasks
+      parameters:
+        - name: agentId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Agent task list
+  /v1/agents/{agentId}/cron:
+    parameters:
+      - name: agentId
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      operationId: listAgentCronJobs
+      responses:
+        "200":
+          description: Agent cron job list
+    post:
+      operationId: createAgentCronJob
+      responses:
+        "201":
+          description: Agent cron job created
+  /v1/agents/{agentId}/cron/{jobId}:
+    parameters:
+      - name: agentId
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: jobId
+        in: path
+        required: true
+        schema:
+          type: string
+    patch:
+      operationId: updateAgentCronJob
+      responses:
+        "200":
+          description: Agent cron job updated
+    delete:
+      operationId: deleteAgentCronJob
+      responses:
+        "200":
+          description: Agent cron job deleted
+  /v1/conversations:
+    get:
+      operationId: listConversations
+      responses:
+        "200":
+          description: Conversation list
+  /v1/conversations/direct:
+    post:
+      operationId: createDirectConversation
+      responses:
+        "201":
+          description: Direct conversation created or reused
+  /v1/conversations/{conversationId}/pin:
+    put:
+      operationId: pinConversation
+      parameters:
+        - name: conversationId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Conversation pinned for the authenticated user
+        "403":
+          description: Principal cannot pin this conversation
+    delete:
+      operationId: unpinConversation
+      parameters:
+        - name: conversationId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Conversation unpinned for the authenticated user
+        "403":
+          description: Agent principals cannot unpin conversations
+  /v1/conversations/{conversationId}/archive:
+    put:
+      operationId: archiveConversation
+      parameters:
+        - name: conversationId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Conversation archived for the authenticated user
+        "403":
+          description: Principal cannot archive this conversation
+    delete:
+      operationId: unarchiveConversation
+      parameters:
+        - name: conversationId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Conversation restored for the authenticated user
+        "403":
+          description: Agent principals cannot restore conversations
+  /v1/conversations/{conversationId}/workspace:
+    patch:
+      operationId: migrateConversationWorkspace
+      parameters:
+        - name: conversationId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Conversation workspace migrated
+  /v1/conversations/{conversationId}/messages:
+    get:
+      operationId: listMessages
+      parameters:
+        - name: conversationId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Message list
+  /v1/conversations/{conversationId}/message-page:
+    get:
+      operationId: listMessagePage
+      description: Keyset-paginated message history. before_seq and after_seq are mutually exclusive.
+      parameters:
+        - name: conversationId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: principal_id
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: before_seq
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+        - name: after_seq
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+      responses:
+        "200":
+          description: Chronologically ordered page and cursor for the requested direction
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [messages, direction, has_more]
+                additionalProperties: false
+                properties:
+                  messages:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+                  direction:
+                    type: string
+                    enum: [latest, before, after]
+                  has_more:
+                    type: boolean
+                  next_cursor:
+                    oneOf:
+                      - type: integer
+                      - type: "null"
+        "400":
+          description: Invalid or ambiguous cursor
+        "403":
+          description: Conversation is not visible to the caller
+  /v1/conversations/{conversationId}/tasks:
+    parameters:
+      - name: conversationId
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      operationId: listChannelTasks
+      responses:
+        "200":
+          description: Redacted channel task list for a task-enabled conversation
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ChannelTask"
+        "403":
+          description: Channel tasks disabled or caller is not a conversation member
+    post:
+      operationId: createChannelTask
+      description: Internal/group-agent command creation endpoint. Human empty-form create is not available in MVP.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateChannelTaskRequest"
+      responses:
+        "201":
+          description: Agent-created channel task created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChannelTask"
+        "200":
+          description: Existing agent-created task returned for the same idempotency key and payload
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChannelTask"
+        "400":
+          description: Invalid title, task key, idempotency key, status, or assignee
+        "403":
+          description: Channel tasks disabled or caller is not authorized
+        "409":
+          description: Task key conflict or idempotency key reused with a different payload
+  /v1/conversations/{conversationId}/tasks/from-message:
+    parameters:
+      - name: conversationId
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      operationId: createChannelTaskFromMessage
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateChannelTaskFromMessageRequest"
+      responses:
+        "201":
+          description: Message-derived channel task created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChannelTask"
+        "200":
+          description: Existing message-derived task returned for the same source message and creator
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChannelTask"
+        "400":
+          description: Invalid source message, title, or assignee
+        "403":
+          description: Channel tasks disabled, caller is not a member, or conversation is not eligible
+        "409":
+          description: Task key or idempotency conflict not covered by source-message dedupe
+  /v1/tasks/{taskId}:
+    parameters:
+      - name: taskId
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      operationId: getChannelTask
+      responses:
+        "200":
+          description: Channel task detail with recent redacted history
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChannelTaskDetail"
+        "403":
+          description: Channel tasks disabled or caller is not a conversation member
+        "404":
+          description: Channel task not found
+    patch:
+      operationId: patchChannelTask
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PatchChannelTaskRequest"
+      responses:
+        "200":
+          description: Channel task updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChannelTask"
+        "400":
+          description: Invalid status, assignee, blocked reason, or context label
+        "403":
+          description: Channel tasks disabled, caller is not a member, or caller cannot supervise tasks
+        "404":
+          description: Channel task not found
+  /v1/conversations/{conversationId}/runtime-status:
+    parameters:
+      - name: conversationId
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      operationId: getConversationRuntimeStatus
+      responses:
+        "200":
+          description: Derived per-agent runtime queue status for a conversation
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ConversationRuntimeStatus"
+  /v1/conversations/{conversationId}/view:
+    post:
+      operationId: viewConversation
+      parameters:
+        - name: conversationId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Conversation marked viewed
+  /v1/unreads:
+    get:
+      operationId: getUnreads
+      responses:
+        "200":
+          description: Unread counts
+  /v1/groups:
+    post:
+      operationId: createGroup
+      responses:
+        "201":
+          description: Group created
+  /v1/groups/{conversationId}:
+    patch:
+      operationId: updateGroup
+      parameters:
+        - name: conversationId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Group metadata updated
+  /v1/groups/{conversationId}/members:
+    post:
+      operationId: addGroupMembers
+      parameters:
+        - name: conversationId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Members added
+  /v1/groups/{conversationId}/members/{principalId}:
+    delete:
+      operationId: removeGroupMember
+      parameters:
+        - name: conversationId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: principalId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Member removed
+  /v1/messages:
+    post:
+      operationId: sendMessage
+      responses:
+        "201":
+          description: Message accepted
+  /v1/messages/search:
+    get:
+      operationId: searchMessages
+      responses:
+        "200":
+          description: Message search results
+  /v1/attachments:
+    post:
+      operationId: uploadAttachment
+      responses:
+        "201":
+          description: Attachment stored
+  /v1/attachments/{attachmentId}:
+    get:
+      operationId: downloadAttachment
+      parameters:
+        - name: attachmentId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Attachment payload
+    delete:
+      operationId: deleteAttachment
+      parameters:
+        - name: attachmentId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Attachment deleted
+  /v1/principals/{principalId}/events:
+    get:
+      operationId: listEvents
+      parameters:
+        - name: principalId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Event backlog
+  /v1/principals/{principalId}/events/ack:
+    post:
+      operationId: ackEvents
+      parameters:
+        - name: principalId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Events acknowledged
+  /v1/principals/{principalId}/event-webhook:
+    post:
+      operationId: setEventWebhook
+      parameters:
+        - name: principalId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Event webhook configured
+  /v1/webhooks/flush:
+    post:
+      operationId: flushPendingWebhooks
+      responses:
+        "200":
+          description: Pending event webhooks flushed
+  /v1/ws/terminals/{bindingId}:
+    get:
+      operationId: streamTerminalWebSocket
+      parameters:
+        - name: bindingId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "101":
+          description: Terminal WebSocket upgraded
+  /v1/telemetry:
+    post:
+      operationId: ingestTelemetry
+      responses:
+        "202":
+          description: Telemetry accepted
+  /v1/terminals/{bindingId}/ensure:
+    post:
+      operationId: ensureTerminal
+      parameters:
+        - name: bindingId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Terminal session ensured
+  /v1/terminals/{bindingId}/input:
+    post:
+      operationId: sendTerminalInput
+      parameters:
+        - name: bindingId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Terminal input accepted
+  /v1/companies:
+    get:
+      operationId: listCompanies
+      responses:
+        "200":
+          description: Company list
+    post:
+      operationId: createCompany
+      responses:
+        "201":
+          description: Company created
+  /v1/companies/{companyId}:
+    parameters:
+      - name: companyId
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      operationId: getCompany
+      responses:
+        "200":
+          description: Company details
+    patch:
+      operationId: updateCompany
+      responses:
+        "200":
+          description: Company updated
+    delete:
+      operationId: deleteCompany
+      responses:
+        "200":
+          description: Company deleted
+  /v1/companies/{companyId}/archive:
+    parameters:
+      - name: companyId
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      operationId: archiveCompany
+      responses:
+        "200":
+          description: Company archived
+  /v1/companies/{companyId}/unarchive:
+    parameters:
+      - name: companyId
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      operationId: unarchiveCompany
+      responses:
+        "200":
+          description: Company unarchived
+  /v1/companies/{companyId}/reset-sessions:
+    parameters:
+      - name: companyId
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      operationId: resetCompanySessions
+      responses:
+        "200":
+          description: Company agent sessions reset
+  /v1/companies/{companyId}/members:
+    parameters:
+      - name: companyId
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      operationId: listCompanyMembers
+      responses:
+        "200":
+          description: Company member list
+    post:
+      operationId: addCompanyMember
+      responses:
+        "200":
+          description: Company member added
+  /v1/companies/{companyId}/members/{memberId}:
+    parameters:
+      - name: companyId
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: memberId
+        in: path
+        required: true
+        schema:
+          type: string
+    delete:
+      operationId: removeCompanyMember
+      responses:
+        "200":
+          description: Company member removed
+  /v1/companies/{companyId}/harness-accounts/{accountId}/logins:
+    parameters:
+      - name: companyId
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: accountId
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      operationId: startHarnessAccountLogin
+      description: >-
+        Start the Harness's own browser sign-in for the account. An account on
+        a remote runtime host waits in `queued` for the connector; an account on
+        the gateway's device is driven in-process and moves to
+        `awaiting_browser` once the authorization link is known.
+      responses:
+        "201":
+          description: Harness account login view
+        "404":
+          description: Harness account not found in this company
+        "409":
+          description: This account already has a login in progress
+  /v1/companies/{companyId}/harness-accounts/{accountId}/logins/{loginId}:
+    parameters:
+      - name: companyId
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: accountId
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: loginId
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      operationId: getHarnessAccountLogin
+      responses:
+        "200":
+          description: Harness account login view; an open login past its expiry reads as `expired`
+        "404":
+          description: Harness account login not found
+  /v1/companies/{companyId}/harness-accounts/{accountId}/logins/{loginId}/callback:
+    parameters:
+      - name: companyId
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: accountId
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: loginId
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      operationId: submitHarnessAccountLoginCallback
+      description: Hand the pasted authorization code or callback URL to the running sign-in.
+      responses:
+        "204":
+          description: Authorization code accepted
+        "409":
+          description: This login is no longer waiting for an authorization code
+  /v1/companies/{companyId}/harness-accounts/{accountId}/logins/{loginId}/cancel:
+    parameters:
+      - name: companyId
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: accountId
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: loginId
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      operationId: cancelHarnessAccountLogin
+      description: Close an open sign-in so the account accepts a new one at once; the in-process driver stops at its next callback poll.
+      responses:
+        "204":
+          description: Login cancelled
+        "409":
+          description: This login is not open
+  /v1/audit-logs:
+    get:
+      operationId: listAuditLogs
+      responses:
+        "200":
+          description: Audit log list
+  /v1/export/conversations/{conversationId}:
+    get:
+      operationId: exportConversation
+      parameters:
+        - name: conversationId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Exported conversation
+  /v1/filesystem/list:
+    get:
+      operationId: filesystemList
+      responses:
+        "200":
+          description: Directory listing
+  /v1/filesystem/stat:
+    get:
+      operationId: filesystemStat
+      responses:
+        "200":
+          description: File metadata
+  /v1/filesystem/home:
+    get:
+      operationId: filesystemHome
+      responses:
+        "200":
+          description: Server home directory
+  /v1/filesystem/read:
+    get:
+      operationId: filesystemRead
+      responses:
+        "200":
+          description: File contents
+  /v1/filesystem/write:
+    post:
+      operationId: filesystemWrite
+      responses:
+        "200":
+          description: File written
+  /v1/ssh/hosts:
+    get:
+      operationId: listSshHosts
+      responses:
+        "200":
+          description: SSH host list
+  /v1/ssh/tunnel:
+    post:
+      operationId: createSshTunnel
+      responses:
+        "200":
+          description: SSH tunnel created
+  /v1/ssh/tunnels:
+    get:
+      operationId: listSshTunnels
+      responses:
+        "200":
+          description: SSH tunnel list
+  /v1/ssh/tunnel/{id}:
+    delete:
+      operationId: deleteSshTunnel
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: SSH tunnel deleted
+  /v1/ssh/connect-choruz:
+    post:
+      operationId: connectChoruzSshTunnel
+      responses:
+        "200":
+          description: Choruz SSH tunnel connected
+  /v2/ingest:
+    post:
+      operationId: ingestMessage
+      responses:
+        "202":
+          description: Pipeline message accepted
+  /v1/auth/local/bootstrap:
+    get:
+      operationId: bootstrapLocalOperator
+      responses:
+        "200":
+          description: Local operator bootstrap
+  /v1/companies/{companyId}/runtime-host-pairings:
+    parameters:
+      - name: companyId
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      operationId: createRuntimeHostPairing
+      responses:
+        "201":
+          description: Runtime host pairing code
+  /v1/companies/{companyId}/runtime-hosts:
+    parameters:
+      - name: companyId
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      operationId: listRuntimeHosts
+      responses:
+        "200":
+          description: Runtime host list
+  /v1/conversations/{conversationId}/hide:
+    parameters:
+      - name: conversationId
+        in: path
+        required: true
+        schema:
+          type: string
+    put:
+      operationId: hideAgentSession
+      responses:
+        "200":
+          description: Agent session hidden
+    delete:
+      operationId: restoreHiddenAgentSession
+      responses:
+        "200":
+          description: Agent session hidden
+  /v1/conversations/{conversationId}/messages/{messageId}:
+    parameters:
+      - name: conversationId
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: messageId
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      operationId: getMessage
+      responses:
+        "200":
+          description: Message
+  /v1/conversations/{conversationId}/threads/{threadRootId}:
+    parameters:
+      - name: conversationId
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: threadRootId
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      operationId: getThread
+      responses:
+        "200":
+          description: Thread
+  /v1/conversations/{conversationId}/threads/{threadRootId}/view:
+    parameters:
+      - name: conversationId
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: threadRootId
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      operationId: viewThread
+      responses:
+        "200":
+          description: Thread marked viewed
+  /v1/remote-control/bridge-config:
+    get:
+      operationId: getRemoteControlBridgeConfig
+      responses:
+        "200":
+          description: Remote control bridge configuration
+  /v1/remote-control/devices:
+    get:
+      operationId: listRemoteControlDevices
+      responses:
+        "200":
+          description: Remote control device list
+  /v1/remote-control/devices/{deviceId}:
+    parameters:
+      - name: deviceId
+        in: path
+        required: true
+        schema:
+          type: string
+    delete:
+      operationId: revokeRemoteControlDevice
+      responses:
+        "200":
+          description: Remote control device revoked
+  /v1/remote-control/devices/{deviceId}/seen:
+    parameters:
+      - name: deviceId
+        in: path
+        required: true
+        schema:
+          type: string
+    put:
+      operationId: touchRemoteControlDevice
+      responses:
+        "200":
+          description: Remote control device seen
+  /v1/remote-control/pairings:
+    post:
+      operationId: createRemoteControlPairing
+      responses:
+        "201":
+          description: Remote control pairing credential
+  /v1/remote-control/pairings/redeem:
+    post:
+      operationId: redeemRemoteControlPairing
+      responses:
+        "200":
+          description: Remote control device paired
+  /v1/remote-control/settings:
+    get:
+      operationId: getRemoteControlSettings
+      responses:
+        "200":
+          description: Remote control settings
+  /v1/runtime-host-pairings/redeem:
+    post:
+      operationId: redeemRuntimeHostPairing
+      responses:
+        "200":
+          description: Runtime host paired
+  /v1/runtime-hosts/{hostId}:
+    parameters:
+      - name: hostId
+        in: path
+        required: true
+        schema:
+          type: string
+    put:
+      operationId: renameRuntimeHost
+      responses:
+        "200":
+          description: Runtime host
+    delete:
+      operationId: revokeRuntimeHost
+      responses:
+        "200":
+          description: Runtime host
+  /v1/runtime-hosts/{hostId}/commands/claim:
+    parameters:
+      - name: hostId
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      operationId: claimRuntimeHostCommand
+      responses:
+        "200":
+          description: Claimed command or null
+  /v1/runtime-hosts/{hostId}/commands/{commandId}/complete:
+    parameters:
+      - name: hostId
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: commandId
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      operationId: completeRuntimeHostCommand
+      responses:
+        "200":
+          description: Command completed
+  /v1/runtime-hosts/{hostId}/commands/{commandId}/heartbeat:
+    parameters:
+      - name: hostId
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: commandId
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      operationId: heartbeatRuntimeHostCommand
+      responses:
+        "200":
+          description: Command lease extended
+  /v1/runtime-hosts/{hostId}/harness-account-logins/claim:
+    parameters:
+      - name: hostId
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      operationId: claimHarnessAccountLogin
+      responses:
+        "200":
+          description: Claimed login or null
+  /v1/runtime-hosts/{hostId}/harness-account-logins/{loginId}/callback/claim:
+    parameters:
+      - name: hostId
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: loginId
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      operationId: claimHarnessAccountLoginCallback
+      responses:
+        "200":
+          description: Claimed authorization code or null
+  /v1/runtime-hosts/{hostId}/harness-account-logins/{loginId}/complete:
+    parameters:
+      - name: hostId
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: loginId
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      operationId: completeHarnessAccountLogin
+      responses:
+        "200":
+          description: Login verified
+  /v1/runtime-hosts/{hostId}/harness-account-logins/{loginId}/fail:
+    parameters:
+      - name: hostId
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: loginId
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      operationId: failHarnessAccountLogin
+      responses:
+        "200":
+          description: Login failed
+  /v1/runtime-hosts/{hostId}/harness-account-logins/{loginId}/publish:
+    parameters:
+      - name: hostId
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: loginId
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      operationId: publishHarnessAccountLogin
+      responses:
+        "200":
+          description: Authorization link published
+  /v1/runtime-hosts/{hostId}/harness-accounts:
+    parameters:
+      - name: hostId
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      operationId: registerHarnessAccount
+      responses:
+        "200":
+          description: Harness account registered
+  /v1/runtime-hosts/{hostId}/harness-accounts/{accountId}/verify:
+    parameters:
+      - name: hostId
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: accountId
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      operationId: verifyHarnessAccount
+      responses:
+        "200":
+          description: Harness account verified
+  /v1/runtime-hosts/{hostId}/heartbeat:
+    parameters:
+      - name: hostId
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      operationId: heartbeatRuntimeHost
+      responses:
+        "200":
+          description: Runtime host heartbeat recorded
+  /v1/runtime/bindings/{bindingId}/host:
+    parameters:
+      - name: bindingId
+        in: path
+        required: true
+        schema:
+          type: string
+    put:
+      operationId: assignBindingHost
+      responses:
+        "200":
+          description: Binding host assigned
+  /v1/workspace-sessions/import:
+    post:
+      operationId: importWorkspaceSessions
+      responses:
+        "200":
+          description: Workspace sessions imported
+  /v1/workspace-sessions/scan:
+    post:
+      operationId: scanWorkspaceSessions
+      responses:
+        "200":
+          description: Workspace session scan result
+components:
+  schemas:
+    HostServiceStatus:
+      type: object
+      additionalProperties: false
+      required:
+        - status
+        - service
+        - protocol_version
+      properties:
+        status:
+          type: string
+          enum: [ok, ready, not_ready]
+        service:
+          type: string
+        protocol_version:
+          type: integer
+          format: int32
+          minimum: 1
+        database:
+          type: boolean
+    ConversationRuntimeStatus:
+      type: object
+      required:
+        - conversation_id
+        - agent_principal_id
+        - agent_name
+        - status
+        - queued_count
+        - active_command
+        - last_error
+      properties:
+        conversation_id:
+          type: string
+        agent_principal_id:
+          type: string
+        agent_name:
+          type: string
+        status:
+          type: string
+          enum:
+            - idle
+            - queued
+            - busy
+        queued_count:
+          type: integer
+          minimum: 0
+        active_command:
+          oneOf:
+            - $ref: "#/components/schemas/RuntimeStatusCommand"
+            - type: "null"
+        last_error:
+          type:
+            - string
+            - "null"
+    RuntimeStatusCommand:
+      type: object
+      required:
+        - command_id
+        - message_id
+        - turn_id
+        - status
+        - created_at
+        - updated_at
+        - lease_age_seconds
+        - attempt_count
+        - last_error
+      properties:
+        command_id:
+          type: string
+        message_id:
+          type: string
+        turn_id:
+          type: string
+        status:
+          type: string
+          enum:
+            - pending
+            - leased
+            - started
+            - heartbeating
+            - succeeded
+            - committed
+            - retry_scheduled
+            - dead_letter
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        lease_age_seconds:
+          type:
+            - integer
+            - "null"
+          minimum: 0
+        attempt_count:
+          type: integer
+          minimum: 0
+        last_error:
+          type:
+            - string
+            - "null"
+    RuntimePolicy:
+      type: object
+      required:
+        - conversation_id
+        - auto_mode
+        - max_auto_turns
+        - max_workflow_turns
+        - require_human_after_n_turns
+        - allow_agent_to_agent
+        - allow_file_write
+        - default_reviewer_agent_id
+        - default_coordinator_agent_id
+        - untagged_human_mode
+      properties:
+        conversation_id:
+          type: string
+        auto_mode:
+          type: string
+          enum:
+            - disabled
+            - mentioned_only
+            - metadata_only
+        max_auto_turns:
+          type: integer
+        max_workflow_turns:
+          type: integer
+        require_human_after_n_turns:
+          type: integer
+        allow_agent_to_agent:
+          type: boolean
+        allow_file_write:
+          type: boolean
+        default_reviewer_agent_id:
+          type:
+            - string
+            - "null"
+        default_coordinator_agent_id:
+          type:
+            - string
+            - "null"
+        untagged_human_mode:
+          type: string
+          enum:
+            - mentioned_only
+            - coordinator_only
+            - all_agents
+    UpsertRuntimePolicyRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        auto_mode:
+          type: string
+          enum:
+            - disabled
+            - mentioned_only
+            - metadata_only
+        max_auto_turns:
+          type: integer
+        max_workflow_turns:
+          type: integer
+        require_human_after_n_turns:
+          type: integer
+        allow_agent_to_agent:
+          type: boolean
+        allow_file_write:
+          type: boolean
+        default_reviewer_agent_id:
+          type: string
+        default_coordinator_agent_id:
+          type: string
+        untagged_human_mode:
+          type: string
+          enum:
+            - mentioned_only
+            - coordinator_only
+            - all_agents
+    PinnedConversation:
+      type: object
+      required:
+        - conversation_id
+        - pinned_at
+      properties:
+        conversation_id:
+          type: string
+        pinned_at:
+          type: string
+          format: date-time
+    ArchivedConversation:
+      type: object
+      required:
+        - conversation_id
+        - archived_at
+      properties:
+        conversation_id:
+          type: string
+        archived_at:
+          type: string
+          format: date-time
+    ChannelTaskStatus:
+      type: string
+      enum:
+        - todo
+        - in_progress
+        - blocked
+        - in_review
+        - done
+    ChannelTaskSourceKind:
+      type: string
+      enum:
+        - agent
+        - message
+    PrincipalType:
+      type: string
+      enum:
+        - human
+        - agent
+    ChannelTask:
+      type: object
+      additionalProperties: false
+      required:
+        - task_id
+        - conversation_id
+        - task_key
+        - title
+        - status
+        - source_kind
+        - version
+        - created_at
+        - updated_at
+      properties:
+        task_id:
+          type: string
+        conversation_id:
+          type: string
+        task_key:
+          type: string
+        title:
+          type: string
+        status:
+          $ref: "#/components/schemas/ChannelTaskStatus"
+        assignee_principal_id:
+          type: string
+        assignee_type:
+          $ref: "#/components/schemas/PrincipalType"
+        assignee_name:
+          type: string
+        blocked_reason:
+          type: string
+        context_label:
+          type: string
+        source_kind:
+          $ref: "#/components/schemas/ChannelTaskSourceKind"
+        source_message_id:
+          type: string
+        created_by:
+          type: string
+        created_by_type:
+          $ref: "#/components/schemas/PrincipalType"
+        updated_by:
+          type: string
+        updated_by_type:
+          $ref: "#/components/schemas/PrincipalType"
+        version:
+          type: integer
+          format: int64
+          minimum: 1
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    ChannelTaskVisibleValues:
+      type: object
+      additionalProperties: false
+      properties:
+        status:
+          $ref: "#/components/schemas/ChannelTaskStatus"
+        assignee_principal_id:
+          type: string
+        blocked_reason:
+          oneOf:
+            - type: string
+            - type: "null"
+        context_label:
+          oneOf:
+            - type: string
+            - type: "null"
+        source_kind:
+          $ref: "#/components/schemas/ChannelTaskSourceKind"
+        source_message_id:
+          type: string
+    ChannelTaskEvent:
+      type: object
+      additionalProperties: false
+      required:
+        - event_id
+        - task_id
+        - kind
+        - created_at
+      properties:
+        event_id:
+          type: string
+        task_id:
+          type: string
+        kind:
+          type: string
+        actor_principal_id:
+          type: string
+        actor_type:
+          $ref: "#/components/schemas/PrincipalType"
+        created_at:
+          type: string
+          format: date-time
+        resulting_version:
+          type: integer
+          format: int64
+        previous:
+          $ref: "#/components/schemas/ChannelTaskVisibleValues"
+        new:
+          $ref: "#/components/schemas/ChannelTaskVisibleValues"
+        workflow_kind:
+          type: string
+        status_effect:
+          $ref: "#/components/schemas/ChannelTaskStatus"
+        reason_code:
+          type: string
+    ChannelTaskDetail:
+      type: object
+      additionalProperties: false
+      required:
+        - task
+        - events
+      properties:
+        task:
+          $ref: "#/components/schemas/ChannelTask"
+        events:
+          type: array
+          description: Recent redacted task history, ordered oldest-to-newest within the returned window.
+          maxItems: 50
+          items:
+            $ref: "#/components/schemas/ChannelTaskEvent"
+    CreateChannelTaskRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - title
+        - idempotency_key
+      properties:
+        task_key:
+          type: string
+          description: >-
+            Optional. When omitted the server allocates a sequential
+            `TASK-{N}` key scoped to the conversation. Callers may still
+            pass an explicit key for backwards compatibility.
+        title:
+          type: string
+        assignee_principal_id:
+          type: string
+        status:
+          $ref: "#/components/schemas/ChannelTaskStatus"
+        context_label:
+          type: string
+        idempotency_key:
+          type: string
+    CreateChannelTaskFromMessageRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - message_id
+        - title
+        - assignee_principal_id
+      properties:
+        message_id:
+          type: string
+        title:
+          type: string
+        assignee_principal_id:
+          type: string
+        context_label:
+          oneOf:
+            - type: string
+            - type: "null"
+        idempotency_key:
+          type: string
+    PatchChannelTaskRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        status:
+          $ref: "#/components/schemas/ChannelTaskStatus"
+        assignee_principal_id:
+          type: string
+        blocked_reason:
+          oneOf:
+            - type: string
+            - type: "null"
+        context_label:
+          oneOf:
+            - type: string
+            - type: "null"

@@ -1,0 +1,211 @@
+/* ============================================================
+   Quote Reply – WeChat-style
+   ============================================================ */
+
+/* ---- Message actions menu (Slack-style three-dot dropdown) ---- */
+
+.msg-group {
+  position: relative;
+}
+
+.msg-actions {
+  position: absolute;
+  top: 4px;
+  right: 8px;
+  z-index: var(--z-raised);
+}
+
+.msg-actions-btn {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  opacity: 0;
+  transition: opacity var(--transition-fast), background var(--transition-fast), color var(--transition-fast);
+}
+
+.msg-group:hover .msg-actions-btn,
+.msg-group.touch-active .msg-actions-btn,
+.msg-actions-btn[aria-expanded="true"] {
+  opacity: 1;
+}
+
+.msg-actions-btn:hover,
+.msg-actions-btn[aria-expanded="true"] {
+  background: var(--accent-dim);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.msg-actions-menu {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: var(--space-1);
+  min-width: 120px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-sm);
+  padding: 4px 0;
+  z-index: var(--z-raised);
+}
+
+.msg-actions-menu-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: var(--space-2) var(--space-3);
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: var(--fs-md);
+  line-height: var(--lh-snug);
+}
+
+.msg-actions-menu-item:hover:not(:disabled) {
+  background: var(--bg-surface);
+  color: var(--text);
+}
+
+.msg-actions-menu-item:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* ---- Inline quote block (inside message bubble) ---- */
+
+.msg-quote {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  margin-bottom: var(--space-1);
+  background: var(--accent-tint);
+  border-radius: var(--radius-sm);
+  border-top: 2px solid var(--text-muted);
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background var(--transition-fast);
+  max-width: 100%;
+  overflow: hidden;
+}
+
+.msg-quote:hover {
+  background: var(--surface-hover);
+}
+
+.msg-quote-icon {
+  flex-shrink: 0;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+}
+
+.msg-quote-sender {
+  font-weight: 600;
+  flex-shrink: 0;
+  color: var(--text-secondary);
+}
+
+.msg-quote-sender::after {
+  content: ":";
+}
+
+.msg-quote-text {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.msg-quote-missing {
+  opacity: 0.5;
+  font-style: italic;
+}
+
+.msg-group.self .msg-quote {
+  border-top-color: rgba(255,255,255,0.3);
+  background: rgba(255,255,255,0.1);
+  color: rgba(255,255,255,0.7);
+}
+
+.msg-group.self .msg-quote:hover {
+  background: rgba(255,255,255,0.15);
+}
+
+.msg-group.self .msg-quote-sender {
+  color: rgba(255,255,255,0.8);
+}
+
+.msg-group.self .msg-quote-icon {
+  color: rgba(255,255,255,0.5);
+}
+
+/* ---- Reply preview card (above input bar) ---- */
+
+.reply-preview {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  margin-bottom: var(--space-2);
+  background: var(--accent-tint);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.reply-preview-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.reply-preview-label {
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.reply-preview-label strong {
+  color: var(--text);
+}
+
+.reply-preview-icon {
+  color: var(--accent);
+  font-size: var(--fs-md);
+}
+
+.reply-preview-text {
+  font-size: var(--fs-md);
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.reply-preview-close {
+  color: var(--text-muted);
+  transition: color var(--transition-fast), background var(--transition-fast);
+}
+
+.reply-preview-close:hover {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+
+/* ---- Message highlight flash (when scrolling to quoted message) ---- */
+
+@keyframes msg-highlight-flash {
+  0% { background: rgba(6,165,144,0.22); }
+  100% { background: transparent; }
+}
+
+.msg-highlight {
+  animation: msg-highlight-flash 1.5s ease-out;
+  border-radius: var(--radius-sm);
+}

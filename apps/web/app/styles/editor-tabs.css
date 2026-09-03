@@ -1,0 +1,498 @@
+/* ============================================================
+   Editor tab bar — signature band for the chat/IDE hybrid zone.
+   The one structurally distinct layout in the product deserves a
+   distinct visual signature: hairline amber glow on top edge marks
+   the zone as agent-adjacent workspace, not just another grey strip.
+   ============================================================ */
+.editor-tab-bar {
+  display: flex;
+  background: linear-gradient(180deg, #1a1a1a 0%, var(--bg-surface) 100%);
+  border-top: 1px solid rgba(217, 119, 6, 0.22);
+  border-bottom: 1px solid var(--border);
+  box-shadow: 0 -1px 16px rgba(217, 119, 6, 0.06);
+  overflow-x: auto;
+  flex-shrink: 0;
+}
+.editor-tab-bar::-webkit-scrollbar { height: 0; }
+
+.channel-conversation-tabs {
+  display: flex;
+  gap: var(--space-2);
+  padding: 0 var(--space-4);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-surface);
+  flex-shrink: 0;
+}
+
+.channel-task-board {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(240px, 280px));
+  align-items: stretch;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  overflow-x: auto;
+  overflow-y: hidden;
+  background: var(--bg);
+}
+
+.channel-task-board-state {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  place-items: center;
+  color: var(--text-secondary);
+  background: var(--bg);
+}
+
+.channel-task-board-state.error {
+  padding: var(--space-6);
+  color: var(--error);
+  text-align: center;
+}
+
+.channel-task-board-empty {
+  grid-column: 1 / -1;
+}
+
+.channel-task-column {
+  width: 100%;
+  min-width: 240px;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-surface);
+}
+
+.channel-task-column-header {
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: 0 var(--space-3);
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+
+.channel-task-column-header span:last-child {
+  min-width: 24px;
+  padding: 2px 6px;
+  border-radius: var(--radius-full);
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  text-align: center;
+  font-size: var(--fs-xs);
+}
+
+.channel-task-column-body {
+  flex: 1;
+  min-height: 280px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  overflow-y: auto;
+}
+
+.channel-task-empty {
+  min-height: 72px;
+  display: grid;
+  place-items: center;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-lg);
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+}
+
+.channel-task-card {
+  min-height: 228px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-elevated);
+  color: var(--text);
+  box-shadow: var(--shadow-sm);
+}
+
+.channel-task-card[aria-busy="true"] {
+  opacity: 0.72;
+}
+
+.channel-task-card-topline,
+.channel-task-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.channel-task-key {
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+.channel-task-status-mark {
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  color: var(--accent);
+  flex: 0 0 auto;
+}
+
+.channel-task-card h3 {
+  min-height: 40px;
+  margin: 0;
+  color: var(--text);
+  font-size: var(--fs-base);
+  line-height: var(--lh-snug);
+  letter-spacing: 0;
+  overflow-wrap: anywhere;
+}
+
+.channel-task-meta {
+  color: var(--text-secondary);
+  font-size: var(--fs-xs);
+}
+
+.channel-task-meta span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.channel-task-context,
+.channel-task-blocked {
+  padding: 6px 8px;
+  border-radius: var(--radius-md);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-snug);
+  overflow-wrap: anywhere;
+}
+
+.channel-task-context {
+  background: rgba(20, 184, 166, 0.09);
+  color: var(--text-secondary);
+}
+
+.channel-task-blocked {
+  border: 1px solid rgba(239, 68, 68, 0.24);
+  background: rgba(239, 68, 68, 0.08);
+  color: var(--text);
+}
+
+.channel-task-controls {
+  margin-top: auto;
+  display: grid;
+  gap: var(--space-2);
+  min-height: 104px;
+}
+
+.channel-task-control {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.channel-task-control-label {
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+}
+
+.channel-task-control-heading {
+  min-height: 18px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.channel-task-status-current {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: var(--fs-xs);
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.channel-task-controls select {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  height: 32px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg);
+  color: var(--text);
+  font-size: var(--fs-sm);
+  text-overflow: ellipsis;
+}
+
+.channel-task-status-controls {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) 32px;
+  gap: 4px;
+  min-width: 0;
+}
+
+.channel-task-status-controls button {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.channel-task-status-controls button:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--bg-surface);
+}
+
+.channel-task-status-controls button:disabled,
+.channel-task-controls select:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.channel-task-board-toast {
+  position: absolute;
+  right: var(--space-4);
+  bottom: var(--space-3);
+  max-width: min(420px, calc(100% - 32px));
+  padding: 8px 10px;
+  border: 1px solid rgba(239, 68, 68, 0.28);
+  border-radius: var(--radius-lg);
+  background: var(--bg-elevated);
+  color: var(--error);
+  font-size: var(--fs-sm);
+  box-shadow: var(--shadow-md);
+}
+
+.channel-task-create-modal {
+  max-width: 440px;
+}
+
+.channel-task-create-modal .modal-form label {
+  display: grid;
+  gap: 6px;
+}
+
+.channel-task-create-modal .modal-form label span {
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+}
+
+.channel-task-create-source {
+  max-height: 96px;
+  overflow: auto;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-snug);
+  overflow-wrap: anywhere;
+}
+
+.editor-tab {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding-right: var(--space-2);
+  /* Mono + uppercase tracking: tab labels feel like a terminal buffer
+   * manifest, not chrome. Small caps for the conv-name / filename keeps
+   * vertical rhythm tight. */
+  font-family: var(--font-brand);
+  font-size: var(--fs-xs);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  background: transparent;
+  border-right: 1px solid var(--border);
+  position: relative;
+  white-space: nowrap;
+  max-width: 200px;
+  transition: color var(--transition-fast), background var(--transition-fast);
+}
+/* The label half of a tab: the real click target for switching. */
+.editor-tab-main {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-2) var(--space-1) var(--space-2) var(--space-4);
+  letter-spacing: inherit;
+  text-transform: inherit;
+  cursor: pointer;
+}
+.editor-tab:hover { color: var(--text); background: rgba(217, 119, 6, 0.04); }
+
+/* Active tab: amber underline drawn as a pseudo-element so the 2px stroke
+ * is crisp and carries a soft glow, instead of a flat border. Unlike the
+ * detail / conversation tabs (a border that changes colour) it grows in
+ * from the label's start, because the inset + glow cannot be a border. */
+.editor-tab.active {
+  color: var(--agent-luminous);
+  background: linear-gradient(180deg, rgba(217, 119, 6, 0.06), transparent);
+}
+.editor-tab::after {
+  content: '';
+  position: absolute;
+  left: var(--space-4);
+  right: var(--space-4);
+  bottom: 0;
+  height: 2px;
+  background: var(--agent-luminous);
+  box-shadow: 0 0 10px rgba(251, 191, 36, 0.55);
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: transform var(--transition-fast);
+}
+.editor-tab.active::after {
+  transform: scaleX(1);
+}
+
+.editor-tab-icon {
+  display: flex;
+  align-items: center;
+  color: var(--text-tertiary);
+}
+.editor-tab.active .editor-tab-icon { color: var(--agent); }
+.editor-tab-name { overflow: hidden; text-overflow: ellipsis; }
+.editor-tab-dot {
+  width: 5px; height: 5px; border-radius: 50%;
+  background: var(--agent-luminous); flex-shrink: 0;
+  box-shadow: 0 0 6px rgba(251, 191, 36, 0.55);
+}
+
+/* Tab close: an amber hover tint ties it to the active-tab glow. */
+.editor-tab-close {
+  width: var(--control-sm);
+  height: var(--control-sm);
+  color: var(--text-tertiary);
+}
+.editor-tab-close:hover {
+  background: rgba(217, 119, 6, 0.14);
+  color: var(--agent-luminous);
+}
+
+/* ── Light theme — editor / conversation tab bar ────────────────────
+ * The dark-mode tab bar reads as a "terminal manifest": #1a1a1a→surface
+ * gradient + amber-luminous active tab + amber glow. On cream, that
+ * stack collapses into a black gradient slab cutting across the top of
+ * the chat area (the bar reported by the user as a "black gradient tab"). The
+ * light-mode bar drops the dark gradient, swaps the amber-luminous
+ * active treatment for cinnamon (which is the brand accent in light),
+ * and kills the heavy glow that doesn't belong on cream. */
+[data-theme="light"] .editor-tab-bar {
+  background: rgba(255, 255, 255, 0.6);
+  -webkit-backdrop-filter: saturate(140%) blur(10px);
+  backdrop-filter: saturate(140%) blur(10px);
+  border-top: 1px solid rgba(0, 0, 0, 0.04);
+  border-bottom: 1px solid var(--border);
+  box-shadow: none;
+}
+[data-theme="light"] .editor-tab {
+  color: #8F8678;
+  border-right-color: rgba(0, 0, 0, 0.04);
+}
+[data-theme="light"] .editor-tab:hover {
+  color: var(--text);
+  background: rgba(217, 119, 87, 0.05);
+}
+[data-theme="light"] .editor-tab.active {
+  color: var(--accent);
+  background: linear-gradient(180deg, rgba(217, 119, 87, 0.06), transparent);
+}
+[data-theme="light"] .editor-tab::after {
+  background: var(--accent);
+  box-shadow: 0 0 8px rgba(217, 119, 87, 0.30);
+}
+[data-theme="light"] .editor-tab.active .editor-tab-icon { color: var(--accent); }
+[data-theme="light"] .editor-tab-dot {
+  background: var(--accent);
+  box-shadow: 0 0 4px rgba(217, 119, 87, 0.40);
+}
+[data-theme="light"] .editor-tab-close:hover {
+  background: rgba(217, 119, 87, 0.10);
+  color: var(--accent);
+}
+
+/* ── Light theme — sidebar conversation rows ───────────────────────
+ * The dark-mode rows used 4% white hover, 6% teal active, and 4px
+ * radius. On cream that reads as "almost no hover", "barely-there
+ * active", and "form-button-list" geometry — the trio that makes a
+ * sidebar feel like a generic back-office template. Linear / Notion
+ * conversation rows are bigger radius + stronger active fill +
+ * textual emphasis. Below: 8px radius, cinnamon-tinted hover at 5%,
+ * cinnamon-tinted active at 9% with slightly bolder name text. */
+[data-theme="light"] .conv-item {
+  --conv-item-hover-bg: rgba(217, 119, 87, 0.05);
+  --conv-item-active-bg: rgba(217, 119, 87, 0.09);
+
+  border-radius: var(--radius-lg);
+}
+[data-theme="light"] .conv-item:hover {
+  background-color: var(--conv-item-hover-bg);
+  border-color: transparent;
+}
+[data-theme="light"] .conv-item.active {
+  background-color: var(--conv-item-active-bg);
+  border-color: transparent;
+}
+[data-theme="light"] .conv-item.active .conv-name {
+  color: var(--text);
+  font-weight: 600;
+}
+[data-theme="light"] .conv-item.selected {
+  background: rgba(217, 119, 87, 0.12);
+  border-color: rgba(217, 119, 87, 0.30);
+}
+[data-theme="light"] .conv-item:has(.conv-item-main:focus-visible) {
+  border-color: var(--accent);
+  box-shadow: var(--ring-accent);
+}
+
+/* AI rows in light mode use a warm fill without a decorative edge. */
+[data-theme="light"] .conv-item:has(.conv-ai-badge) {
+  --conv-item-hover-bg: rgba(184, 101, 28, 0.05);
+  --conv-item-active-bg: rgba(184, 101, 28, 0.09);
+}
+
+/* Unread badge — saturated cinnamon, white text. */
+[data-theme="light"] .conv-item .conv-unread {
+  background: var(--accent);
+  color: var(--on-accent);
+  box-shadow: 0 1px 3px rgba(217, 119, 87, 0.35);
+}
+
+/* Preview / time secondary text — pull the contrast back so the row
+ * reads as a clean two-line card (name big, preview soft). */
+[data-theme="light"] .conv-item .conv-preview {
+  color: #8F8678;
+}
+[data-theme="light"] .conv-item .conv-time {
+  color: #B0A89A;
+}

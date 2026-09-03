@@ -1,0 +1,58 @@
+{
+  "name": "choruz",
+  "license": "MIT",
+  "private": true,
+  "packageManager": "pnpm@10.29.2",
+  "engines": {
+    "node": ">=24",
+    "pnpm": ">=10"
+  },
+  "scripts": {
+    "host:start": "bash ./infra/host/start.sh",
+    "host:status": "bash ./infra/host/status.sh",
+    "host:stop": "bash ./infra/host/stop.sh",
+    "host:smoke": "bash ./infra/host/smoke.sh",
+    "db:migrate": "bash ./infra/host/migrate.sh up",
+    "db:reset": "bash ./infra/host/migrate.sh reset",
+    "db:migration:smoke": "bash ./infra/host/migration_smoke.sh",
+    "api:smoke": "bash ./infra/host/api_smoke.sh",
+    "smoke:real-harness": "bash ./infra/host/smoke/real-harness-platform-smoke.sh",
+    "smoke:real-harness:check": "bash -n ./infra/host/smoke/real-harness-platform-smoke.sh && node --disable-warning=ExperimentalWarning --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types --test ./infra/host/smoke/real-harness-platform-smoke.test.ts",
+    "backup:create": "bash ./infra/ops/bin/backup.sh",
+    "backup:restore": "bash ./infra/ops/bin/restore.sh",
+    "backup:smoke": "bash ./infra/host/backup_smoke.sh",
+    "perf:install-k6": "bash ./infra/host/perf/install_k6.sh",
+    "perf:ws:smoke": "bash ./infra/host/perf_ws_smoke.sh",
+    "ops:check": "bash ./infra/ops/check.sh",
+    "release:package": "bash ./infra/ops/bin/release.sh package",
+    "release:deploy": "bash ./infra/ops/bin/release.sh deploy",
+    "release:rollback": "bash ./infra/ops/bin/rollback.sh",
+    "security:check": "bash ./scripts/security/check.sh",
+    "web:test": "pnpm --dir apps/web test",
+    "web:e2e": "bash ./infra/host/web_e2e.sh",
+    "web:e2e:full": "CHORUZ_WEB_E2E_FULL=1 bash ./infra/host/web_e2e.sh",
+    "web:build": "pnpm --dir apps/web build",
+    "web:check": "pnpm --dir apps/web check",
+    "preflight": "bash ./scripts/preflight.sh",
+    "preflight:quick": "bash ./scripts/preflight.sh --quick",
+    "preflight:full": "bash ./scripts/preflight.sh --full",
+    "dev:all": "bash infra/host/dev.sh",
+    "dev:web": "bash infra/host/web_dev.sh",
+    "reload:local": "bash infra/host/dev_reload.sh",
+    "stop:all": "bash infra/host/dev_stop.sh"
+  },
+  "pnpm": {
+    "overrides": {
+      "axios": "1.18.1",
+      "browserslist": "4.28.7",
+      "fast-uri": "3.1.6",
+      "find-my-way": "9.7.0",
+      "form-data": "4.0.6",
+      "js-yaml": "4.3.1",
+      "nanoid": "3.3.18",
+      "postcss": "8.5.18",
+      "sharp": "0.35.0",
+      "ws": "8.21.0"
+    }
+  }
+}

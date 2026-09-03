@@ -1,0 +1,258 @@
+/* Pending attachments stay in the composer until the user sends them. */
+.attachment-queue {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding: 0 0 var(--space-2);
+}
+
+.attachment-queue-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+}
+
+.attachment-queue-icon {
+  flex: 0 0 auto;
+  font-size: var(--fs-sm);
+}
+
+.attachment-queue-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 220px;
+  color: var(--text);
+  font-size: var(--fs-sm);
+}
+
+.attachment-queue-size {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+}
+
+.attachment-queue-remove {
+  width: var(--control-sm);
+  height: var(--control-sm);
+  color: var(--text-muted);
+}
+
+.attachment-queue-remove:hover:not(:disabled) {
+  background: var(--bg-surface);
+  color: var(--text);
+}
+
+/* Composer controls share one box; only the skins differ. */
+.attach-btn,
+.send-btn {
+  width: var(--control-md);
+  height: var(--control-md);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  border-radius: var(--radius-full);
+  cursor: pointer;
+}
+
+.attach-btn {
+  color: var(--text-secondary);
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.attach-btn:hover:not(:disabled) {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.attach-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.send-btn {
+  background: var(--gradient-send);
+  color: var(--on-accent);
+  font-size: var(--fs-lg);
+  box-shadow: var(--glow-send);
+  transition: transform var(--transition-fast), box-shadow var(--transition-fast), filter var(--transition-fast);
+}
+
+.send-btn:hover {
+  transform: translateY(-1px) scale(1.04);
+  filter: brightness(1.08);
+  box-shadow: 0 10px 26px rgba(6, 165, 144, 0.55);
+}
+
+.send-btn:active {
+  transform: translateY(0) scale(0.98);
+}
+
+.send-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+  box-shadow: none;
+  transform: none;
+  filter: none;
+}
+
+/* ---- Mention dropdown ---- */
+
+.mention-dropdown {
+  position: absolute;
+  bottom: 100%;
+  left: 24px;
+  right: 24px;
+  margin-bottom: var(--space-1);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  max-height: 200px;
+  overflow-y: auto;
+  z-index: var(--z-menu);
+}
+
+.mention-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: var(--space-3) var(--space-4);
+  cursor: pointer;
+  transition: background var(--transition-fast);
+}
+
+.mention-item:hover,
+.mention-item.highlighted {
+  background: var(--accent-dim);
+}
+
+.mention-item .mention-name {
+  font-weight: 500;
+  font-size: var(--fs-base);
+}
+
+.mention-item .mention-type {
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+}
+
+/* ---- Detail panel ---- */
+
+.detail-panel {
+  width: 320px;
+  min-width: 320px;
+  border-left: 1px solid var(--border);
+  background: var(--bg-surface);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.detail-panel::-webkit-scrollbar { width: 4px; }
+.detail-panel::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.detail-header {
+  padding: var(--space-4) var(--space-5);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+}
+
+.detail-header h3 {
+  font-size: var(--fs-base);
+  font-weight: 600;
+}
+
+.detail-header button {
+  color: var(--text-secondary);
+  transition: color var(--transition-fast);
+}
+
+.detail-header button:hover {
+  color: var(--text);
+}
+
+.detail-section {
+  padding: var(--space-4) var(--space-5);
+  border-bottom: 1px solid var(--border);
+}
+
+/* Small bordered text button (section header Show / Hide, Refresh, manage-mode batch actions). */
+.detail-section-action,
+.company-batch-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 2px var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+  min-height: var(--control-sm);
+}
+.detail-section-action:hover,
+.company-batch-btn:hover:not(:disabled) {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+/* Conversation identity block above the tabs. */
+.detail-identity {
+  text-align: center;
+  margin-bottom: var(--space-3);
+}
+.detail-identity .avatar {
+  margin: 0 auto;
+}
+.detail-identity-title {
+  margin-top: 10px;
+  font-size: var(--fs-lg);
+  font-weight: 600;
+}
+.detail-identity-kind {
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+}
+
+.detail-add-member-btn {
+  border-radius: 50%;
+  border: 1px dashed var(--text-muted);
+  color: var(--text-secondary);
+  font-size: var(--fs-lg);
+  transition: color var(--transition-fast), border-color var(--transition-fast);
+}
+.detail-add-member-btn:hover {
+  color: var(--text);
+  border-color: var(--text);
+}
+.detail-add-member-panel {
+  margin-top: var(--space-2);
+  padding: var(--space-2) 0;
+  border-top: 1px solid var(--border);
+}
+.detail-add-member-list {
+  max-height: 200px;
+  overflow-y: auto;
+}
+.detail-search-results {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}

@@ -1,0 +1,58 @@
+[package]
+name = "choruz-api-gateway"
+version.workspace = true
+edition.workspace = true
+description = "The Axum process that serves every /v1 route, the WebSockets and the health endpoints over the store"
+license.workspace = true
+
+[dependencies]
+choruz-agent-runtime = { path = "../../crates/choruz-agent-runtime" }
+aes-gcm.workspace = true
+choruz-application = { path = "../../crates/choruz-application" }
+choruz-auth = { path = "../../crates/choruz-auth" }
+base64.workspace = true
+choruz-common = { path = "../../crates/choruz-common" }
+deadpool-postgres.workspace = true
+choruz-domain = { path = "../../crates/choruz-domain" }
+choruz-harness-login = { path = "../../crates/choruz-harness-login" }
+choruz-ids = { path = "../../crates/choruz-ids" }
+choruz-session = { path = "../../crates/choruz-session" }
+choruz-store = { path = "../../crates/choruz-store" }
+hex.workspace = true
+hmac.workspace = true
+hkdf.workspace = true
+infer.workspace = true
+p256.workspace = true
+choruz-infrastructure = { path = "../../crates/choruz-infrastructure" }
+axum.workspace = true
+futures-util.workspace = true
+glob.workspace = true
+uuid.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+chrono.workspace = true
+portable-pty = "0.8"
+rand.workspace = true
+reqwest.workspace = true
+rustls.workspace = true
+serde.workspace = true
+sha2.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tokio-postgres.workspace = true
+tokio-tungstenite.workspace = true
+tower.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+futures-util = "0.3.32"
+serde_json.workspace = true
+tempfile = "3"
+tokio.workspace = true
+tokio-postgres.workspace = true
+tower.workspace = true
+uuid.workspace = true
+
+[lints]
+workspace = true

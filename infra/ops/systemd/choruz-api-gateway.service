@@ -1,0 +1,23 @@
+[Unit]
+Description=Choruz api-gateway
+After=network.target postgresql.service
+Requires=postgresql.service
+
+[Service]
+Type=simple
+User=choruz
+Group=choruz
+LogsDirectory=choruz
+LogsDirectoryMode=0750
+WorkingDirectory=/srv/choruz/releases/current
+Environment=CHORUZ_API_PORT=3000
+Environment=CHORUZ_DATABASE_URL=postgres://choruz@127.0.0.1:5432/choruz
+Environment=PATH=/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin
+ExecStart=/srv/choruz/releases/current/bin/api-gateway
+Restart=always
+RestartSec=2
+StandardOutput=append:/var/log/choruz/api-gateway.log
+StandardError=append:/var/log/choruz/api-gateway.log
+
+[Install]
+WantedBy=multi-user.target

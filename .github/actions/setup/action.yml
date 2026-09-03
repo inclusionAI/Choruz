@@ -1,0 +1,82 @@
+name: Choruz CI setup
+description: Toolchains and caches shared by the Linux CI jobs.
+
+inputs:
+  rust:
+    description: Install the pinned Rust toolchain and restore the cargo cache.
+    default: "false"
+  cache-key:
+    description: rust-cache shared key; jobs that build the same profile share one.
+    default: "build"
+  node:
+    description: Install Node, pnpm and the JS workspace dependencies.
+    default: "false"
+  postgres:
+    description: Put the runner's PostgreSQL server binaries on PATH.
+    default: "false"
+  playwright:
+    description: Install the Chromium build Playwright expects (cached).
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - if: inputs.rust == 'true'
+      uses: dtolnay/rust-toolchain@35d8a35b823d6c20db516f5c35eb0a9640942c17 # 1.94.0
+    - if: inputs.rust == 'true'
+      uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      with:
+        shared-key: ${{ inputs.cache-key }}
+        # Caches are written from main only. PR jobs read them, so parallel
+        # jobs never race to save and the repository's cache quota stays small.
+        save-if: ${{ github.ref == 'refs/heads/main' }}
+    # rust-cache only keeps dependency artifacts; sccache caches every rustc
+    # invocation by content hash, so unchanged workspace crates are fetched
+    # instead of recompiled (https://github.com/mozilla/sccache/blob/main/docs/GHA.md).
+    - if: inputs.rust == 'true'
+      uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+    - if: inputs.rust == 'true'
+      shell: bash
+      run: |
+        echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+        echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
+
+    - if: inputs.node == 'true'
+      uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+      with: { version: 10.29.2 }
+    - if: inputs.node == 'true'
+      uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      with: { node-version: "24", cache: pnpm }
+    - if: inputs.node == 'true'
+      shell: bash
+      run: pnpm install --frozen-lockfile
+
+    - if: inputs.postgres == 'true'
+      shell: bash
+      run: |
+        # ubuntu-latest ships PostgreSQL, but initdb/pg_ctl are not on PATH.
+        if ! ls -d /usr/lib/postgresql/*/bin >/dev/null 2>&1; then
+          sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-16
+        fi
+        pg_bin="$(ls -d /usr/lib/postgresql/*/bin | sort -V | tail -n 1)"
+        echo "$pg_bin" >> "$GITHUB_PATH"
+        # Debian's PostgreSQL puts its unix socket under /var/run/postgresql,
+        # which only the postgres user may write to; the clusters CI starts
+        # run as the runner user.
+        sudo install -d -o "$(id -un)" -g "$(id -gn)" /var/run/postgresql
+        echo "CHORUZ_PG_USER=$(id -un)" >> "$GITHUB_ENV"
+
+    - if: inputs.playwright == 'true'
+      id: playwright
+      shell: bash
+      run: echo "version=$(node -p "require('./apps/web/node_modules/@playwright/test/package.json').version")" >> "$GITHUB_OUTPUT"
+    - if: inputs.playwright == 'true'
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ~/.cache/ms-playwright
+        key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}
+    - if: inputs.playwright == 'true'
+      shell: bash
+      run: |
+        pnpm --dir apps/web exec playwright install-deps chromium
+        pnpm --dir apps/web exec playwright install chromium ffmpeg

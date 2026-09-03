@@ -1,0 +1,441 @@
+name: ci
+
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    branches: [main]
+    # `labeled` lets the ci-full label ask for the full e2e suite.
+    types: [opened, synchronize, reopened, labeled]
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  # No debuginfo for dev/test builds: smaller artifacts, faster compile and
+  # link, better cache hit rate. Release builds are unaffected.
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  # Every job is its own machine, so the ports only have to be free on it.
+  CHORUZ_PG_HOST: 127.0.0.1
+  CHORUZ_PG_PORT: "54329"
+  CHORUZ_API_PORT: "30100"
+  CHORUZ_WEB_PORT: "31100"
+  CHORUZ_PIPELINE_METRICS_PORT: "32100"
+
+# The PR gate jobs also run on push to main: that run is what writes the
+# caches PR jobs read, and it keeps main itself verified. On pull requests
+# the `changes` job decides which of them apply to the diff.
+jobs:
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      ci: ${{ steps.filter.outputs.ci }}
+      rust: ${{ steps.filter.outputs.rust }}
+      web: ${{ steps.filter.outputs.web }}
+      db: ${{ steps.filter.outputs.db }}
+      e2e: ${{ steps.filter.outputs.e2e }}
+      bridge: ${{ steps.filter.outputs.bridge }}
+      gateway: ${{ steps.filter.outputs.gateway }}
+      ops: ${{ steps.filter.outputs.ops }}
+      lifecycle: ${{ steps.filter.outputs.lifecycle }}
+      docs_only: ${{ steps.e2e.outputs.docs_only }}
+      vitest: ${{ steps.e2e.outputs.vitest }}
+      vitest_files: ${{ steps.e2e.outputs.vitest_files }}
+      cargo_args: ${{ steps.rust.outputs.cargo_args }}
+      rust_count: ${{ steps.rust.outputs.count }}
+      e2e_specs: ${{ steps.e2e.outputs.specs }}
+      e2e_shard_count: ${{ steps.e2e.outputs.shard_count }}
+      e2e_shards: ${{ steps.e2e.outputs.shards }}
+      full: ${{ steps.required.outputs.full }}
+      required: ${{ steps.required.outputs.list }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with: { persist-credentials: false }
+      - if: github.event_name != 'push'
+        id: filter
+        uses: dorny/paths-filter@0e4a8c6effa4802afeda77dc8d303f8176d7dfad # v3.0.4
+        with:
+          filters: |
+            # Only the parts of .github that CI executes; CODEOWNERS, the
+            # pull request template and the like are prose.
+            ci: &ci
+              - '.github/workflows/**'
+              - '.github/actions/**'
+              - '.github/scripts/**'
+            rust: &rust
+              - *ci
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - '.cargo/**'
+              - 'rust-toolchain*'
+              - 'rustfmt.toml'
+              - 'crates/**'
+              - 'services/**'
+              - 'apps/choruz-*/**'
+              - 'migrations/**'
+              - 'infra/host/setup_test_database.sh'
+              - 'agent-templates/**'
+            web: &web
+              - *ci
+              - 'apps/web/**'
+              - 'agent-templates/**'
+              - 'package.json'
+              - 'pnpm-lock.yaml'
+              - 'pnpm-workspace.yaml'
+            db:
+              - *rust
+              - 'infra/host/**'
+              - 'scripts/historical-migrations.sha256'
+            e2e:
+              - *rust
+              - *web
+              - 'infra/host/**'
+            # Each static check runs only for the files it reads.
+            bridge:
+              - *ci
+              - 'services/choruz-bridge/**'
+              - 'pnpm-lock.yaml'
+            gateway:
+              - *ci
+              - 'services/remote-control-gateway/**'
+              - 'pnpm-lock.yaml'
+            ops:
+              - *ci
+              - 'infra/ops/**'
+            lifecycle:
+              - *ci
+              - 'scripts/**'
+              - 'infra/host/**'
+            notes:
+              - *ci
+              - '.agents/notes/**'
+              - 'scripts/verify_agent_notes.py'
+              - 'scripts/tests/test_verify_agent_notes.py'
+      # Which Playwright specs the change needs, and how many shards they
+      # fill: the P0 smoke set when the change is not contained, otherwise
+      # the specs of the touched feature (see select_e2e_specs.py).
+      - name: List the changed files
+        if: github.event_name != 'push'
+        env:
+          PR: ${{ github.event.pull_request.number }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/pulls/$PR/files" --paginate --jq '.[].filename' \
+            | tee "$RUNNER_TEMP/changed-files.txt"
+      - name: Pick the e2e specs and web unit tests for this change
+        id: e2e
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT" = push ]; then
+            python3 .github/scripts/select_e2e_specs.py --all | tee -a "$GITHUB_OUTPUT"
+          else
+            python3 .github/scripts/select_e2e_specs.py < "$RUNNER_TEMP/changed-files.txt" | tee -a "$GITHUB_OUTPUT"
+          fi
+      # Rust builds and tests only the crates the change touches and the
+      # crates that depend on them (see select_rust_packages.py).
+      - name: Pick the cargo packages for this change
+        id: rust
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT" = push ]; then
+            python3 .github/scripts/select_rust_packages.py --all | tee -a "$GITHUB_OUTPUT"
+          else
+            python3 .github/scripts/select_rust_packages.py < "$RUNNER_TEMP/changed-files.txt" | tee -a "$GITHUB_OUTPUT"
+          fi
+      - name: List the jobs this event must pass
+        id: required
+        env:
+          EVENT: ${{ github.event_name }}
+          CI_FILES: ${{ steps.filter.outputs.ci }}
+          RUST: ${{ steps.filter.outputs.rust }}
+          WEB: ${{ steps.filter.outputs.web }}
+          DB: ${{ steps.filter.outputs.db }}
+          E2E: ${{ steps.filter.outputs.e2e }}
+          E2E_SHARDS: ${{ steps.e2e.outputs.shard_count }}
+          RUST_COUNT: ${{ steps.rust.outputs.count }}
+          DOCS_ONLY: ${{ steps.e2e.outputs.docs_only }}
+          # The full e2e suite runs on main, on a change to the workflow
+          # itself, and on request: the ci-full label or a label naming a
+          # high-risk area (see docs/testing/pr-test-policy.md).
+          FULL: ${{ github.event_name == 'push' || steps.filter.outputs.ci == 'true' || contains(github.event.pull_request.labels.*.name, 'ci-full') || contains(github.event.pull_request.labels.*.name, 'database') || contains(github.event.pull_request.labels.*.name, 'security') }}
+        run: |
+          if [ "$EVENT" = push ]; then
+            list="rust-lint,rust-test,web,checks,db-smoke,e2e,e2e-full,perf,release-package"
+          else
+            # A documentation-only change requires no job at all.
+            list=""
+            add() { list="${list:+$list,}$1"; }
+            [ "$DOCS_ONLY" != true ] && add checks
+            [ "$RUST" = true ] && [ "$RUST_COUNT" != 0 ] && add rust-lint && add rust-test
+            [ "$WEB" = true ] && add web
+            [ "$DB" = true ] && add db-smoke
+            [ "$E2E" = true ] && [ "$E2E_SHARDS" != 0 ] && add e2e
+            [ "$FULL" = true ] && add e2e-full
+          fi
+          echo "full=$FULL" >> "$GITHUB_OUTPUT"
+          echo "list=$list" >> "$GITHUB_OUTPUT"
+          echo "required: $list"
+
+  rust-lint:
+    name: Rust lint
+    needs: changes
+    if: (github.event_name == 'push' || needs.changes.outputs.rust == 'true') && needs.changes.outputs.rust_count != '0'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with: { persist-credentials: false }
+      - uses: ./.github/actions/setup
+        with: { rust: "true", cache-key: lint }
+      - name: Rust fmt
+        run: cargo fmt --check
+      # On pull requests only the crates the change touches (and their
+      # dependents) are linted; pushes to main lint the whole workspace.
+      - name: Rust clippy
+        run: cargo clippy ${{ needs.changes.outputs.cargo_args }} --all-targets -- -D warnings
+
+  rust-test:
+    name: Rust tests
+    needs: changes
+    if: (github.event_name == 'push' || needs.changes.outputs.rust == 'true') && needs.changes.outputs.rust_count != '0'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with: { persist-credentials: false }
+      - uses: ./.github/actions/setup
+        with: { rust: "true", cache-key: test, postgres: "true" }
+      - name: Start PostgreSQL
+        run: |
+          initdb -D "$RUNNER_TEMP/pgdata" --auth=trust --username="$CHORUZ_PG_USER" >/dev/null
+          {
+            echo "listen_addresses = '127.0.0.1'"
+            echo "port = $CHORUZ_PG_PORT"
+          } >> "$RUNNER_TEMP/pgdata/postgresql.conf"
+          if ! pg_ctl -D "$RUNNER_TEMP/pgdata" -l "$RUNNER_TEMP/postgres.log" start; then
+            cat "$RUNNER_TEMP/postgres.log"; exit 1
+          fi
+      - name: Rust tests
+        run: |
+          export CHORUZ_REQUIRE_TEST_DATABASE=1
+          source ./infra/host/setup_test_database.sh
+          cargo test ${{ needs.changes.outputs.cargo_args }}
+
+  web:
+    name: Web
+    needs: changes
+    if: github.event_name == 'push' || needs.changes.outputs.web == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with: { persist-credentials: false }
+      - uses: ./.github/actions/setup
+        with: { node: "true" }
+      # On pull requests vitest runs only the tests that import the changed
+      # files; a change to the harness (config, lockfile) runs them all.
+      - name: Web unit tests
+        if: needs.changes.outputs.vitest != 'none'
+        env:
+          VITEST: ${{ needs.changes.outputs.vitest }}
+          VITEST_FILES: ${{ needs.changes.outputs.vitest_files }}
+        run: |
+          if [ "$VITEST" = related ]; then
+            # shellcheck disable=SC2086
+            pnpm --dir apps/web exec vitest related --run $VITEST_FILES
+          else
+            pnpm web:test
+          fi
+      - name: Web typecheck
+        run: pnpm web:check
+      - name: Web build
+        run: pnpm web:build
+
+  # One job, because each step is seconds and a job costs ~40 s of setup;
+  # every step runs only for the files it reads. The security scan (trivy
+  # looks for secrets in every file) runs for any non-documentation change.
+  checks:
+    name: Static checks
+    needs: changes
+    if: github.event_name == 'push' || needs.changes.outputs.docs_only != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PUSH: ${{ github.event_name == 'push' }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with: { persist-credentials: false }
+      - uses: ./.github/actions/setup
+        with: { node: "true" }
+      - name: Install trivy and cargo-deny
+        run: |
+          curl -fsSL -o /tmp/trivy.tar.gz https://github.com/aquasecurity/trivy/releases/download/v0.69.3/trivy_0.69.3_Linux-64bit.tar.gz
+          tar -xzf /tmp/trivy.tar.gz -C /tmp trivy
+          sudo install -m 755 /tmp/trivy /usr/local/bin/trivy
+          curl -fsSL -o /tmp/cargo-deny.tar.gz https://github.com/EmbarkStudios/cargo-deny/releases/download/0.20.2/cargo-deny-0.20.2-x86_64-unknown-linux-musl.tar.gz
+          tar -xzf /tmp/cargo-deny.tar.gz -C /tmp
+          sudo install -m 755 /tmp/cargo-deny-0.20.2-x86_64-unknown-linux-musl/cargo-deny /usr/local/bin/cargo-deny
+      - name: Cache trivy database
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/trivy
+          key: trivy-db-${{ github.run_id }}
+          restore-keys: trivy-db-
+      - name: CI gate policy tests
+        if: env.PUSH == 'true' || needs.changes.outputs.ci == 'true'
+        run: python3 -m unittest discover .github/scripts/tests
+      - name: Host lifecycle policy tests
+        if: env.PUSH == 'true' || needs.changes.outputs.lifecycle == 'true'
+        run: bash ./infra/host/tests/process_lifecycle.test.sh
+      - name: Agent Notes
+        if: env.PUSH == 'true' || needs.changes.outputs.notes == 'true'
+        run: |
+          python3 -m unittest discover scripts/tests
+          python3 scripts/verify_agent_notes.py
+      - name: Bridge build
+        if: env.PUSH == 'true' || needs.changes.outputs.bridge == 'true'
+        run: pnpm --dir services/choruz-bridge build
+      - name: Remote Control Gateway checks
+        if: env.PUSH == 'true' || needs.changes.outputs.gateway == 'true'
+        run: |
+          pnpm --dir services/remote-control-gateway check
+          pnpm --dir services/remote-control-gateway test
+      - name: Security checks
+        run: pnpm security:check
+      - name: Ops lint
+        if: env.PUSH == 'true' || needs.changes.outputs.ops == 'true'
+        run: pnpm ops:check
+
+  db-smoke:
+    name: DB and API smoke
+    needs: changes
+    if: github.event_name == 'push' || needs.changes.outputs.db == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with: { persist-credentials: false }
+      - uses: ./.github/actions/setup
+        with: { rust: "true", cache-key: build, node: "true", postgres: "true" }
+      - name: Migration smoke
+        run: pnpm db:migration:smoke
+      - name: API smoke
+        run: pnpm api:smoke
+
+  e2e:
+    name: Web E2E (${{ matrix.shard }}/${{ needs.changes.outputs.e2e_shard_count }})
+    needs: changes
+    if: (github.event_name == 'push' || needs.changes.outputs.e2e == 'true') && needs.changes.outputs.e2e_shard_count != '0'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.changes.outputs.e2e_shards) }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with: { persist-credentials: false }
+      - uses: ./.github/actions/setup
+        with: { rust: "true", cache-key: build, node: "true", postgres: "true", playwright: "true" }
+      # The script is called directly: `pnpm run ... --` forwards the literal
+      # "--" to Playwright, which then reads --shard as a file pattern.
+      - name: Web E2E
+        run: |
+          bash ./infra/host/web_e2e.sh ${{ needs.changes.outputs.e2e_specs }} --shard=${{ matrix.shard }}/${{ needs.changes.outputs.e2e_shard_count }}
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: playwright-e2e-${{ matrix.shard }}
+          path: |
+            apps/web/playwright-report
+            apps/web/test-results
+          if-no-files-found: ignore
+
+  e2e-full:
+    name: Web E2E full (${{ matrix.shard }}/4)
+    needs: changes
+    if: needs.changes.outputs.full == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with: { persist-credentials: false }
+      - uses: ./.github/actions/setup
+        with: { rust: "true", cache-key: build, node: "true", postgres: "true", playwright: "true" }
+      - name: Web E2E full
+        run: CHORUZ_WEB_E2E_FULL=1 bash ./infra/host/web_e2e.sh --shard=${{ matrix.shard }}/4
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: playwright-full-${{ matrix.shard }}
+          path: |
+            apps/web/playwright-report
+            apps/web/test-results
+          if-no-files-found: ignore
+
+  perf:
+    name: Performance smoke
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with: { persist-credentials: false }
+      - uses: ./.github/actions/setup
+        # The perf smoke runs a release choruz-api-gateway, so it shares the
+        # release-package cache.
+        with: { rust: "true", cache-key: release, node: "true", postgres: "true" }
+      - name: Install k6
+        run: bash ./infra/host/perf/install_k6.sh
+      - name: Performance smoke
+        run: pnpm perf:ws:smoke
+
+  release-package:
+    name: Release packaging
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with: { persist-credentials: false }
+      - uses: ./.github/actions/setup
+        with: { rust: "true", cache-key: release, node: "true" }
+      - name: Release packaging
+        run: pnpm release:package
+
+  required:
+    name: CI (linux) required
+    if: always()
+    needs: [changes, rust-lint, rust-test, web, checks, db-smoke, e2e, e2e-full, perf, release-package]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with: { persist-credentials: false }
+      - name: Require successful applicable dependencies
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          NEEDS: ${{ toJSON(needs) }}
+          # Jobs the changes job skipped are not required; a job that was
+          # skipped for any other reason (or failed) still fails the gate.
+          REQUIRED_NEEDS: ${{ needs.changes.outputs.required }}
+        run: python3 .github/scripts/check_ci_results.py

@@ -1,0 +1,138 @@
+/* ============================================================
+   Micro-interactions: fade-in, stagger, hover polish
+   ============================================================ */
+
+/* Message bubbles: subtle fade-in on appear */
+@keyframes msg-fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.msg-group {
+  animation: msg-fade-in var(--duration-fast) var(--ease-out) both;
+}
+
+/* ---- Dashboard loading skeleton ---- */
+
+@keyframes skeleton-shimmer {
+  0%   { background-position: -400px 0; }
+  100% { background-position: 400px 0; }
+}
+
+.skeleton-line,
+.skeleton-circle {
+  background: linear-gradient(
+    90deg,
+    var(--bg-elevated) 25%,
+    color-mix(in srgb, var(--text) 7%, var(--bg-elevated)) 50%,
+    var(--bg-elevated) 75%
+  );
+  background-size: 800px 100%;
+  animation: skeleton-shimmer 1.6s ease-in-out infinite;
+  border-radius: var(--radius-sm);
+}
+
+.skeleton-circle {
+  border-radius: var(--radius-full);
+  flex-shrink: 0;
+}
+
+.skeleton-shell {
+  display: flex;
+  height: 100vh;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+.skeleton-sidebar {
+  width: 320px;
+  min-width: 320px;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-surface);
+  border-right: 1px solid var(--border);
+}
+
+.skeleton-sidebar-header {
+  padding: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--border);
+}
+
+.skeleton-sidebar-search {
+  padding: var(--space-3) var(--space-4);
+}
+
+.skeleton-sidebar-list {
+  flex: 1;
+  padding: 4px 12px 12px;
+}
+
+/* Mirrors .conv-item-main so the real list lands on the same rows. */
+.skeleton-conv-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 58px;
+  padding: var(--space-3);
+}
+
+.skeleton-conv-text {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.skeleton-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.skeleton-header {
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.skeleton-messages {
+  flex: 1;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.skeleton-msg {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.skeleton-msg-self {
+  flex-direction: row-reverse;
+}
+
+.skeleton-msg-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.skeleton-msg-self .skeleton-msg-body {
+  align-items: flex-end;
+}
+
+.skeleton-input {
+  padding: 12px 20px 20px;
+  border-top: 1px solid var(--border);
+}
+
+@media (max-width: 699px) {
+  .skeleton-sidebar { display: none; }
+}

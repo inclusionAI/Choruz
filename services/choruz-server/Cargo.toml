@@ -1,0 +1,20 @@
+[package]
+name = "choruz-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Headless Choruz host. Starts embedded Postgres + choruz-api-gateway + pipeline, prints the gateway port to stdout, blocks until killed. Used as the SSH-side endpoint when a client connects to a remote instance (VS Code Remote SSH pattern)."
+
+[dependencies]
+choruz-infrastructure = { path = "../../crates/choruz-infrastructure" }
+choruz-supervisor = { path = "../../crates/choruz-supervisor" }
+tokio = { workspace = true }
+tracing.workspace = true
+ctrlc = "3.4"
+
+[[bin]]
+name = "choruz-server"
+path = "src/main.rs"
+
+[lints]
+workspace = true

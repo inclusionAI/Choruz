@@ -1,0 +1,34 @@
+/.runtime/
+/apps/web/.runtime/
+/apps/web/dev_server.log
+/apps/web/.next/
+/apps/web/tests/screenshots/
+node_modules/
+.pnpm-store/
+/releases/
+/target/
+__pycache__/
+*.pyc
+.env
+.env.*
+.DS_Store
+/models/
+
+# Next.js incremental build cache
+**/*.tsbuildinfo
+
+# Generated pixel-art working files: 1024x1024 raw JPEGs from Nano Banana
+# and per-frame PixelLab intermediate PNGs live on dev machines only. The
+# composited final PNG sheets under apps/web/public/sprites/generated/**
+# ARE committed.
+apps/web/public/sprites/generated/**/*.raw.jpg
+apps/web/public/sprites/generated/agents/pl-anims/
+apps/web/public/sprites/generated/agents/pl/
+apps/web/public/sprites/generated/agents/nb/
+.choruz-runtime/
+# Playwright output
+test-results/
+playwright-report/
+
+# Built by `pnpm --dir services/choruz-bridge build`
+services/choruz-bridge/dist/

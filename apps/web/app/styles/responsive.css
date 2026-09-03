@@ -1,0 +1,289 @@
+/* Mobile backdrop: hidden by default, shown via media queries */
+.mobile-backdrop {
+  display: none;
+}
+
+/* ---- Responsive ---- */
+
+/* Breakpoints — four, used everywhere:
+ *   phone   max-width 600px   compact spacing, full-width drawers
+ *   tablet  max-width 699px   sidebar / side panels become overlays
+ *   mini    700px – 900px     icon-only sidebar
+ *   wide    min-width 1400px  three static columns
+ */
+
+/* --- Wide desktop: three-column layout (min-width: 1400px) --- */
+@media (min-width: 1400px) {
+  .detail-panel {
+    position: static;
+    box-shadow: none;
+    width: 320px;
+    min-width: 320px;
+    border-left: 1px solid var(--border);
+  }
+}
+
+/* --- Mini sidebar mode (700px - 900px) --- */
+@media (min-width: 700px) and (max-width: 900px) {
+  /* A 64px avatar rail that widens in place when opened. The extra width
+   * overlaps the chat column through a negative margin, so the layout
+   * never reflows and the width can animate. Rail-only rules are scoped
+   * to :not(.open) so the desktop styles return untouched; closing is
+   * deliberately abrupt, the rail re-applies the moment .open drops. */
+  .chat-sidebar {
+    --rail-w: 64px;
+    --rail-open-w: 320px;
+
+    width: var(--rail-w);
+    min-width: 0;
+    max-width: none;
+    transition: width var(--transition-smooth), margin-right var(--transition-smooth),
+      box-shadow var(--transition-smooth);
+  }
+
+  .chat-sidebar.open {
+    z-index: var(--z-drawer);
+    width: var(--rail-open-w);
+    margin-right: calc(var(--rail-w) - var(--rail-open-w));
+    box-shadow: var(--shadow-drawer-right);
+  }
+
+  /* One fade per sidebar section, not one per conversation row. */
+  .chat-sidebar.open > * {
+    animation: fade-in var(--duration-base) var(--ease-out);
+  }
+
+  /* Rail: hide text, keep avatars centred. */
+  .chat-sidebar:not(.open) .conv-meta,
+  .chat-sidebar:not(.open) .sidebar-search,
+  .chat-sidebar:not(.open) .company-selector,
+  .chat-sidebar:not(.open) .sidebar-actions,
+  .chat-sidebar:not(.open) .user-info span,
+  .chat-sidebar:not(.open) .conv-time,
+  .chat-sidebar:not(.open) .conv-unread,
+  .chat-sidebar:not(.open) .conv-thread-unread,
+  .chat-sidebar:not(.open) .conv-item-actions,
+  .chat-sidebar:not(.open) .conversation-section-title,
+  .chat-sidebar:not(.open) .conversation-section-count,
+  .chat-sidebar:not(.open) .sidebar-brand {
+    display: none;
+  }
+
+  .chat-sidebar:not(.open) .conversation-section-header {
+    justify-content: center;
+    padding: 6px 0;
+  }
+
+  .chat-sidebar:not(.open) .conv-item {
+    padding: var(--space-2);
+    justify-content: center;
+    gap: 0;
+  }
+
+  .chat-sidebar:not(.open) .sidebar-header {
+    padding: var(--space-3);
+    justify-content: center;
+  }
+
+  .chat-sidebar:not(.open) .conversation-list {
+    padding: 4px 6px 12px;
+  }
+
+  .mobile-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.5);
+    z-index: var(--z-drawer-backdrop);
+  }
+
+  /* Hide resize handle in mini mode */
+  .sidebar-resize-handle {
+    display: none;
+  }
+
+  .mobile-menu-btn {
+    display: flex;
+  }
+}
+
+/* --- Tablet overlay (max-width: 699px) --- */
+@media (max-width: 699px) {
+  .chat-sidebar {
+    position: fixed;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    z-index: var(--z-drawer);
+    width: 320px;
+    min-width: 320px;
+    max-width: 85vw;
+    transform: translateX(-100%);
+    transition: transform var(--transition-smooth);
+    box-shadow: var(--shadow-drawer-right);
+  }
+
+  .chat-sidebar.open {
+    transform: translateX(0);
+  }
+
+  /* A full-height overlay here, so it enters from the right edge. */
+  .detail-panel {
+    position: fixed;
+    right: 0;
+    top: 0;
+    bottom: 0;
+    z-index: var(--z-drawer);
+    box-shadow: var(--shadow-drawer-left);
+    animation-name: slide-in-right;
+  }
+
+  .mobile-menu-btn {
+    display: flex;
+  }
+
+  .msg-group {
+    max-width: 85%;
+  }
+
+  .mobile-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.5);
+    z-index: var(--z-drawer-backdrop);
+  }
+
+  /* Hide resize handle on mobile/tablet overlay */
+  .sidebar-resize-handle {
+    display: none;
+  }
+}
+
+/* --- Mobile (max-width: 600px) --- */
+@media (max-width: 600px) {
+  /* Sidebar: full width on phones */
+  .chat-sidebar {
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  /* Message bubbles: wider on mobile */
+  .msg-group {
+    max-width: 95%;
+  }
+
+  /* Messages area: tighter padding */
+  .messages-area {
+    padding: 12px 10px;
+  }
+
+  /* Company selector: tighter padding on mobile */
+  .company-selector {
+    padding: 6px 8px;
+  }
+
+  /* Chat header: compact layout, smaller font */
+  .chat-header {
+    padding: 10px 12px;
+  }
+
+  .chat-header-info .chat-title {
+    font-size: var(--fs-md);
+  }
+
+  .chat-header-info .chat-subtitle {
+    font-size: var(--fs-xs);
+  }
+
+  .chat-header-actions button {
+    width: 32px;
+    height: 32px;
+    font-size: var(--fs-base);
+  }
+
+  /* Modals: full-screen bottom sheet style */
+  .modal-overlay {
+    align-items: flex-end;
+  }
+
+  .modal-card,
+  .modal-card-lg {
+    max-width: 100%;
+    width: 100%;
+    border-radius: var(--radius-xl) var(--radius-xl) 0 0;
+    max-height: 90vh;
+    overflow-y: auto;
+    padding: 24px 20px;
+    /* Animate from bottom */
+    animation: modal-slide-up var(--duration-base) var(--ease-out);
+  }
+
+  /* Detail panel: full screen overlay (not side panel) */
+  .detail-panel {
+    width: 100%;
+    min-width: 0;
+  }
+
+  /* Chat input area */
+  .chat-input-bar {
+    padding: 10px 10px;
+    padding-bottom: calc(10px + env(safe-area-inset-bottom));
+  }
+
+  .chat-input-row textarea {
+    max-height: 120px;
+  }
+
+  /* Sidebar header compact */
+  .sidebar-header {
+    padding: 14px 14px 12px;
+  }
+
+  .sidebar-search {
+    padding: 8px 14px;
+  }
+
+  /* Make actions button visible on mobile (no hover) */
+  .msg-actions-btn {
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  /* When long-press activates, JS adds this class */
+  .msg-group.touch-active .msg-actions-btn,
+  .msg-actions-btn[aria-expanded="true"] {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  /* Conversation items: larger touch targets */
+  .conv-item {
+    padding: 14px 12px;
+    min-height: 60px;
+  }
+
+  /* Send button slightly larger for touch */
+  .send-btn {
+    width: 40px;
+    height: 40px;
+    font-size: var(--fs-xl);
+  }
+}
+
+/* ---- Scrollbar global ---- */
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-light) transparent;
+}
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: var(--radius-sm);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--border-light);
+}

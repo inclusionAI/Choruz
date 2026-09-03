@@ -1,0 +1,27 @@
+[package]
+name = "choruz-connector"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Persistent remote machine connector for Choruz runtime hosts"
+
+[[bin]]
+name = "choruz-connector"
+path = "src/main.rs"
+
+[dependencies]
+choruz-agent-runtime = { path = "../../crates/choruz-agent-runtime" }
+choruz-harness-login = { path = "../../crates/choruz-harness-login" }
+choruz-infrastructure = { path = "../../crates/choruz-infrastructure" }
+chrono.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tempfile = "3"
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[lints]
+workspace = true

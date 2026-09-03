@@ -1,0 +1,22 @@
+/* ============================================================
+   Delete button
+   ============================================================ */
+
+.delete-btn {
+  background: none;
+  border: 1px solid transparent;
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  margin-left: auto;
+  transition: background-color var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
+  min-height: var(--control-sm);
+}
+
+.delete-btn:hover {
+  background: var(--error-dim);
+  color: var(--error);
+  border-color: var(--error);
+}

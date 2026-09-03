@@ -1,0 +1,37 @@
+name = "choruz-remote-control-gateway"
+main = "src/index.ts"
+compatibility_date = "2026-08-20"
+
+[[durable_objects.bindings]]
+name = "ROOMS"
+class_name = "GatewayRoom"
+
+[[durable_objects.bindings]]
+name = "RATE_LIMITERS"
+class_name = "PairingRateLimiter"
+
+[[durable_objects.bindings]]
+name = "CAPABILITIES"
+class_name = "CapabilityStore"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["GatewayRoom"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["PairingRateLimiter"]
+
+[[migrations]]
+tag = "v3"
+new_sqlite_classes = ["CapabilityStore"]
+
+# Set the same value used by CHORUZ_REMOTE_CONTROL_GATEWAY_SECRET:
+#   pnpm exec wrangler secret put GATEWAY_AUTH_SECRET
+#
+
+# Optional: a hosted Choruz dashboard. When set, GET / and /remote redirect to
+# `${REMOTE_DASHBOARD_URL}/remote?gateway=<this origin>&…` so a browser without
+# Choruz can pair from its Remote page.
+# [vars]
+# REMOTE_DASHBOARD_URL = "https://app.example"

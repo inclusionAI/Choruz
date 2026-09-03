@@ -1,0 +1,4 @@
+packages:
+  - apps/*
+  - services/choruz-bridge
+  - services/remote-control-gateway

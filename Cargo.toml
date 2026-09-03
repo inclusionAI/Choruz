@@ -1,0 +1,89 @@
+[workspace]
+members = [
+  "services/choruz-connector",
+  "apps/choruz-cli",
+  "services/choruz-pipeline",
+  "apps/choruz-replay",
+  "services/choruz-server",
+  "crates/choruz-agent-runtime",
+  "crates/choruz-application",
+  "crates/choruz-auth",
+  "crates/choruz-common",
+  "crates/choruz-domain",
+  "crates/choruz-events",
+  "crates/choruz-executor",
+  "crates/choruz-ids",
+  "crates/choruz-session",
+  "crates/choruz-tools",
+  "crates/choruz-store",
+  "crates/choruz-router",
+  "crates/choruz-writer",
+  "crates/choruz-fanout",
+  "crates/choruz-supervisor",
+  "crates/choruz-harness-login",
+  "crates/choruz-infrastructure",
+  "services/choruz-api-gateway",
+]
+resolver = "2"
+
+[profile.release]
+lto = true
+strip = true
+codegen-units = 1
+
+# For HPC / remote builds: thinner LTO for faster link times
+[profile.release-remote]
+inherits = "release"
+lto = "thin"
+
+# One home for lint policy: every member inherits with `[lints] workspace = true`.
+# CI runs `cargo clippy --all-targets -- -D warnings`, so a warning here fails the build.
+[workspace.lints.rust]
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+collapsible_if = "allow"
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+version = "0.1.0"
+
+[workspace.dependencies]
+async-trait = "0.1.89"
+aes-gcm = "0.10.3"
+axum = { version = "0.8.6", features = ["macros", "ws"] }
+base64 = "0.22.1"
+chrono = { version = "0.4.42", features = ["serde"] }
+deadpool = "0.12"
+deadpool-postgres = "0.14"
+futures-util = "0.3.32"
+glob = "0.3.2"
+hex = "0.4.3"
+notify = { version = "7" }
+hmac = "0.12.1"
+hkdf = "0.12.4"
+infer = { version = "0.16", default-features = false }
+postgres = { version = "0.19.12", features = ["with-chrono-0_4"] }
+rand = "0.8"
+reqwest = { version = "0.12.24", default-features = false, features = ["json", "rustls-tls"] }
+rustls = { version = "0.23.37", default-features = false, features = ["ring", "std"] }
+rusqlite = { version = "0.34", features = ["bundled"] }
+prometheus = "0.14.0"
+proptest = "1.9.0"
+p256 = { version = "0.13", features = ["ecdh"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
+sha2 = "0.10.9"
+subtle = "2"
+thiserror = "2.0.17"
+url = "2.5"
+tokio = { version = "1.48.0", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
+tokio-postgres = { version = "0.7.15", features = ["with-chrono-0_4", "with-serde_json-1"] }
+tokio-tungstenite = { version = "0.28.0", features = ["rustls-tls-webpki-roots"] }
+tower = "0.5.2"
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.20", features = ["env-filter", "fmt"] }
+uuid = { version = "1.18.1", features = ["serde", "v7"] }
+redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
+deadpool-redis = "0.18"

@@ -1,0 +1,633 @@
+/* Detail panel — shared input / result-row / banner language.
+ * Used by the Add-Member tab, the Search tab, and anywhere else the
+ * detail panel needs a scoped input or a picker row. */
+.detail-input {
+  padding: var(--space-2) var(--space-3);
+  margin-bottom: var(--space-2);
+}
+
+.detail-inline-error {
+  padding: var(--space-2) var(--space-3);
+  margin-bottom: var(--space-2);
+  font-size: var(--fs-sm);
+  color: var(--danger-soft);
+  background: var(--error-dim);
+  border-radius: var(--radius-md);
+  border-left: 3px solid var(--error);
+}
+
+.detail-inline-empty {
+  padding: var(--space-2) var(--space-1);
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+}
+
+.detail-member-option {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-1);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background var(--transition-fast);
+  width: 100%;
+  text-align: left;
+}
+.detail-member-option:hover:not(:disabled) {
+  background: var(--bg-elevated);
+}
+.detail-member-option:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.detail-member-option .detail-member-name {
+  flex: 1;
+  font-size: var(--fs-md);
+}
+.detail-member-option .detail-member-action {
+  font-size: var(--fs-xs);
+  color: var(--accent);
+  font-weight: 500;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  background: var(--accent-dim);
+}
+
+.detail-search-result {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  color: var(--text);
+  font-size: var(--fs-sm);
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+}
+.detail-search-result:hover {
+  background: var(--bg-surface);
+  border-color: var(--border-light);
+}
+.detail-search-result-head {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: var(--space-1);
+}
+.detail-search-result-sender {
+  font-weight: 600;
+  font-size: var(--fs-xs);
+}
+.detail-search-result-date {
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+}
+.detail-search-result-snippet {
+  color: var(--text-secondary);
+  line-height: var(--lh-snug);
+}
+.detail-search-result-snippet mark {
+  background: var(--accent);
+  color: var(--on-accent);
+  border-radius: var(--radius-sm);
+  padding: 0 2px;
+}
+
+.detail-section h4 {
+  font-size: var(--fs-sm);
+  font-weight: 700;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: var(--space-3);
+}
+
+.detail-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+.detail-section-header h4 {
+  margin-bottom: 0;
+}
+
+/* ---- Git graph (git-graph.tsx, git-graph-section.tsx) ---- */
+
+.detail-inline-empty.is-error {
+  color: var(--error);
+}
+.git-graph-refresh {
+  margin-bottom: var(--space-1);
+}
+.git-graph-empty {
+  padding: var(--space-3) 0;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  text-align: center;
+}
+.git-graph-summary {
+  display: flex;
+  gap: var(--space-3);
+  padding: var(--space-2) 0 10px;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+.git-graph-list {
+  max-height: 400px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.git-graph-branch {
+  border-bottom: 1px solid var(--border);
+  transition: background var(--transition-fast);
+}
+.git-graph-branch:hover {
+  background: var(--surface-hover);
+}
+/* The overview row is a button that discloses the branch detail. */
+.git-graph-branch-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px var(--space-3);
+  text-align: left;
+  cursor: pointer;
+}
+.git-graph-dots {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-1);
+}
+.git-graph-state-dot,
+.git-graph-agent-dot {
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.git-graph-state-dot { width: 8px; height: 8px; background: var(--text-muted); }
+.git-graph-state-dot.is-running { background: var(--success); }
+.git-graph-state-dot.is-merged { background: var(--graph-main); }
+.git-graph-state-dot.is-disabled { background: var(--text-tertiary); }
+.git-graph-agent-dot { width: 6px; height: 6px; background: var(--agent-color); }
+
+.git-graph-branch-main {
+  flex: 1;
+  min-width: 0;
+}
+.git-graph-branch-name {
+  font-weight: 500;
+  font-size: var(--fs-md);
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.git-graph-branch-msg {
+  margin-top: 2px;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.git-graph-spark {
+  display: flex;
+  gap: 2px;
+  margin-top: 3px;
+}
+.git-graph-spark-dot {
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: var(--agent-color);
+}
+
+.git-graph-branch-meta {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  flex-shrink: 0;
+}
+.git-graph-delta {
+  display: flex;
+  gap: var(--space-1);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+}
+.git-graph-delta .is-ahead { color: var(--graph-ahead); }
+.git-graph-delta .is-behind { color: var(--graph-behind); }
+.git-graph-delta .is-even { color: var(--text-muted); font-weight: 400; }
+.git-graph-time {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+
+.git-graph-branch-detail {
+  padding: 0 var(--space-3) var(--space-3);
+}
+.git-graph-commits {
+  margin-top: var(--space-2);
+}
+.git-graph-commit {
+  display: flex;
+  gap: var(--space-2);
+  align-items: baseline;
+  padding: 3px 0;
+  font-size: var(--fs-xs);
+}
+.git-graph-commit-hash {
+  font-family: var(--font-mono);
+  color: var(--agent-color);
+  flex-shrink: 0;
+}
+.git-graph-commit-msg {
+  flex: 1;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.git-graph-commit-files,
+.git-graph-commit-time {
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+.git-graph-commit-time {
+  min-width: 48px;
+  text-align: right;
+}
+
+/* Two-lane commit DAG. */
+.git-graph-dag {
+  padding: var(--space-2) 0 var(--space-1);
+}
+.git-graph-lanes {
+  display: flex;
+  gap: var(--space-2);
+  padding-left: var(--space-2);
+  margin-bottom: var(--space-1);
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+.git-graph-lanes > span:first-child {
+  width: 56px;
+}
+.git-graph-lane-dot {
+  color: var(--agent-color);
+}
+.git-graph-lane-dot.is-main {
+  color: var(--graph-main);
+}
+.git-graph-svg {
+  display: block;
+  overflow: visible;
+}
+.git-graph-node {
+  cursor: pointer;
+}
+.git-graph-tooltip {
+  position: fixed;
+  z-index: var(--z-menu);
+  max-width: 260px;
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-elevated);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  font-size: var(--fs-sm);
+  pointer-events: none;
+}
+.git-graph-tip-title {
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+.git-graph-tip-meta {
+  color: var(--text-muted);
+}
+
+/* Agent config editor */
+.agent-config-section {
+  display: flex;
+  flex-direction: column;
+}
+
+.agent-config-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-2);
+}
+
+.agent-config-header h4 {
+  margin-bottom: 0;
+}
+
+.agent-config-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.agent-config-save-btn {
+  padding: 3px 12px;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  color: var(--on-accent);
+  cursor: pointer;
+  transition: opacity var(--transition-fast);
+  min-height: var(--control-sm);
+}
+
+.agent-config-save-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.agent-config-save-btn:not(:disabled):hover {
+  opacity: 0.85;
+}
+
+.agent-config-editor {
+  width: 100%;
+  min-height: 200px;
+  max-height: 400px;
+  padding: 10px;
+  font-family: var(--font-mono, "SF Mono", "Fira Code", "Fira Mono", Menlo, monospace);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-base);
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  resize: vertical;
+  tab-size: 2;
+}
+
+.agent-config-editor:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* Skills list */
+.skill-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 5px 0;
+}
+
+.skill-row .skill-icon {
+  font-size: var(--fs-md);
+  font-weight: 700;
+  color: var(--accent);
+  width: 16px;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.skill-row .skill-name {
+  font-size: var(--fs-md);
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.skill-row:hover {
+  background: var(--surface-hover);
+  border-radius: var(--radius-sm);
+}
+
+.skill-content-panel {
+  margin: 0 0 8px 24px;
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.skill-content-pre {
+  margin: 0;
+  font-size: var(--fs-sm);
+  font-family: monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text);
+  line-height: var(--lh-base);
+}
+
+/* Add Skill panel */
+.add-skill-panel {
+  margin-top: var(--space-2);
+  margin-bottom: var(--space-2);
+  padding: 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.add-skill-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-2);
+}
+
+.add-skill-header h4 {
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--text);
+  text-transform: none;
+  letter-spacing: 0;
+  margin: 0;
+}
+
+.add-skill-input {
+  padding: 6px 8px;
+  font-size: var(--fs-sm);
+  margin-bottom: var(--space-2);
+}
+
+.add-skill-local {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: flex-start;
+}
+
+.add-skill-local .add-skill-input {
+  flex: 1;
+  min-width: 0;
+  margin-bottom: 0;
+}
+
+.add-skill-error {
+  width: 100%;
+  font-size: var(--fs-sm);
+  color: var(--error);
+  margin: 4px 0 0;
+}
+
+.member-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0;
+}
+
+/* Identity block; a button (with the caret) when the row can expand. */
+.member-row-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  text-align: left;
+}
+button.member-row-main {
+  cursor: pointer;
+}
+
+.member-row .member-name {
+  font-size: var(--fs-base);
+  font-weight: 500;
+  flex: 1;
+}
+
+/* Chevron that flips when its disclosure opens (member rows, git branches). */
+.disclosure-caret {
+  color: var(--text-muted);
+  flex-shrink: 0;
+  transition: transform var(--transition-fast);
+}
+.disclosure-caret.is-open {
+  transform: rotate(180deg);
+}
+
+/* Expanded agent details under a member row. */
+.member-row-detail {
+  padding: 6px 12px 10px 44px;
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border);
+}
+.member-row-field {
+  margin-bottom: var(--space-1);
+}
+.member-row-label {
+  font-weight: 600;
+  color: var(--text);
+}
+.member-row-muted {
+  color: var(--text-muted);
+}
+/* Which machine an agent runs on, next to the AI badge. */
+.member-machine {
+  margin-left: var(--space-1);
+  padding: 1px var(--space-2);
+  font-size: var(--fs-xs);
+  line-height: 1.4;
+  color: var(--text-secondary);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  white-space: nowrap;
+  max-width: 12em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.member-row-path {
+  margin-top: 2px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  word-break: break-all;
+}
+.member-row-state {
+  color: var(--text-muted);
+}
+.member-row-state.is-running {
+  color: var(--success);
+}
+.member-row-skills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  margin-top: 3px;
+}
+.member-row-skill {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+}
+
+.member-remove-btn {
+  width: var(--control-sm);
+  height: var(--control-sm);
+  border: 1px solid transparent;
+  color: var(--text-muted);
+  opacity: 0;
+  transition: opacity var(--transition-fast), background var(--transition-fast),
+    color var(--transition-fast), border-color var(--transition-fast);
+}
+
+.member-row:hover .member-remove-btn,
+.member-remove-btn:focus-visible {
+  opacity: 1;
+}
+
+.member-remove-btn:hover:not(:disabled) {
+  background: var(--error-dim);
+  border-color: var(--error);
+  color: var(--error);
+}
+
+.member-remove-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+/* ---- Modal / Overlay ---- */
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: var(--z-modal);
+  backdrop-filter: blur(8px);
+  /* Overlay fade-in: fast so the modal feels instant but not snap. */
+  animation: fade-in var(--duration-fast) var(--ease-out);
+}
+
+.modal-card {
+  width: 100%;
+  max-width: 520px;
+  max-height: 85vh;
+  overflow-y: auto;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-lg);
+  padding: var(--space-6);
+  /* Slight rise + fade so the dialog reads as "popped in" rather
+   * than instantly cut. The overlay's fade hides any flash of the
+   * pre-animated state. */
+  animation: modal-card-in var(--duration-base) var(--ease-out) both;
+  outline: none;
+  position: relative;
+}

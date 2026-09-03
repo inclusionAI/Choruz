@@ -1,0 +1,325 @@
+/* =======================================================================
+   Create-agent modal (components/agents/create-agent-modal.tsx) — the only
+   multi-step form in the app; shares `.modal-form` spacing but adds
+   its own checkbox / skills-picker vocabulary.
+   ======================================================================= */
+
+.create-agent-checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  cursor: pointer;
+  user-select: none;
+}
+.create-agent-checkbox-label input[type="checkbox"] {
+  width: auto;
+  margin: 0;
+}
+
+.field-hint {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  margin: var(--space-1) 0 0;
+}
+
+.create-agent-field-inset {
+  margin-top: calc(-1 * var(--space-1));
+}
+
+.create-agent-section-label {
+  font-size: var(--fs-md);
+  font-weight: 500;
+  margin-bottom: var(--space-2);
+}
+
+.step-tabs {
+  display: flex;
+  gap: var(--space-4);
+  border-bottom: 1px solid var(--border);
+}
+/* Non-interactive step indicator: reads as progress, not as tabs. */
+.step-tab {
+  padding: var(--space-2) 0;
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+.step-tab.active {
+  color: var(--text);
+}
+
+.create-agent-template-summary,
+.create-agent-template-inputs,
+.create-agent-review {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+  background: var(--bg-elevated);
+}
+.create-agent-template-summary p {
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+  margin: var(--space-1) 0 0;
+}
+
+.create-agent-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+.create-agent-chip-row span,
+.create-agent-status-pill {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-size: var(--fs-xs);
+  padding: 2px var(--space-2);
+  background: var(--bg);
+}
+
+.create-agent-template-list {
+  margin: var(--space-1) 0 0;
+  padding-left: var(--space-5);
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+}
+
+.create-agent-warning {
+  border-left: 3px solid var(--warn);
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-elevated);
+}
+
+.create-agent-inline-action {
+  align-self: flex-start;
+  border: none;
+  background: none;
+  color: var(--accent);
+  cursor: pointer;
+  font-size: var(--fs-sm);
+  padding: 0;
+  min-height: var(--control-sm);
+}
+.create-agent-inline-action:disabled {
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
+.create-agent-review {
+  display: grid;
+  gap: var(--space-3);
+}
+.create-agent-review > div {
+  display: grid;
+  gap: var(--space-1);
+}
+.create-agent-review span {
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  text-transform: uppercase;
+}
+.create-agent-review strong {
+  color: var(--text);
+  font-size: var(--fs-sm);
+  overflow-wrap: anywhere;
+}
+
+.create-agent-skills-row {
+  display: flex;
+  gap: var(--space-2);
+  align-items: flex-start;
+}
+.create-agent-skills-row > div { flex: 1; }
+.create-agent-skills-row .btn-primary {
+  padding: var(--space-2) var(--space-4);
+  white-space: nowrap;
+}
+
+.create-agent-skills-list {
+  max-height: 160px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--space-1) 0;
+}
+.create-agent-skills-list label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-3);
+  cursor: pointer;
+  user-select: none;
+  font-size: var(--fs-md);
+  font-family: var(--font-brand);
+}
+.create-agent-skills-list label:hover {
+  background: var(--bg-elevated);
+}
+
+.create-agent-select-all {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  cursor: pointer;
+  user-select: none;
+  font-weight: 600;
+  font-size: var(--fs-md);
+  margin-bottom: var(--space-1);
+}
+
+.create-agent-collapse-btn {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-size: var(--fs-md);
+  font-weight: 500;
+  cursor: pointer;
+  padding: 0;
+  transition: color var(--transition-fast);
+}
+.create-agent-collapse-btn:hover { color: var(--text); }
+.create-agent-collapse-btn .caret {
+  font-size: var(--fs-xs);
+  transition: transform var(--transition-fast);
+  display: inline-block;
+}
+.create-agent-collapse-btn[aria-expanded="true"] .caret {
+  transform: rotate(90deg);
+}
+
+.group-template-role-list,
+.group-provisioning-progress {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.group-template-role-row {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+  background: var(--bg-elevated);
+  display: grid;
+  gap: var(--space-3);
+}
+
+.group-template-role-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+.group-template-role-header > div {
+  display: grid;
+  gap: var(--space-1);
+}
+.group-template-role-header strong {
+  color: var(--text);
+  font-size: var(--fs-md);
+}
+.group-template-role-header span {
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+}
+.group-template-role-header select {
+  max-width: 150px;
+}
+
+.group-template-role-grid {
+  display: grid;
+  gap: var(--space-3);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.group-template-role-grid label,
+.group-template-role-row > label {
+  min-width: 0;
+}
+
+.group-template-role-issues {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.group-template-review-table {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+  display: grid;
+}
+.group-template-review-table > div,
+.group-provisioning-step {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--border);
+}
+.group-template-review-table > div:last-child,
+.group-provisioning-step:last-child {
+  border-bottom: none;
+}
+.group-template-review-table span,
+.group-provisioning-step span {
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+  overflow-wrap: anywhere;
+}
+.group-template-review-table strong,
+.group-provisioning-step strong {
+  color: var(--text);
+  font-size: var(--fs-sm);
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+.group-provisioning-step.succeeded strong { color: var(--success); }
+.group-provisioning-step.warning strong { color: var(--warn); }
+.group-provisioning-step.failed strong { color: var(--error); }
+.group-provisioning-step.running strong { color: var(--accent); }
+.group-provisioning-step.skipped strong,
+.group-provisioning-step.canceled strong { color: var(--text-muted); }
+
+.group-recovery-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+@media (max-width: 699px) {
+  .group-template-role-grid {
+    grid-template-columns: 1fr;
+  }
+  .group-template-role-header,
+  .group-template-review-table > div,
+  .group-provisioning-step {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .group-template-role-header select {
+    max-width: none;
+  }
+  .group-template-review-table strong,
+  .group-provisioning-step strong {
+    text-align: left;
+  }
+}
+
+/* Accessibility: respect the OS "reduce motion" preference. Kills spinners,
+ * modal slide-ins, bounce/flash animations and smooth-scroll for users who
+ * opt out of motion (vestibular disorders, focus, battery). */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

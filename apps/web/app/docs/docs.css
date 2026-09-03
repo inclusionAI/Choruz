@@ -1,0 +1,538 @@
+/* ── Choruz Documentation Site ── */
+
+.docs-root {
+  --d-bg: #09090b;
+  --d-surface: #131316;
+  --d-surface2: #1a1a1f;
+  --d-border: #222228;
+  --d-text: #e4e4e7;
+  --d-muted: #71717a;
+  --d-accent: #10b981;
+  --d-accent-dim: rgba(16, 185, 129, 0.1);
+  --d-accent-border: rgba(16, 185, 129, 0.25);
+  --d-code-bg: #0f0f12;
+  --d-red: #ef4444;
+  --d-red-dim: rgba(239, 68, 68, 0.12);
+  --d-yellow: #eab308;
+  --d-blue: #3b82f6;
+  --d-blue-dim: rgba(59, 130, 246, 0.12);
+
+  background: var(--d-bg);
+  color: var(--d-text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  line-height: 1.65;
+  min-height: 100vh;
+}
+
+/* Light-mode docs — Anthropic warm cream + cinnamon, mirrors the
+ * [data-theme="light"] palette in globals.css so the docs site and
+ * the rest of the app share one theme. */
+[data-theme="light"] .docs-root {
+  --d-bg:        #FAF9F5;
+  --d-surface:   #FFFFFF;
+  --d-surface2:  #FFFFFF;
+  --d-border:    #E5E2DA;
+  --d-text:      #141413;
+  --d-muted:     #544F47;
+  --d-accent:    #D97757;
+  --d-accent-dim:    rgba(217, 119, 87, 0.10);
+  --d-accent-border: rgba(217, 119, 87, 0.30);
+  --d-code-bg:   #EFEBE0;
+  --d-red:       #dc2626;
+  --d-red-dim:   rgba(220, 38, 38, 0.10);
+  --d-yellow:    #ca8a04;
+  --d-blue:      #2563eb;
+  --d-blue-dim:  rgba(37, 99, 235, 0.10);
+}
+
+/* ── Top Nav ── */
+.docs-nav {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 24px;
+  height: 52px;
+  background: rgba(9, 9, 11, 0.88);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--d-border);
+}
+
+/* Light-mode top nav — was a dark glass that looked like a black bar
+ * on the cream page. Cream-tinted glass matching the rest of the site. */
+[data-theme="light"] .docs-nav {
+  background: rgba(250, 249, 245, 0.85);
+}
+
+/* Cards on cream need a touch of shadow to read as raised — pure
+ * --d-surface (#FFFFFF) on --d-bg (#FAF9F5) is too close to feel
+ * like separate panels otherwise. */
+[data-theme="light"] .docs-card,
+[data-theme="light"] .docs-screenshot {
+  border-radius: 16px;
+  box-shadow:
+    0 1px 1px rgba(217, 119, 87, 0.05),
+    0 10px 20px rgba(40, 30, 20, 0.04),
+    0 20px 40px rgba(40, 30, 20, 0.03);
+}
+[data-theme="light"] .docs-card:hover {
+  transform: translateY(-1px);
+  box-shadow:
+    0 1px 1px rgba(217, 119, 87, 0.05),
+    0 12px 24px rgba(40, 30, 20, 0.06),
+    0 24px 48px rgba(40, 30, 20, 0.04);
+}
+
+[data-theme="light"] .docs-sidebar {
+  border-right: 1px solid rgba(0, 0, 0, 0.04);
+}
+
+[data-theme="light"] .docs-sidebar-title {
+  letter-spacing: 0.08em;
+}
+
+[data-theme="light"] .docs-content li {
+  margin-bottom: 8px;
+  padding-left: 4px;
+  color: #4A4543;
+  line-height: 1.6;
+}
+
+/* Light-mode callouts re-tinted text since the dark variants used
+ * pastel-on-dark colours that wash out on cream. */
+[data-theme="light"] .callout-info { color: #1e40af; }
+[data-theme="light"] .callout-warn { color: #991b1b; }
+[data-theme="light"] .callout-tip  { color: #92400e; }
+
+/* Code text colour was tuned for dark — too light on cream. */
+[data-theme="light"] .docs-content pre { color: #544F47; }
+[data-theme="light"] .docs-sidebar-link:hover {
+  background: rgba(217, 119, 87, 0.06);
+  color: var(--d-accent);
+}
+[data-theme="light"] .docs-sidebar-link.active {
+  margin: 0 8px;
+  padding-left: 8px;
+}
+[data-theme="light"] .docs-content h1,
+[data-theme="light"] .docs-content h2 {
+  letter-spacing: -0.02em;
+}
+[data-theme="light"] .docs-content > p {
+  letter-spacing: 0.01em;
+}
+
+.docs-logo {
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--d-text);
+  text-decoration: none;
+  letter-spacing: -0.3px;
+}
+
+.docs-logo-tag {
+  font-weight: 500;
+  color: var(--d-muted);
+  font-size: 14px;
+  margin-left: 4px;
+}
+
+.docs-nav-links {
+  display: flex;
+  gap: 20px;
+}
+
+.docs-nav-links a {
+  color: var(--d-muted);
+  text-decoration: none;
+  font-size: 13px;
+  font-weight: 500;
+  transition: color 0.15s;
+}
+
+.docs-nav-links a:hover { color: var(--d-text); }
+
+/* ── Layout ── */
+.docs-body {
+  display: flex;
+  margin-top: 52px;
+}
+
+/* ── Sidebar ── */
+.docs-sidebar {
+  position: fixed;
+  top: 52px;
+  left: 0;
+  bottom: 0;
+  width: 240px;
+  padding: 20px 16px;
+  overflow-y: auto;
+  border-right: 1px solid var(--d-border);
+  background: var(--d-bg);
+}
+
+.docs-sidebar-section {
+  margin-bottom: 20px;
+}
+
+.docs-sidebar-title {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  color: var(--d-muted);
+  padding: 0 8px;
+  margin-bottom: 6px;
+}
+
+.docs-sidebar-link {
+  display: block;
+  padding: 5px 8px;
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--d-muted);
+  text-decoration: none;
+  transition: background-color 0.12s, color 0.12s;
+}
+
+.docs-sidebar-link:hover {
+  color: var(--d-text);
+  background: var(--d-surface);
+}
+
+.docs-sidebar-link.active {
+  color: var(--d-accent);
+  background: var(--d-accent-dim);
+  font-weight: 500;
+}
+
+/* ── Content ── */
+.docs-content {
+  margin-left: 240px;
+  flex: 1;
+  min-height: calc(100vh - 52px);
+  max-width: 960px;
+  padding: 40px 48px 80px;
+  box-sizing: border-box;
+}
+
+/* ── Typography ── */
+.docs-content h1 {
+  font-size: 30px;
+  font-weight: 700;
+  letter-spacing: -0.5px;
+  margin: 0 0 8px;
+  line-height: 1.2;
+}
+
+.docs-content h2 {
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.3px;
+  margin: 48px 0 12px;
+  padding-top: 24px;
+  border-top: 1px solid var(--d-border);
+}
+
+.docs-content h3 {
+  font-size: 17px;
+  font-weight: 600;
+  margin: 32px 0 8px;
+}
+
+.docs-content > p {
+  color: var(--d-muted);
+  font-size: 15px;
+  margin: 0 0 16px;
+}
+
+.docs-content > .subtitle {
+  font-size: 16px;
+  color: var(--d-muted);
+  margin: 0 0 32px;
+  line-height: 1.7;
+}
+
+.docs-content > .docs-kicker {
+  margin: 0 0 8px;
+  color: var(--d-accent);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.docs-command {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 20px 0 28px;
+  padding: 14px 16px;
+  border: 1px solid var(--d-border);
+  border-radius: 10px;
+  background: var(--d-surface);
+}
+
+.docs-command span {
+  color: var(--d-muted);
+  font-size: 12px;
+}
+
+/* ── Code blocks ── */
+.docs-content pre {
+  margin: 12px 0 20px;
+  padding: 16px 20px;
+  border-radius: 10px;
+  background: var(--d-code-bg);
+  border: 1px solid var(--d-border);
+  font-family: "SF Mono", "Fira Code", "JetBrains Mono", monospace;
+  font-size: 13px;
+  line-height: 1.65;
+  color: #a1a1aa;
+  overflow-x: auto;
+  white-space: pre;
+}
+
+.docs-content code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--d-code-bg);
+  border: 1px solid var(--d-border);
+  font-family: "SF Mono", "Fira Code", monospace;
+  font-size: 12.5px;
+  color: var(--d-accent);
+}
+
+.docs-content pre code {
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+}
+
+/* ── Callouts ── */
+.callout {
+  margin: 16px 0 20px;
+  padding: 14px 18px;
+  border-radius: 8px;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.callout-info {
+  background: var(--d-blue-dim);
+  border: 1px solid rgba(59, 130, 246, 0.2);
+  color: #93c5fd;
+}
+
+.callout-warn {
+  background: var(--d-red-dim);
+  border: 1px solid rgba(239, 68, 68, 0.2);
+  color: #fca5a5;
+}
+
+.callout-tip {
+  background: var(--d-accent-dim);
+  border: 1px solid var(--d-accent-border);
+  color: #6ee7b7;
+}
+
+.callout strong {
+  display: block;
+  margin-bottom: 4px;
+  color: inherit;
+}
+
+/* ── Screenshots ── */
+.docs-screenshot {
+  margin: 16px 0 24px;
+  border-radius: 10px;
+  border: 1px solid var(--d-border);
+  overflow: hidden;
+  background: var(--d-surface);
+}
+
+.docs-screenshot img {
+  width: 100%;
+  display: block;
+}
+
+.docs-screenshot-caption {
+  padding: 8px 14px;
+  font-size: 12px;
+  color: var(--d-muted);
+  border-top: 1px solid var(--d-border);
+  background: var(--d-surface);
+}
+
+/* ── Feature cards ── */
+.docs-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 14px;
+  margin: 16px 0 24px;
+}
+
+.docs-card {
+  padding: 18px 20px;
+  border-radius: 10px;
+  background: var(--d-surface);
+  border: 1px solid var(--d-border);
+  text-decoration: none;
+  color: inherit;
+  transition: border-color 0.15s;
+}
+
+.docs-card:hover {
+  border-color: var(--d-accent);
+}
+
+.docs-card h4 {
+  font-size: 14px;
+  font-weight: 600;
+  margin: 0 0 4px;
+}
+
+.docs-card p {
+  font-size: 13px;
+  color: var(--d-muted);
+  margin: 0;
+}
+
+/* ── Tables ── */
+.docs-content table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 12px 0 20px;
+  font-size: 13px;
+}
+
+.docs-content th {
+  text-align: left;
+  padding: 8px 12px;
+  background: var(--d-surface);
+  border: 1px solid var(--d-border);
+  font-weight: 600;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--d-muted);
+}
+
+.docs-content td {
+  padding: 8px 12px;
+  border: 1px solid var(--d-border);
+  color: var(--d-muted);
+}
+
+.docs-content td code {
+  font-size: 12px;
+}
+
+/* ── Lists ── */
+.docs-content ul, .docs-content ol {
+  padding-left: 20px;
+  margin: 8px 0 16px;
+}
+
+.docs-content li {
+  font-size: 14px;
+  color: var(--d-muted);
+  margin-bottom: 6px;
+}
+
+.docs-content li strong {
+  color: var(--d-text);
+}
+
+/* ── Badges ── */
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.badge-green { background: var(--d-accent-dim); color: var(--d-accent); border: 1px solid var(--d-accent-border); }
+.badge-blue { background: var(--d-blue-dim); color: var(--d-blue); border: 1px solid rgba(59,130,246,0.2); }
+.badge-red { background: var(--d-red-dim); color: var(--d-red); border: 1px solid rgba(239,68,68,0.2); }
+
+/* ── Steps ── */
+.docs-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  margin: 16px 0 24px;
+}
+
+.docs-step {
+  display: flex;
+  gap: 16px;
+}
+
+.docs-step-num {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--d-accent);
+  color: #141413;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 700;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.docs-step > div:last-child { flex: 1; }
+.docs-step h4 { font-size: 15px; font-weight: 600; margin: 0 0 4px; }
+.docs-step p { font-size: 14px; color: var(--d-muted); margin: 0; }
+
+/* ── Prev/Next nav ── */
+.docs-pager {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 64px;
+  padding-top: 24px;
+  border-top: 1px solid var(--d-border);
+  gap: 16px;
+}
+
+.docs-pager a {
+  padding: 12px 16px;
+  border-radius: 8px;
+  border: 1px solid var(--d-border);
+  text-decoration: none;
+  color: var(--d-text);
+  font-size: 13px;
+  font-weight: 500;
+  transition: border-color 0.15s;
+  flex: 1;
+}
+
+.docs-pager a:hover { border-color: var(--d-accent); }
+.docs-pager a:last-child { text-align: right; }
+
+.docs-pager-label {
+  display: block;
+  font-size: 11px;
+  color: var(--d-muted);
+  margin-bottom: 2px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* ── Responsive ── */
+@media (max-width: 860px) {
+  .docs-sidebar { display: none; }
+  .docs-content { margin-left: 0; padding: 24px 16px 60px; }
+}

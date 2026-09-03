@@ -1,0 +1,18 @@
+[package]
+name = "choruz-harness-login"
+version = "0.1.0"
+edition.workspace = true
+description = "Drives a Harness's own browser sign-in and reports the link, callback handoff and verified account to a sink"
+license.workspace = true
+
+[dependencies]
+choruz-agent-runtime = { path = "../choruz-agent-runtime" }
+chrono.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tokio.workspace = true
+url.workspace = true
+reqwest.workspace = true
+
+[lints]
+workspace = true

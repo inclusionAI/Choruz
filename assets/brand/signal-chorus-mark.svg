@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">Signal Chorus light mark</title>
+  <desc id="desc">Three parallel open signal strokes in navy, mint, and sky.</desc>
+  <!-- Transparent light-surface source; every element remains editable vector geometry. -->
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round" stroke-width="34">
+    <path d="M378 88C250 12 94 78 72 220 50 362 176 474 308 414" stroke="#102A6B"/>
+    <path d="M352 138C246 76 126 134 114 236 102 338 202 404 296 360" stroke="#14B8A6"/>
+    <path d="M326 188C246 142 166 186 162 254 158 322 228 356 288 320" stroke="#38BDF8"/>
+  </g>
+</svg>

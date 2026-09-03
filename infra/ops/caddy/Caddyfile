@@ -1,0 +1,10 @@
+:80 {
+  encode zstd gzip
+
+  @ws path /v1/ws/*
+  reverse_proxy @ws 127.0.0.1:3000
+  reverse_proxy /healthz 127.0.0.1:3000
+  reverse_proxy /v1/* 127.0.0.1:3000
+
+  reverse_proxy /* 127.0.0.1:3100
+}

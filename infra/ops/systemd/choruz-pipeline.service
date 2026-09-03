@@ -1,0 +1,23 @@
+[Unit]
+Description=Choruz pipeline
+After=network.target postgresql.service choruz-api-gateway.service
+Requires=postgresql.service
+
+[Service]
+Type=simple
+User=choruz
+Group=choruz
+LogsDirectory=choruz
+LogsDirectoryMode=0750
+WorkingDirectory=/srv/choruz/releases/current
+Environment=CHORUZ_DATABASE_URL=postgres://choruz@127.0.0.1:5432/choruz
+Environment=CHORUZ_PIPELINE_METRICS_HOST=127.0.0.1
+Environment=CHORUZ_PIPELINE_METRICS_PORT=3020
+ExecStart=/srv/choruz/releases/current/bin/choruz-pipeline
+Restart=always
+RestartSec=2
+StandardOutput=append:/var/log/choruz/pipeline.log
+StandardError=append:/var/log/choruz/pipeline.log
+
+[Install]
+WantedBy=multi-user.target

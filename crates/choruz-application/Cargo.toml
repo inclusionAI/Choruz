@@ -1,0 +1,31 @@
+[package]
+name = "choruz-application"
+version.workspace = true
+edition.workspace = true
+description = "DbService, the PostgreSQL-backed service layer behind the API gateway, and the in-memory ChatApp shell"
+license.workspace = true
+
+[dependencies]
+choruz-auth = { path = "../choruz-auth" }
+choruz-common = { path = "../choruz-common" }
+choruz-domain = { path = "../choruz-domain" }
+choruz-store = { path = "../choruz-store" }
+# Direct dep so the thread-canonicalization helper can name
+# deadpool_postgres::Transaction in its signature. Already pulled in
+# transitively via choruz-store.
+deadpool-postgres.workspace = true
+chrono.workspace = true
+hex.workspace = true
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tokio-postgres.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

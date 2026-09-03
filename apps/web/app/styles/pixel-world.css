@@ -1,0 +1,234 @@
+/* ============================================================
+   Pixel World Panel
+   ============================================================ */
+
+.pixel-world-panel {
+  width: 40vw;
+  min-width: 300px;
+  max-width: 100vw;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--border);
+  background: var(--bg-elevated);
+  overflow: hidden;
+  flex-shrink: 0;
+  position: relative;
+}
+
+/* Drag handle on left edge for resizing */
+.pixel-world-resize-handle {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 8px;
+  cursor: ew-resize;
+  background: transparent;
+  z-index: var(--z-raised);
+  transition: background var(--transition-fast);
+}
+.pixel-world-resize-handle:hover,
+.pixel-world-resize-handle:active {
+  background: var(--accent);
+}
+
+.pixel-world-header {
+  padding: var(--space-3) var(--space-4);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--border);
+  font-family: var(--font-brand);
+  font-size: var(--fs-md);
+  color: var(--text);
+  background: var(--bg-surface);
+  gap: var(--space-2);
+}
+
+.pixel-world-panel.fullscreen {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  max-width: 100vw;
+  z-index: var(--z-overlay);
+  border-left: none;
+}
+
+.pixel-world-header-actions {
+  display: flex;
+  gap: var(--space-1);
+}
+.pixel-world-header button,
+.pixel-world-icon-btn {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: var(--space-1);
+  font-size: var(--fs-base);
+  border-radius: var(--radius-sm);
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+.pixel-world-header button:hover,
+.pixel-world-icon-btn:hover {
+  background: var(--bg-elevated);
+  color: var(--text);
+}
+
+.pixel-world-canvas {
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+  height: 0;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  cursor: grab;
+}
+
+.pixel-world-canvas:active {
+  cursor: grabbing;
+}
+
+/* Wide screen: inline */
+@media (min-width: 1400px) {
+  .pixel-world-panel {
+    position: static;
+  }
+}
+
+/* Narrow screen: overlay */
+@media (max-width: 1399px) {
+  .pixel-world-panel {
+    position: fixed;
+    right: 0;
+    top: 0;
+    bottom: 0;
+    z-index: var(--z-drawer);
+    box-shadow: var(--shadow-drawer-left);
+  }
+}
+
+@media (max-width: 600px) {
+  .pixel-world-panel {
+    width: 100%;
+    min-width: 100%;
+  }
+}
+
+/* Detail panel tabs */
+.detail-tabs {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid var(--border);
+  padding: 0 16px;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+.detail-tabs::-webkit-scrollbar {
+  display: none;
+}
+/* ---- Tabs: one underline language for the detail panel, the
+ * conversation Chat/Tasks switch and the create-agent/group steps ---- */
+.detail-tab,
+.channel-conversation-tab {
+  margin-bottom: -1px; /* seat the 2px underline on the strip's 1px border */
+  padding: var(--space-2) var(--space-3);
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: none;
+  color: var(--text-muted);
+  font-size: var(--fs-md);
+  font-weight: 500;
+  letter-spacing: 0;
+  cursor: pointer;
+  transition: color var(--transition-fast), border-color var(--transition-fast);
+}
+.detail-tab:hover,
+.channel-conversation-tab:hover {
+  color: var(--text);
+}
+.detail-tab.active,
+.channel-conversation-tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+.detail-tab-content {
+  flex: 1;
+  overflow-y: auto;
+}
+
+.runtime-status-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.runtime-status-row {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+  overflow: hidden;
+}
+.runtime-status-pill {
+  text-transform: uppercase;
+  color: var(--text);
+  background: var(--bg-elevated);
+}
+.runtime-status-busy {
+  color: var(--warn);
+  background: var(--agent-dim);
+}
+.runtime-status-queued {
+  color: var(--danger-soft);
+  background: var(--error-dim);
+}
+.runtime-status-idle {
+  color: var(--success);
+  background: var(--bg-surface);
+}
+
+/* Runtime queue status */
+.runtime-queue-banner {
+  margin-bottom: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-md);
+  background: var(--accent-dim);
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-snug);
+}
+.runtime-status-row {
+  padding: var(--space-2) var(--space-3);
+}
+.runtime-status-main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin-bottom: 4px;
+}
+.runtime-status-agent {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-md);
+  font-weight: 600;
+}
+.runtime-status-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+}
+.runtime-status-error {
+  margin-top: var(--space-1);
+  color: var(--danger-soft);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-snug);
+  word-break: break-word;
+}

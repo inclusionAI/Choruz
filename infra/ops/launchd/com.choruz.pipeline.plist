@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>com.choruz.pipeline</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+      <key>CHORUZ_DATABASE_URL</key>
+      <string>postgres://choruz@127.0.0.1:5432/choruz</string>
+      <key>CHORUZ_PIPELINE_METRICS_HOST</key>
+      <string>127.0.0.1</string>
+      <key>CHORUZ_PIPELINE_METRICS_PORT</key>
+      <string>3020</string>
+    </dict>
+    <key>ProgramArguments</key>
+    <array>
+      <string>/Users/Shared/choruz/releases/current/bin/choruz-pipeline</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>WorkingDirectory</key>
+    <string>/Users/Shared/choruz/releases/current</string>
+    <key>StandardOutPath</key>
+    <string>/Users/Shared/choruz/logs/pipeline.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/Shared/choruz/logs/pipeline.log</string>
+  </dict>
+</plist>

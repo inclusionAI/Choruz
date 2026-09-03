@@ -1,0 +1,28 @@
+/* Global stylesheet. Each file below is one section; order matters for the cascade,
+   so add a new section at the position its rules must win or lose from. */
+
+@import "./styles/theme.css";
+@import "./styles/chat-shell.css";
+@import "./styles/chat-header.css";
+@import "./styles/message-list.css";
+@import "./styles/composer.css";
+@import "./styles/detail-panel.css";
+@import "./styles/modals.css";
+@import "./styles/responsive.css";
+@import "./styles/member-picker.css";
+@import "./styles/thinking-indicator.css";
+@import "./styles/delete-button.css";
+@import "./styles/terminal.css";
+@import "./styles/quote-reply.css";
+@import "./styles/motion.css";
+@import "./styles/folder-picker.css";
+@import "./styles/file-tree.css";
+@import "./styles/pixel-world.css";
+@import "./styles/editor-tabs.css";
+@import "./styles/file-editor.css";
+@import "./styles/path-picker.css";
+@import "./styles/server-manager.css";
+@import "./styles/agent-instruction-form.css";
+@import "./styles/create-agent-modal.css";
+@import "./styles/threads.css";
+@import "./styles/remote-dashboard.css";

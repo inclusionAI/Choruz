@@ -1,0 +1,332 @@
+/* ---------------------------------------------------------------------------
+   Message threads
+   --------------------------------------------------------------------------- */
+
+/* Layout: chat column + optional thread side panel */
+.chat-with-thread {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.chat-primary {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* "N replies" rollup chip under a thread root message */
+.msg-thread-rollup {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  padding: 4px 8px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-sm);
+  color: var(--accent);
+  cursor: pointer;
+  align-self: flex-start;
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+  min-height: var(--control-sm);
+}
+
+.msg-thread-rollup:hover {
+  background: var(--accent-tint);
+  border-color: rgba(6,165,144,0.25);
+}
+
+.msg-thread-rollup-avatars {
+  display: inline-flex;
+  align-items: center;
+}
+
+.msg-thread-rollup-avatars .avatar.tiny:not(:first-child) {
+  margin-left: -6px;
+}
+
+.msg-thread-rollup-count {
+  font-weight: 600;
+}
+
+.msg-thread-rollup-time {
+  color: var(--text-muted);
+}
+
+/* Thread side panel */
+.thread-panel {
+  display: flex;
+  flex-direction: column;
+  width: 360px;
+  min-width: 280px;
+  flex-shrink: 0;
+  border-left: 1px solid var(--border);
+  background: var(--bg);
+  min-height: 0;
+}
+
+.thread-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.thread-panel-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.thread-panel-title-main {
+  font-weight: 700;
+}
+
+.thread-panel-title-sub {
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.thread-panel-close {
+  color: var(--text-muted);
+}
+
+.thread-panel-close:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.thread-panel-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-height: 0;
+}
+
+.thread-panel-loading {
+  padding: 12px;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.thread-panel-error {
+  padding: 8px 12px;
+  font-size: var(--fs-sm);
+  color: var(--error);
+}
+
+.thread-panel-composer {
+  border-top: 1px solid var(--border);
+  padding: 10px 12px;
+  flex-shrink: 0;
+}
+
+.thread-panel-composer textarea {
+  width: 100%;
+  resize: none;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: inherit;
+  font: inherit;
+  font-size: var(--fs-sm);
+  padding: 8px 10px;
+}
+
+.thread-panel-composer-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 6px;
+  gap: 8px;
+}
+
+.thread-panel-broadcast {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+}
+
+.thread-panel-send {
+  background: var(--accent);
+  color: var(--on-accent);
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: 6px 14px;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  cursor: pointer;
+  min-height: var(--control-md);
+}
+
+.thread-panel-send:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* Sidebar thread-unread dot */
+.conv-thread-unread {
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  align-self: flex-start;
+  margin-top: 2px;
+}
+
+@media (max-width: 1399px) {
+  .thread-panel {
+    position: absolute;
+    inset: 0;
+    width: auto;
+    z-index: var(--z-drawer);
+  }
+  .chat-with-thread {
+    position: relative;
+  }
+}
+.runtime-host-status {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full);
+  background: var(--text-muted);
+  flex: 0 0 auto;
+}
+
+.runtime-host-status--online {
+  background: #20a66a;
+  box-shadow: 0 0 0 3px color-mix(in srgb, #20a66a 18%, transparent);
+}
+
+.msg-runtime-host {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  vertical-align: middle;
+}
+.msg-runtime-host::before { content: "·"; color: var(--text-tertiary); }
+/* Harness accounts are device-local identities, so keep setup and exact
+   quota status visually grouped with the runtime/model controls. */
+.harness-account-picker {
+  display: grid;
+  gap: 10px;
+}
+
+.harness-accounts-card {
+  width: min(680px, calc(100vw - 32px));
+}
+
+.harness-account-list {
+  display: grid;
+  gap: 10px;
+}
+
+.harness-account-record {
+  display: grid;
+  gap: 9px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-elevated);
+}
+
+.harness-account-record > div:first-child {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+}
+
+.harness-account-record > div:first-child span {
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+}
+
+.harness-account-summary {
+  margin: var(--space-2) 0;
+}
+
+.harness-account-summary-windows {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  margin-top: var(--space-1);
+}
+
+.harness-account-summary-windows span {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 2px 6px;
+}
+
+.harness-account-summary small {
+  display: block;
+  color: var(--text-muted);
+  margin-top: var(--space-1);
+}
+
+.harness-accounts-toggle {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+
+.harness-account-record .field-hint {
+  margin: 0;
+}
+
+.harness-account-add-button {
+  justify-self: start;
+}
+
+.harness-account-add,
+.harness-account-setup,
+.harness-account-repair,
+.harness-account-usage {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-elevated);
+}
+
+.harness-account-usage {
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  font-size: 12px;
+}
+
+.harness-account-usage small {
+  grid-column: 1 / -1;
+  color: var(--text-muted);
+}
+
+.harness-account-setup code,
+.harness-account-repair code {
+  overflow-wrap: anywhere;
+  user-select: all;
+}

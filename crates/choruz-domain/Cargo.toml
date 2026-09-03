@@ -1,0 +1,14 @@
+[package]
+name = "choruz-domain"
+version.workspace = true
+edition.workspace = true
+description = "Row types of the Choruz control plane, with no I/O"
+license.workspace = true
+
+[dependencies]
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

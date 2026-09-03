@@ -1,0 +1,78 @@
+/* ============================================================
+   Terminal – embedded xterm.js
+   ============================================================ */
+
+/* Flex so the inner .terminal-container stretches to the pane's full height. */
+.terminal-pane {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.terminal-pane.is-hidden {
+  display: none;
+}
+
+.terminal-container {
+  flex: 1;
+  min-height: 0;
+  background: #0c0c0c;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  padding: var(--space-1);
+}
+
+/* In light mode the xterm canvas itself is light (handled in
+ * terminal-view.tsx via theme-aware xterm palette). The container
+ * around it was hardcoded #0c0c0c, so the 4px padding left a black
+ * frame around the cream terminal — match the container to the
+ * terminal background so the PTY blends into the chat surface. */
+[data-theme="light"] .terminal-container {
+  background: #FAF9F5;
+}
+
+.terminal-container .xterm {
+  height: 100%;
+}
+
+.terminal-container .xterm-viewport {
+  overflow-y: auto !important;
+  /* xterm.js sets the viewport bg via inline style based on the
+   * configured theme, but only the visible scroll-area bg — when the
+   * canvas is shorter than the container (common: PTY with few rows
+   * of output), the viewport's own background bleeds through at the
+   * bottom. Leaving this transparent lets the canvas / parent
+   * container drive the colour. */
+  background: transparent !important;
+}
+
+/* Modal select styling */
+.modal-form select {
+  width: 100%;
+  padding: 10px 12px;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-base);
+  cursor: pointer;
+}
+
+.modal-form select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* Native selects: drop the OS chrome and draw our own chevron so they sit
+ * next to the lucide icons without a foreign control style. */
+.modal-form select,
+.channel-task-controls select,
+.group-template-role-header select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: calc(var(--space-3) + 18px);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23888888' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right var(--space-2) center;
+  background-size: 12px;
+}

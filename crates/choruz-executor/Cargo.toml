@@ -1,0 +1,27 @@
+[package]
+name = "choruz-executor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Executor Node: sandbox management, CLI adapters (Claude Code / Codex), local WAL, heartbeat, epoch fencing"
+
+[dependencies]
+async-trait.workspace = true
+chrono.workspace = true
+choruz-events = { path = "../choruz-events" }
+choruz-ids = { path = "../choruz-ids" }
+choruz-session = { path = "../choruz-session" }
+rusqlite = { version = "0.34", features = ["bundled"] }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["full"] }
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { workspace = true, features = ["full", "test-util"] }
+
+[lints]
+workspace = true

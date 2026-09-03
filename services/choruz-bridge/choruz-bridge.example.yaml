@@ -1,0 +1,18 @@
+choruz:
+  api_url: "http://localhost:3000"
+  username: "operator"
+  password: "choruz-local"
+
+slack:
+  bot_token: "xoxb-your-bot-token"
+  app_token: "xapp-your-app-token"
+
+telegram:
+  bot_token: "123456:ABC-your-bot-token"
+
+webhook:
+  port: 3030
+  secret: "replace-with-a-random-webhook-secret"
+
+database:
+  connection_string: "postgres://<database-user>@127.0.0.1:5432/choruz"

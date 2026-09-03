@@ -1,0 +1,158 @@
+/* Connection banners */
+.connection-banner {
+  min-height: 32px;
+  padding: 6px 16px;
+  font-size: var(--fs-md);
+  text-align: center;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+}
+.connection-banner-reconnecting {
+  background: rgba(245, 158, 11, 0.14);
+  color: #fde68a;
+  border-bottom: 1px solid rgba(245, 158, 11, 0.28);
+}
+.connection-banner-retry {
+  padding: 2px 10px;
+  font-size: var(--fs-sm);
+  background: color-mix(in srgb, currentcolor 10%, transparent);
+  color: inherit;
+  border: 1px solid color-mix(in srgb, currentcolor 30%, transparent);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background var(--transition-smooth), border-color var(--transition-smooth);
+  min-height: var(--control-sm);
+}
+.connection-banner-retry:hover {
+  background: color-mix(in srgb, currentcolor 18%, transparent);
+  border-color: color-mix(in srgb, currentcolor 45%, transparent);
+}
+
+.chat-header-info {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.chat-header-info .chat-title {
+  font-family: var(--font-brand);
+  font-weight: 600;
+  font-size: var(--fs-lg);
+  letter-spacing: -0.01em;
+  line-height: var(--lh-tight);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chat-header-info .chat-subtitle {
+  color: var(--text-secondary);
+  font-size: var(--fs-xs);
+  font-family: var(--font-brand);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin-top: 2px;
+}
+
+.chat-header-actions {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.chat-header-actions button {
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  transition: background var(--transition-fast);
+  font-size: var(--fs-lg);
+  color: var(--text-secondary);
+}
+
+.chat-header-actions button:hover {
+  background: var(--border);
+  color: var(--text);
+}
+
+.chat-header-actions button.active {
+  background: var(--accent-dim);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* Agent-mode header: the whole bar shifts into the amber/terminal visual
+ * language when you open a DM with an agent. Not cosmetic — it replaces
+ * the "tiny AI chip" pattern with a structural signal that the person on
+ * the other end is a machine. */
+.chat-header.is-agent {
+  background:
+    linear-gradient(180deg, rgba(217, 119, 6, 0.09) 0%, rgba(217, 119, 6, 0.02) 100%),
+    rgba(22, 22, 22, 0.66);
+  border-bottom-color: rgba(217, 119, 6, 0.28);
+  box-shadow: 0 1px 20px rgba(217, 119, 6, 0.08);
+}
+.chat-header.is-agent .chat-title {
+  color: var(--agent-luminous);
+  text-shadow: 0 0 18px rgba(251, 191, 36, 0.28);
+}
+.chat-header.is-agent .chat-subtitle {
+  color: var(--agent);
+}
+.chat-header.is-agent .avatar {
+  box-shadow:
+    0 0 0 1.5px rgba(217, 119, 6, 0.65),
+    0 0 18px rgba(217, 119, 6, 0.32);
+}
+
+/* Light-mode agent header — drop the dark 22/22/22 glass, keep the
+ * amber-tinted "this is a machine" signal, but on cream so the bar
+ * doesn't read as a black gradient slab cutting across the page. */
+[data-theme="light"] .chat-header.is-agent {
+  background:
+    linear-gradient(180deg, rgba(217, 119, 6, 0.10) 0%, rgba(217, 119, 6, 0.02) 100%),
+    rgba(255, 255, 255, 0.7);
+  border-bottom-color: rgba(217, 119, 6, 0.20);
+  box-shadow: 0 1px 12px rgba(217, 119, 6, 0.06);
+}
+[data-theme="light"] .chat-header.is-agent .chat-title {
+  /* The dark-mode title was a luminous amber glow on near-black; on
+   * cream that washed out. Use the deeper agent token + a faint glow. */
+  color: #B8651C;
+  text-shadow: 0 0 12px rgba(217, 119, 6, 0.18);
+}
+[data-theme="light"] .chat-header.is-agent .chat-subtitle {
+  color: #B8651C;
+}
+
+/* ---- Messages ---- */
+
+.messages-area {
+  flex: 1;
+  overflow-y: auto;
+  padding: clamp(12px, 1.5vw, 20px) clamp(12px, 2vw, 24px);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.messages-area::-webkit-scrollbar { width: 6px; }
+.messages-area::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.messages-history-loading {
+  padding: var(--space-2);
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  text-align: center;
+}

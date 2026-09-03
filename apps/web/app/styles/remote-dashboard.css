@@ -1,0 +1,125 @@
+/* Remote dashboard: the /remote entry card and the connection pill that
+   floats over the relayed ChatApp. */
+
+.remote-entry {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: var(--space-6, 24px);
+  background: var(--bg-canvas, var(--bg-surface));
+}
+
+.remote-entry-card {
+  width: min(480px, 100%);
+  display: grid;
+  gap: var(--space-4, 16px);
+  padding: var(--space-6, 24px);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg, 16px);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-lg, 0 18px 60px rgb(0 0 0 / 0.12));
+}
+
+.remote-entry-card h1 {
+  margin: 0;
+  font-size: 1.5rem;
+  letter-spacing: -0.02em;
+}
+
+.remote-entry-eyebrow {
+  margin: 0;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--accent, var(--text-muted));
+}
+
+.remote-entry-hint,
+.remote-entry-status {
+  margin: 0;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.remote-entry-error {
+  margin: 0;
+  color: var(--danger, #b83924);
+}
+
+.remote-entry-field {
+  display: grid;
+  gap: var(--space-1, 4px);
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.remote-entry-field input {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm, 8px);
+  background: var(--bg-surface);
+  color: inherit;
+  font: inherit;
+}
+
+.remote-entry-code {
+  font-family: var(--font-mono);
+  font-size: 1.25rem;
+  letter-spacing: 0.16em;
+}
+
+.remote-entry-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3, 12px);
+}
+
+.remote-dashboard {
+  position: relative;
+  min-height: 100vh;
+}
+
+.remote-dashboard-status {
+  position: fixed;
+  right: 12px;
+  bottom: 12px;
+  z-index: 60;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--border-default);
+  border-radius: 999px;
+  background: var(--bg-surface);
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  box-shadow: var(--shadow-md, 0 6px 20px rgb(0 0 0 / 0.12));
+}
+
+.remote-dashboard-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-muted);
+}
+
+.remote-dashboard-dot--connected {
+  background: var(--success, #0b8c7b);
+}
+
+.remote-dashboard-dot--revoked {
+  background: var(--danger, #b83924);
+}
+
+.remote-dashboard-link {
+  border: 0;
+  padding: 0;
+  background: none;
+  color: var(--accent, inherit);
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+}

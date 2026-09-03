@@ -1,0 +1,27 @@
+[package]
+name = "choruz-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Human and automation control-plane CLI for Choruz"
+
+[[bin]]
+name = "choruz"
+path = "src/main.rs"
+
+[dependencies]
+reqwest.workspace = true
+rustls.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+dirs = "6"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

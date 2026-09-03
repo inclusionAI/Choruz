@@ -1,0 +1,5 @@
+# Limit test parallelism to avoid exhausting PostgreSQL connections.
+# Integration tests create DB pools that share PG's max_connections (100)
+# with running services (gateway, runner).
+[env]
+RUST_TEST_THREADS = "1"

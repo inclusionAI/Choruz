@@ -1,0 +1,517 @@
+/* ============================================================
+   Choruz – Dark modern chat theme
+   ============================================================ */
+
+:root {
+  color-scheme: dark;
+  --bg:          #0a0a0a;
+  --bg-surface:  #161616;
+  --bg-elevated: #1e1e1e;
+  --border:      #2a2a2a;
+  --border-light:#333;
+  --surface-hover: rgba(255, 255, 255, 0.05);
+  --text:        #e4e4e4;
+  --text-secondary: #888;
+  --text-muted:  #777;
+  --accent:      #06a590;
+  --text-tertiary: #666;
+  --accent-dim:  rgba(6,165,144,0.13);
+  --accent-hover:#14c8aa;
+  --agent:       #d97706;
+  --agent-dim:   rgba(217,119,6,0.12);
+  /* Agent as second species: luminous amber treatment for AI zones.
+   * --agent-luminous = bright enough to read as "signal", used on strong
+   *   emphasis like sender names, AI hairlines, terminal glyph.
+   * --agent-surface  = faint amber-tinted surface for agent bubbles. */
+  --agent-luminous: #fbbf24;
+  --agent-surface:  linear-gradient(180deg, rgba(217,119,6,0.05), rgba(217,119,6,0.02));
+  --success:     #22c55e;
+  --success-soft:#86efac;
+  --error:       #ef4444;
+  --error-dim:   rgba(239,68,68,0.12);
+  --danger-soft: #fca5a5;
+  --warn:        #fbbf24;
+  --on-accent:   #fff;
+  /* Type pairing: Instrument Sans (body) + Azeret Mono (display/brand/code).
+   * Humane-editorial voice for chat, terminal-precise for agent zones.
+   * `--font-sans` and `--font-mono` are set by next/font in layout.tsx.
+   * Here we only define `--font-brand` (display/eyebrow/login/chat title)
+   * as an alias of mono, plus a fallback stack baked into body/code below. */
+  --font-brand: var(--font-mono), 'SF Mono', 'JetBrains Mono', ui-monospace, monospace;
+  --radius-sm:   4px;
+  --radius-md:   6px;
+  --radius-lg:   10px;
+  --radius-xl:   14px;
+  --radius-full: 9999px;
+
+  /* Motion scale — two durations, one curve. Entrances (menus, panels,
+   * modals) use the same pair so nothing on screen moves at a third speed. */
+  --duration-fast: 120ms;                                    /* hover/focus/menus */
+  --duration-base: 240ms;                                    /* panels/modals/structural */
+  --ease-out: cubic-bezier(.2, .8, .2, 1);
+  --transition-fast:   var(--duration-fast) var(--ease-out);
+  --transition-smooth: var(--duration-base) var(--ease-out);
+
+  /* Spacing (8px grid). Use these for padding/margin, not literals. */
+  --space-1:  4px;
+  --space-2:  8px;
+  --space-3:  12px;
+  --space-4:  16px;
+  --space-5:  24px;
+  --space-6:  32px;
+  --space-7:  40px;
+
+  /* Type scale — 7 steps, no in-between. */
+  --fs-xs:    11px;  /* metadata, eyebrows */
+  --fs-sm:    12px;  /* secondary */
+  --fs-md:    13px;  /* default body */
+  --fs-base:  14px;  /* primary body */
+  --fs-lg:    16px;  /* card title */
+  --fs-xl:    20px;  /* section heading */
+  --fs-2xl:   28px;  /* display */
+
+  /* Elevation. Three steps — dropdown, modal, hero. */
+  --shadow-sm: 0 2px 6px rgba(0,0,0,0.3);
+  --shadow-md: 0 6px 18px rgba(0,0,0,0.35);
+  --shadow-lg: 0 16px 40px rgba(0,0,0,0.5);
+  /* Side-drawer shadows (horizontal offset). Use -left / -right when
+   * the drawer is anchored to the respective screen edge. */
+  --shadow-drawer-left:  -8px 0 24px rgba(0,0,0,0.4);
+  --shadow-drawer-right:  8px 0 24px rgba(0,0,0,0.4);
+
+  /* Focus rings. Paired with `outline: none` on the element. */
+  --ring-accent:        0 0 0 2px rgba(6, 165, 144, 0.25);
+  --ring-accent-strong: 0 0 0 3px rgba(6, 165, 144, 0.35);
+
+  /* Git graph palette — fixed semantic colors for branch visualisation.
+   * Kept separate from agent/status tokens since branch coloring is a
+   * data-viz palette, not a UI signal. */
+  --graph-main:   #3b82f6;
+  --graph-ahead:  #86efac;
+  --graph-behind: #fda4af;
+
+  /* Icon-family colors. */
+  --icon-folder:  #d4a054;
+  --icon-ts:      #3178c6;
+  --icon-js:      #f7df1e;
+  --icon-rust:    #dea584;
+  --icon-python:  #3572a5;
+  --icon-md:      #519aba;
+  --icon-json:    #cbcb41;
+  --icon-config:  #6d8086;
+  --icon-css:     #563d7c;
+  --icon-html:    #e34c26;
+  --icon-sql:     #e38c00;
+  --icon-shell:   #89e051;
+
+  /* Control heights — avatar/button/input grid. */
+  --control-sm: 24px;
+  --control-md: 32px;
+  --control-lg: 40px;
+
+  /* Stacking order — one scale for the whole app. */
+  --z-raised:  10;   /* resize handles, sticky composer, hover actions */
+  --z-menu:    100;  /* dropdowns, context menus, autocomplete */
+  --z-drawer:  200;  /* off-canvas sidebar / panels */
+  --z-overlay: 300;  /* fullscreen panels */
+  --z-modal:   1000;
+  --z-menu-backdrop:   99;  /* click-away layer just under a menu */
+  --z-drawer-backdrop: 199;
+
+  /* Line-height scale. */
+  --lh-tight: 1.2;
+  --lh-snug:  1.4;
+  --lh-base:  1.5;
+
+  /* Faint accent wash for hover/selected rows. */
+  --accent-tint: rgba(6, 165, 144, 0.08);
+
+  /* ── 2026 chat refresh: glow + glass ───────────────────────────────
+   * Send button, input focus and glass-surface tokens. Tokens, not
+   * literal hex, so the rest of the UI stays consistent if we tune
+   * the palette. */
+  --gradient-send:    linear-gradient(135deg, #06a590, #0ed3b1);
+  --glow-send:        0 6px 18px rgba(6, 165, 144, 0.4);
+  --glow-input-focus: 0 0 0 3px rgba(6, 165, 144, 0.18), 0 8px 24px rgba(6, 165, 144, 0.12);
+  --glass-bg:         rgba(22, 22, 22, 0.72);
+  --glass-blur:       saturate(140%) blur(14px);
+  --radius-input:     14px;
+
+  /* Ambient body wash — two soft radial blooms, one teal one amber,
+   * positioned at opposite corners. They never compete with content
+   * because alpha is < 8%. */
+  --ambient-wash:
+    radial-gradient(ellipse 1100px 700px at 12% -10%, rgba(6, 165, 144, 0.06), transparent 60%),
+    radial-gradient(ellipse 900px 600px at 95% 110%, rgba(217, 119, 6, 0.04), transparent 60%);
+}
+
+/* ── Light theme — Anthropic-inspired warm cream + cinnamon accent ─
+ * Overrides every colour token from `:root`. Non-colour tokens (radius,
+ * spacing, fonts, control heights) are inherited from `:root` and don't
+ * need to be repeated here.
+ *
+ * Default theme is light (set by ThemeProvider in app/layout.tsx); the
+ * dark-mode UI is the original `:root` block above. Anthropic's website
+ * + claude.ai use a warm cream `#FAF9F5` background, deep brown-black
+ * text `#141413`, and Claude's cinnamon-orange `#D97757` for accents —
+ * the same triad here. Teal `#06a590` and amber `#d97706` were tuned
+ * for dark-on-dark readability and read as overly saturated on cream,
+ * so we shift the primary accent to cinnamon for the light variant. */
+[data-theme="light"] {
+  color-scheme: light;
+  --bg:           #FAF9F5;
+  --bg-surface:   #FFFFFF;
+  --bg-elevated:  #FFFFFF;
+  --border:       #E5E2DA;
+  --border-light: #D4D0C2;
+  --surface-hover: rgba(40, 30, 20, 0.05);
+  --text:         #141413;
+  --text-secondary:#544F47;
+  --text-muted:   #8F8678;
+  --text-tertiary:#B0A89A;
+  --accent:       #D97757;
+  --accent-dim:   rgba(217, 119, 87, 0.12);
+  --accent-hover: #C46443;
+  --agent:        #B8651C;
+  --agent-dim:    rgba(184, 101, 28, 0.10);
+  --agent-luminous:#D97706;
+  --agent-surface: linear-gradient(180deg, rgba(184,101,28,0.04), rgba(184,101,28,0.01));
+  --success:      #16a34a;
+  --success-soft: #86efac;
+  --error:        #dc2626;
+  --error-dim:    rgba(220, 38, 38, 0.10);
+  --danger-soft:  #fca5a5;
+  --warn:         #ca8a04;
+  --on-accent:    #ffffff;
+  --shadow-sm:    0 1px 3px rgba(40, 30, 20, 0.06);
+  --shadow-md:    0 4px 14px rgba(40, 30, 20, 0.10);
+  --shadow-lg:    0 16px 40px rgba(40, 30, 20, 0.16);
+  --shadow-drawer-left:  -8px 0 24px rgba(40, 30, 20, 0.10);
+  --shadow-drawer-right:  8px 0 24px rgba(40, 30, 20, 0.10);
+  --accent-tint:        rgba(217, 119, 87, 0.08);
+  --ring-accent:        0 0 0 2px rgba(217, 119, 87, 0.20);
+  --ring-accent-strong: 0 0 0 3px rgba(217, 119, 87, 0.30);
+
+  /* 2026 chat refresh — light-tuned */
+  --gradient-send:    linear-gradient(135deg, #D97757, #D97757);
+  --glow-send:        0 6px 18px rgba(217, 119, 87, 0.32);
+  --glow-input-focus: 0 0 0 3px rgba(217, 119, 87, 0.16), 0 8px 24px rgba(217, 119, 87, 0.10);
+  --glass-bg:         rgba(255, 255, 255, 0.72);
+  --ambient-wash:
+    radial-gradient(ellipse 1100px 700px at 12% -10%, rgba(217, 119, 87, 0.05), transparent 60%),
+    radial-gradient(ellipse 900px 600px at 95% 110%, rgba(184, 101, 28, 0.03), transparent 60%);
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body, #__next {
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans), -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: clamp(13px, 1.4vw, 15px);
+  line-height: var(--lh-base);
+  font-feature-settings: "ss01", "cv02", "cv11";  /* Instrument Sans stylistic alternates for lowercase g/y */
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  /* Safe area for notched phones */
+  padding-top: env(safe-area-inset-top);
+  padding-bottom: env(safe-area-inset-bottom);
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+}
+
+/* Ambient atmosphere: paint the soft teal+amber blooms behind everything.
+ * `body::before` is fixed-position so it stays put on scroll, sits at
+ * z-index 0 (everything real lives in higher stacking contexts). */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  background: var(--ambient-wash);
+  pointer-events: none;
+  z-index: 0;
+}
+body > * { position: relative; z-index: 1; }
+
+a { color: inherit; text-decoration: none; }
+
+button, input, select, textarea {
+  font: inherit;
+  color: inherit;
+  border: none;
+  background: none;
+}
+input[type="checkbox"] {
+  accent-color: var(--accent);
+}
+
+/* Keyboard-focus affordance. Only paint a ring on elements that actually
+ * accept input (links/buttons/form controls); arbitrary containers should
+ * not flash a 2px outline just because a descendant stole focus. */
+:where(a, button, input, select, textarea, summary, [role="button"], [tabindex]):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+/* Form controls inside surface cards use an inset ring instead of an
+ * outset outline, so they don't bleed past the card edge. */
+:where(input, select, textarea):focus-visible {
+  outline: none;
+  box-shadow: var(--ring-accent-strong);
+  border-color: var(--accent);
+}
+
+/* Press feedback: enabled push buttons sink a touch while held. The whole
+ * selector sits inside :where() so it has zero specificity and any
+ * component :active rule wins. Full-width rows and tabs opt out: a
+ * centre-origin scale reads as a sideways slide on those, not a press. */
+:where(button:not(:disabled), [role="button"]):active {
+  transform: scale(0.97);
+}
+:where([role="tab"], .conv-item-main, .detail-member-option, .editor-tab-main,
+  .company-dropdown-item-name, .file-tree-section-toggle, .git-graph-branch-row,
+  .member-row-main):active {
+  transform: none;
+}
+
+/* Visually hidden, still read by assistive tech. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Inline loading indicator (components/ui/spinner.tsx). */
+.spinner {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.icon-spin {
+  animation: spin 0.9s linear infinite;
+}
+
+/* Entrances. Menus drop from their anchor, side panels slide in from
+ * their edge, banners and disclosed content fade in. Components unmount
+ * on close, so these are entrance-only: a single `from` keyframe and the
+ * default fill mode, which leaves no trace once the animation has run. */
+@keyframes fade-in {
+  from { opacity: 0; }
+}
+@keyframes menu-in {
+  from { opacity: 0; transform: translateY(-4px) scale(0.98); }
+}
+@keyframes panel-in-right {
+  from { opacity: 0; transform: translateX(24px); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes slide-in-right {
+  from { transform: translateX(100%); }
+}
+
+.dropdown-menu,
+.company-dropdown,
+.company-context-menu,
+.msg-actions-menu {
+  transform-origin: top;
+  animation: menu-in var(--duration-fast) var(--ease-out);
+}
+/* Right-anchored menus scale out of their trigger's corner, not the middle. */
+.dropdown-menu.align-right,
+.company-context-menu,
+.msg-actions-menu {
+  transform-origin: top right;
+}
+
+/* Suggestion lists are welded to their input's bottom edge, so they only
+ * fade; a scale would show a seam. Banners and disclosed content likewise. */
+.mention-dropdown,
+.path-picker-dropdown,
+.folder-picker-suggestions,
+.connection-banner,
+.runtime-queue-banner,
+.reply-preview,
+.file-tree-children,
+.conversation-section-body,
+.detail-add-member-panel,
+.add-skill-panel,
+.git-graph-branch-detail,
+.skill-content-panel {
+  animation: fade-in var(--duration-fast) var(--ease-out);
+}
+
+.detail-panel,
+.thread-panel {
+  animation: panel-in-right var(--duration-base) var(--ease-out);
+}
+
+/* Ghost icon buttons: a square hit target with no chrome until hovered.
+ * Each component keeps only its colour, size and hover deltas. */
+.company-dots-btn,
+.conv-item-action-btn,
+.attachment-queue-remove,
+.detail-header button,
+.detail-add-member-btn,
+.member-remove-btn,
+.msg-actions-btn,
+.reply-preview-close,
+.modal-close,
+.file-tree-refresh-btn,
+.editor-tab-close,
+.thread-panel-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: var(--control-md);
+  height: var(--control-md);
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  cursor: pointer;
+}
+
+[data-theme="light"] body {
+  letter-spacing: 0.01em;
+}
+[data-theme="light"] .send-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 24px rgba(217, 119, 87, 0.20);
+  filter: none;
+}
+
+[data-theme="light"] .send-btn:active {
+  transform: translateY(0);
+}
+
+[data-theme="light"] .send-btn {
+  background: linear-gradient(180deg, #E28A6B 0%, #D97757 100%);
+  box-shadow: 0 4px 12px rgba(217, 119, 87, 0.15);
+}
+
+/* ── Light theme — main app surfaces ─────────────────────────────
+ * Many surfaces hardcode rgba(22,22,22,X) dark glass or rgba(0,0,0,X)
+ * dark washes that were tuned for the dark canvas. Override them with
+ * cream/white-glass equivalents so the whole app reads as one warm
+ * cream theme instead of dark-island-floating-on-cream.
+ */
+
+/* The two wash gradients in .chat-shell were teal+amber on near-black;
+ * on cream they go muddy. Use cinnamon+amber at lower alpha for the
+ * same atmospheric effect on a warm cream base. */
+[data-theme="light"] .chat-shell {
+  background:
+    radial-gradient(ellipse 60% 50% at 0% 0%,     rgba(217, 119, 87, 0.04), transparent 55%),
+    radial-gradient(ellipse 55% 45% at 100% 100%, rgba(184, 101, 28, 0.035), transparent 55%),
+    var(--bg);
+}
+
+/* Sidebar: dark glass → white glass with warm hairline. */
+[data-theme="light"] .chat-sidebar {
+  background: rgba(255, 255, 255, 0.65);
+  border-right: 1px solid rgba(0, 0, 0, 0.04);
+}
+
+/* Chat input bar uses --glass-bg (already light-aware) but its border
+ * is hardcoded; reset to token. */
+[data-theme="light"] .chat-input-bar {
+  border-top-color: var(--border);
+}
+
+/* Mention dropdown / popovers — dark glass became invisible on cream. */
+[data-theme="light"] .mention-dropdown,
+[data-theme="light"] .dropdown-menu {
+  background: rgba(255, 255, 255, 0.95);
+  border-color: var(--border);
+  border-radius: var(--radius-xl);
+  box-shadow:
+    0 1px 1px rgba(217, 119, 87, 0.05),
+    0 10px 20px rgba(40, 30, 20, 0.04),
+    0 20px 40px rgba(40, 30, 20, 0.03);
+}
+
+/* Dialogs sit above text-heavy application surfaces, so their content layer
+ * must be opaque. Dropdowns keep the lighter glass treatment above. */
+[data-theme="light"] .modal-card {
+  background: var(--bg-surface);
+}
+
+/* Markdown code blocks inside messages were rgba(0,0,0,0.3) — fine on
+ * dark, looks like a void on cream. Tone down to a light grey panel. */
+[data-theme="light"] .msg-markdown code {
+  background: rgba(40, 30, 20, 0.06);
+  color: var(--text);
+}
+[data-theme="light"] .msg-markdown pre {
+  background: rgba(40, 30, 20, 0.05);
+}
+[data-theme="light"] .msg-group.self .msg-markdown code,
+[data-theme="light"] .msg-group.self .msg-markdown pre {
+  background: rgba(0, 0, 0, 0.18);
+  color: #fff;
+}
+
+/* Send button glow tint shift handled by --glow-send token. The button
+ * gradient pulled --gradient-send via the recent edit, so light-mode
+ * cinnamon flows through automatically. */
+
+/* Modal overlay backdrop — was rgba(0,0,0,0.7) which blackouts the
+ * page. Use a softer warm-tinted scrim. */
+[data-theme="light"] .modal-overlay {
+  background: rgba(40, 30, 20, 0.32);
+}
+
+/* Detail panel + agent config side surfaces — most use var() tokens
+ * but the hover/active states sometimes hardcode #242424. Replace
+ * those with a subtle cream tint. */
+[data-theme="light"] .sidebar-action-btn:hover,
+[data-theme="light"] .dropdown-menu button:hover {
+  background: rgba(217, 119, 87, 0.06);
+}
+
+/* Chat input row hover (#242424 in dark) → warm cream tint. */
+[data-theme="light"] .chat-input-row:hover {
+  background: rgba(40, 30, 20, 0.03);
+}
+
+/* Keep the composer light after the pointer leaves. The textarea retains
+ * focus, so the base theme's dark :focus-within surface otherwise wins. */
+[data-theme="light"] .chat-input-row:focus-within {
+  background: rgba(255, 255, 255, 0.72);
+}
+
+/* Chat main canvas — was a dark vignette. Light: the chat-shell wash
+ * already provides atmosphere; the main area should be near-cream
+ * with a very subtle top-down lighter→slightly-deeper gradient to
+ * seat the messages. */
+[data-theme="light"] .chat-main {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.32) 0%, rgba(255, 248, 238, 0.18) 50%, rgba(255, 248, 238, 0) 100%);
+}
+
+/* Chat header glass — dark 22/22/22 → near-white. */
+[data-theme="light"] .chat-header {
+  background: rgba(255, 255, 255, 0.7);
+  border-bottom-color: var(--border);
+}
+
+/* Detail panel and any other dark-glass pane in the dashboard. */
+[data-theme="light"] .detail-panel {
+  background: rgba(255, 255, 255, 0.65);
+  border-left-color: var(--border);
+}
+
+/* Empty state surface — its bg often relies on chat-main; ensure the
+ * icon halo + text read on cream. */
+[data-theme="light"] .empty-state .empty-icon {
+  background: rgba(217, 119, 87, 0.06);
+}
+[data-theme="light"] .empty-state h3 { color: var(--text); }
+[data-theme="light"] .empty-state p  { color: var(--text-secondary); }

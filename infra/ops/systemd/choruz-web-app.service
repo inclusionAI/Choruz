@@ -1,0 +1,21 @@
+[Unit]
+Description=Choruz web-app
+After=network.target choruz-api-gateway.service
+
+[Service]
+Type=simple
+User=choruz
+Group=choruz
+LogsDirectory=choruz
+LogsDirectoryMode=0750
+WorkingDirectory=/srv/choruz/releases/current/web/apps/web
+Environment=PORT=3100
+Environment=CHORUZ_API_BASE_URL=http://127.0.0.1:3000
+ExecStart=/usr/bin/env node /srv/choruz/releases/current/web/apps/web/server.js
+Restart=always
+RestartSec=2
+StandardOutput=append:/var/log/choruz/web-app.log
+StandardError=append:/var/log/choruz/web-app.log
+
+[Install]
+WantedBy=multi-user.target
