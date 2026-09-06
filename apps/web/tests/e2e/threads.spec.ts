@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { API_BASE, CREDENTIALS, WEB_BASE } from "../fixtures/auth";
+import { createCompany, createGroup, deleteCompany } from "../fixtures/api";
 
 /**
  * Message threads E2E.
@@ -107,6 +108,13 @@ test("thread rollup, side panel, and quiet-reply timeline filtering", async ({ p
   // Reply from the composer (quiet — checkbox unchecked by default).
   const panelReply = `panel-reply-${Date.now()}`;
   await panel.locator("textarea").fill(panelReply);
+  const composing = await panel.locator("textarea").evaluate((element) =>
+    element.dispatchEvent(new KeyboardEvent("keydown", {
+      key: "Enter", bubbles: true, cancelable: true, isComposing: true,
+    })),
+  );
+  expect(composing, "IME confirmation must not submit or cancel the input event").toBe(true);
+  await expect(panel.locator("textarea")).toHaveValue(panelReply);
   await panel.locator("textarea").press("Enter");
   await expect(panel.locator(`.msg-group:has-text("${panelReply}")`)).toBeVisible({
     timeout: 10000,
@@ -127,6 +135,120 @@ test("thread rollup, side panel, and quiet-reply timeline filtering", async ({ p
   await expect(page.locator(".thread-panel")).toHaveCount(0);
 
   await page.screenshot({ path: "test-results/threads-e2e.png", fullPage: false });
+});
+
+test("incoming thread replies preserve reading position and follow the bottom", async ({ page }) => {
+  await page.setViewportSize({ width: 1600, height: 900 });
+  const { token, principalId } = await loginAndSetCookie(page);
+  const name = `thread-scroll-${crypto.randomUUID()}`;
+  const company = await createCompany(page, token, principalId, name);
+  try {
+    const group = await createGroup(page, token, principalId, name, [], company.id);
+    const root = await sendMessage(page, token, principalId, group.id, "Reading root");
+    const metadata = { reply_to_id: root.id, thread: true };
+    for (let i = 0; i < 24; i++) {
+      await sendMessage(page, token, principalId, group.id, `Historical reply ${i}`, metadata);
+    }
+    await page.goto(`${WEB_BASE}/dashboard`);
+    await page.locator(".company-selector-btn").click();
+    await page.locator(".company-dropdown-item-name").filter({ hasText: name }).click();
+    const groups = page.getByRole("button", { name: /Group Conversations/ });
+    if (await groups.getAttribute("aria-expanded") !== "true") await groups.click();
+    await page.locator(`[data-conversation-id="${group.id}"]`).click();
+    await page.locator(".msg-thread-rollup").click();
+    const list = page.locator(".thread-panel-messages");
+    const gap = () => list.evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop);
+    await expect(list).toContainText("Historical reply 23");
+    await expect.poll(gap).toBeLessThan(2);
+    await list.evaluate((el) => { el.scrollTop = 80; el.dispatchEvent(new Event("scroll")); });
+    await expect.poll(() => list.evaluate((el) => el.scrollTop)).toBe(80);
+    await sendMessage(page, token, principalId, group.id, "Arrived while reading", metadata);
+    await expect(list).toContainText("Arrived while reading");
+    await expect.poll(() => list.evaluate((el) => el.scrollTop)).toBe(80);
+    await expect(page.getByRole("button", { name: "New replies" })).toBeVisible();
+    await page.getByRole("button", { name: "New replies" }).click();
+    await expect.poll(gap).toBeLessThan(2);
+    await expect(page.getByRole("button", { name: "New replies" })).toHaveCount(0);
+    await list.evaluate((el) => { el.scrollTop = el.scrollHeight; el.dispatchEvent(new Event("scroll")); });
+    await sendMessage(page, token, principalId, group.id, "Arrived at bottom", metadata);
+    await expect(list).toContainText("Arrived at bottom");
+    await expect.poll(gap).toBeLessThan(2);
+    await expect(page.getByRole("button", { name: "New replies" })).toHaveCount(0);
+    await list.evaluate((el) => { el.scrollTop = 80; el.dispatchEvent(new Event("scroll")); });
+    await sendMessage(page, token, principalId, group.id, "Another unread reply", metadata);
+    await expect(page.getByRole("button", { name: "New replies" })).toBeVisible();
+    await list.evaluate((el) => { el.scrollTop = el.scrollHeight; el.dispatchEvent(new Event("scroll")); });
+    await expect(page.getByRole("button", { name: "New replies" })).toHaveCount(0);
+  } finally {
+    await deleteCompany(page, token, company.id);
+  }
+});
+
+test("thread drafts survive closing and switching roots", async ({ page }) => {
+  // Keep both columns visible; narrower layouts intentionally overlay the thread.
+  await page.setViewportSize({ width: 1600, height: 900 });
+  const { token, principalId } = await loginAndSetCookie(page);
+  const name = `thread-drafts-${crypto.randomUUID()}`;
+  const company = await createCompany(page, token, principalId, name);
+  let releaseSend = () => {};
+  try {
+    const group = await createGroup(page, token, principalId, name, [], company.id);
+    for (const text of ["first root", "second root"]) {
+      const root = await sendMessage(page, token, principalId, group.id, text);
+      await sendMessage(page, token, principalId, group.id, `Reply to ${text}`, { reply_to_id: root.id, thread: true });
+    }
+    await page.goto(`${WEB_BASE}/dashboard`);
+    await page.locator(".company-selector-btn").click();
+    await page.locator(".company-dropdown-item-name").filter({ hasText: name }).click();
+    const groups = page.getByRole("button", { name: /Group Conversations/ });
+    if (await groups.getAttribute("aria-expanded") !== "true") await groups.click();
+    await page.locator(`[data-conversation-id="${group.id}"]`).click();
+    const open = async (text: string) => {
+      await page.locator(".chat-primary .msg-group").filter({ hasText: text }).locator(".msg-thread-rollup").click();
+      await expect(page.getByRole("complementary", { name: "Thread" })).toContainText(text);
+    };
+    const input = page.getByRole("textbox", { name: "Reply in thread" });
+    await open("first root");
+    await input.fill("first unsent draft");
+    await page.getByRole("button", { name: "Close thread" }).click();
+    await open("first root");
+    await expect(input).toHaveValue("first unsent draft");
+    await open("second root");
+    await expect(input).toHaveValue("");
+    await input.fill("second unsent draft");
+    await open("first root");
+    await expect(input).toHaveValue("first unsent draft");
+    await input.press("Enter");
+    await expect(input).toHaveValue("");
+    await expect(page.locator(".thread-panel .msg-group").filter({ hasText: "first unsent draft" })).toBeVisible();
+    await open("second root");
+    await expect(input).toHaveValue("second unsent draft");
+    await open("first root");
+    await expect(input).toHaveValue("");
+    const gate = new Promise<void>((resolve) => { releaseSend = resolve; });
+    await page.route("**/api/v1/messages", async (route) => {
+      if (route.request().postDataJSON()?.content !== "held submission") return route.continue();
+      const response = await route.fetch();
+      await gate;
+      await route.fulfill({ response });
+    });
+    const pending = page.waitForRequest((request) => request.method() === "POST" && request.url().endsWith("/api/v1/messages") && request.postDataJSON()?.content === "held submission");
+    const completed = page.waitForResponse((response) => response.request().postDataJSON()?.content === "held submission");
+    await input.fill("held submission");
+    await input.press("Enter");
+    await pending;
+    await page.getByRole("button", { name: "Close thread" }).click();
+    await open("first root");
+    await input.fill("newer draft");
+    releaseSend();
+    await (await completed).finished();
+    await page.getByRole("button", { name: "Close thread" }).click();
+    await open("first root");
+    await expect(input).toHaveValue("newer draft");
+  } finally {
+    releaseSend();
+    await deleteCompany(page, token, company.id);
+  }
 });
 
 test("thread unread badge: lights on agent reply, survives conversation view, clears on thread view", async ({ page }) => {

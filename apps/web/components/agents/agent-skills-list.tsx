@@ -8,6 +8,7 @@ import { apiBaseUrl } from "../../lib/api/choruz-api";
 import { Spinner } from "../ui/spinner";
 import { EmptyState } from "../ui/empty-state";
 import { transportFetch } from "../../lib/api/transport";
+import { FolderPickerModal } from "../workspace/folder-picker-modal";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -31,6 +32,7 @@ function AddSkillPanel({
   const [localPath, setLocalPath] = useState("");
   const [localBusy, setLocalBusy] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
+  const [browsing, setBrowsing] = useState(false);
 
   const handleLocalImport = async () => {
     if (!localPath.trim()) return;
@@ -75,6 +77,7 @@ function AddSkillPanel({
           onKeyDown={(e) => e.key === "Enter" && handleLocalImport()}
           className="add-skill-input"
         />
+        <button type="button" className="agent-config-save-btn" disabled={localBusy} onClick={() => setBrowsing(true)}>Browse</button>
         <button
           className="agent-config-save-btn"
           onClick={handleLocalImport}
@@ -86,6 +89,12 @@ function AddSkillPanel({
         </button>
         {localError && <p className="add-skill-error">{localError}</p>}
       </div>
+      {browsing && <FolderPickerModal
+        initialPath={binding.workspace_path}
+        fileExtension=".md"
+        onSelect={(path) => { setLocalPath(path); setLocalError(null); setBrowsing(false); }}
+        onClose={() => setBrowsing(false)}
+      />}
     </div>
   );
 }
@@ -106,9 +115,12 @@ export function AgentSkillsList({
   const [expandedSkill, setExpandedSkill] = useState<string | null>(null);
   const [skillContent, setSkillContent] = useState<string | null>(null);
   const [loadingContent, setLoadingContent] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const loadSkills = useCallback(async () => {
     setLoading(true);
+    setLoadError(null);
     try {
       const params = new URLSearchParams({
         workspace_path: binding.workspace_path,
@@ -118,7 +130,7 @@ export function AgentSkillsList({
       const data = await res.json() as { skills: SkillInfo[] };
       setSkills(data.skills);
     } catch {
-      setSkills([]);
+      setLoadError("Could not load skills. Try again.");
     } finally {
       setLoading(false);
     }
@@ -128,34 +140,38 @@ export function AgentSkillsList({
     loadSkills();
   }, [loadSkills]);
 
-  const handleToggleExpand = async (skillName: string) => {
-    if (expandedSkill === skillName) {
-      setExpandedSkill(null);
-      setSkillContent(null);
-      return;
-    }
-    setExpandedSkill(skillName);
+  useEffect(() => {
+    let active = true;
     setSkillContent(null);
-    setLoadingContent(true);
-    try {
-      const params = new URLSearchParams({
-        workspace_path: binding.workspace_path,
-        read: skillName,
-      });
-      const res = await transportFetch(`${apiBaseUrl()}/agent-skills?${params}`);
-      if (!res.ok) throw new Error("Failed to read skill");
-      const data = await res.json() as { content: string };
-      setSkillContent(data.content);
-    } catch {
-      setSkillContent("Failed to load content.");
-    } finally {
-      setLoadingContent(false);
-    }
+    setLoadingContent(Boolean(expandedSkill));
+    if (!expandedSkill) return;
+    void (async () => {
+      try {
+        const params = new URLSearchParams({
+          workspace_path: binding.workspace_path,
+          read: expandedSkill,
+        });
+        const res = await transportFetch(`${apiBaseUrl()}/agent-skills?${params}`);
+        if (!res.ok) throw new Error("Failed to read skill");
+        const data = await res.json() as { content: string };
+        if (active) setSkillContent(data.content);
+      } catch {
+        if (active) setSkillContent("Failed to load content.");
+      } finally {
+        if (active) setLoadingContent(false);
+      }
+    })();
+    return () => { active = false; };
+  }, [binding.workspace_path, expandedSkill]);
+
+  const handleToggleExpand = (skillName: string) => {
+    setExpandedSkill((current) => current === skillName ? null : skillName);
   };
 
   const handleDelete = async (skillName: string) => {
     if (!confirm(`Delete skill "${skillName}"?`)) return;
     setDeleting(skillName);
+    setDeleteError(null);
     try {
       const res = await transportFetch(`${apiBaseUrl()}/agent-skills`, {
         method: "DELETE",
@@ -173,6 +189,7 @@ export function AgentSkillsList({
       }
     } catch (err) {
       trace.event("skill_delete_error", { skillName, error: String(err) });
+      setDeleteError(`Could not delete "${skillName}". Try again.`);
     } finally {
       setDeleting(null);
     }
@@ -190,7 +207,7 @@ export function AgentSkillsList({
   return (
     <div className="detail-section">
       <div className="agent-config-header">
-        <h4>Skills ({skills.length})</h4>
+        <h4>{loadError ? "Skills" : `Skills (${skills.length})`}</h4>
         <button
           className="agent-config-save-btn"
           onClick={() => setShowAdd(!showAdd)}
@@ -199,6 +216,9 @@ export function AgentSkillsList({
           {showAdd ? "Cancel" : "+ Add"}
         </button>
       </div>
+
+      {loadError && <p role="alert" className="add-skill-error">{loadError} <button type="button" className="agent-config-save-btn" onClick={loadSkills}>Retry</button></p>}
+      {deleteError && <p role="alert" className="add-skill-error">{deleteError}</p>}
 
       {showAdd && (
         <AddSkillPanel
@@ -210,7 +230,7 @@ export function AgentSkillsList({
         />
       )}
 
-      {skills.length === 0 && !showAdd ? (
+      {skills.length === 0 && !showAdd && !loadError ? (
         <EmptyState inline description="No skills installed." />
       ) : (
         skills.map((s) => (

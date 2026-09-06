@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 
 import { query, type ModelInfo } from "@anthropic-ai/claude-agent-sdk";
 
-import { resolveDriverBinary } from "./driver-availability";
+import { resolveDriverBinary } from "./driver-registry";
 import type { DriverId } from "../groups/team-templates";
 
 export { validateModelId } from "./driver-model-validation";

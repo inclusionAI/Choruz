@@ -10,6 +10,8 @@ Local development defaults to PostgreSQL, API Gateway, web, and pipeline ports t
 
 `infra/host/common.sh` treats the four local service ports as one allocation unit. A normal checkout keeps the standard ports when they are available; a worktree starts from its checksum-derived set. When a generated set is stale or owned by another process, the host scripts search checksum-derived sets in a stable order and write the first fully available set to `infra/host/.env`. Listeners owned by the same checkout retain their ports. Explicit `CHORUZ_*_PORT` values and `CHORUZ_ENV=production` disable automatic allocation and are never changed automatically.
 
+`infra/host/web_dev.sh` passes the selected web port both as Next's listener argument and as `CHORUZ_WEB_PORT` in the child environment. The local authentication bootstrap reads the latter to return the browser to that same listener; a shell-local configuration value alone does not reach the server-rendered entry page.
+
 ## Alternatives considered
 
 **Choose each service port independently.** Rejected because the four URLs form one local stack contract; selecting a whole set keeps the mapping understandable and avoids partial reconfiguration.
@@ -25,3 +27,5 @@ Normal checkouts and worktrees whose generated ports are occupied recover withou
 ## Testing
 
 `infra/host/tests/process_lifecycle.test.sh` verifies that a foreign listener advances the port set and that a listener owned by the current worktree does not force a new allocation.
+
+`infra/host/tests/web_dev_env.test.py` runs the actual launcher with a private configuration and inspects its child environment and arguments. It replaces only the Next process and does not bind ports or modify a running checkout.

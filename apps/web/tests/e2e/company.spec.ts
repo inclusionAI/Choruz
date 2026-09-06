@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { API_BASE, login, gotoDashboard } from "../fixtures/auth";
+import { API_BASE, login, signup, gotoDashboard } from "../fixtures/auth";
 import {
   createCompany,
   deleteCompany,
@@ -7,6 +7,81 @@ import {
   provisionAgent,
   uniqueName,
 } from "../fixtures/api";
+
+for (const action of ["archive", "delete"] as const) {
+  test(`Company single ${action} retries through its action menu`, async ({ page }) => {
+    const { token, principal } = await signup(page, uniqueName("single-owner"), "single-test-password");
+    const company = await createCompany(page, token, principal.id, uniqueName("single-company"));
+    try {
+      const path = `/v1/companies/${company.id}${action === "archive" ? "/archive" : ""}`;
+      await page.route((url) => url.pathname.endsWith(path), (route) => route.fulfill({ status: 503, body: "unavailable" }), { times: 1 });
+      page.on("dialog", (dialog) => dialog.accept());
+      await gotoDashboard(page);
+      await page.getByRole("button", { name: "Select company", exact: true }).click();
+      const menu = page.locator(".company-dropdown");
+      const label = action === "archive" ? "Archive" : "Delete";
+      await menu.getByRole("button", { name: `Actions for ${company.name}`, exact: true }).click();
+      await menu.getByRole("button", { name: label, exact: true }).click();
+      await expect(menu.getByRole("alert")).toContainText(`0 of 1 completed. Could not ${action}: ${company.name}`);
+      await menu.getByRole("button", { name: `Actions for ${company.name}`, exact: true }).click();
+      await menu.getByRole("button", { name: label, exact: true }).click();
+      await expect(menu.getByRole("alert")).toHaveCount(0);
+      if (action === "archive") await expect(menu.locator(".company-dropdown-item").filter({ hasText: company.name })).toHaveClass(/archived/);
+      else await expect(menu.getByRole("button", { name: `Actions for ${company.name}`, exact: true })).toHaveCount(0);
+      const response = await page.request.get(`${API_BASE}/v1/companies`, { headers: { Authorization: `Bearer ${token}` } });
+      expect(response.ok()).toBeTruthy();
+      const companies = await response.json() as Array<{ id: string; archived_at: string | null }>;
+      if (action === "archive") expect(companies.find((item) => item.id === company.id)?.archived_at).toBeTruthy();
+      else expect(companies.find((item) => item.id === company.id)).toBeUndefined();
+    } finally {
+      await page.unrouteAll({ behavior: "wait" });
+      await deleteCompany(page, token, company.id);
+    }
+  });
+  test(`Company batch ${action} retains failures for retry`, async ({ page }) => {
+    const { token, principal } = await signup(page, uniqueName("batch-owner"), "batch-test-password");
+    const companies = [];
+    try {
+      for (const name of ["batch-a", "batch-b"]) companies.push(await createCompany(page, token, principal.id, uniqueName(name)));
+      const [first, second] = companies;
+      const path = `/v1/companies/${second.id}${action === "archive" ? "/archive" : ""}`;
+      await page.route((url) => url.pathname.endsWith(path), (route) => route.fulfill({ status: 503, body: "unavailable" }), { times: 1 });
+      page.on("dialog", (dialog) => dialog.accept());
+      await gotoDashboard(page);
+      await page.getByRole("button", { name: "Select company", exact: true }).click();
+      const menu = page.locator(".company-dropdown");
+      const label = action === "archive" ? "Archive" : "Delete";
+      await menu.getByRole("button", { name: `Actions for ${second.name}`, exact: true }).click();
+      await menu.getByRole("button", { name: label, exact: true }).click();
+      await expect(menu.getByRole("alert")).toContainText(`0 of 1 completed. Could not ${action}: ${second.name}`);
+      await page.route((url) => url.pathname.endsWith(path), (route) => route.fulfill({ status: 503, body: "unavailable" }), { times: 1 });
+      await menu.getByRole("button", { name: "Select", exact: true }).click();
+      for (const company of companies) await menu.locator(".company-dropdown-item").filter({ hasText: company.name }).getByRole("checkbox").check();
+      await menu.getByRole("button", { name: label, exact: true }).click();
+      await expect(menu.getByRole("alert")).toContainText(`1 of 2 completed. Could not ${action}: ${second.name}`);
+      await expect(menu.locator(".company-batch-count")).toHaveText("1 selected");
+      await expect(menu.locator(".company-dropdown-item").filter({ hasText: second.name }).getByRole("checkbox")).toBeChecked();
+      const list = async () => {
+        const response = await page.request.get(`${API_BASE}/v1/companies`, { headers: { Authorization: `Bearer ${token}` } });
+        expect(response.ok()).toBeTruthy();
+        return await response.json() as Array<{ id: string; archived_at: string | null }>;
+      };
+      const partial = await list();
+      if (action === "archive") expect(partial.find((company) => company.id === first.id)?.archived_at).toBeTruthy();
+      else expect(partial.find((company) => company.id === first.id)).toBeUndefined();
+      expect(partial.find((company) => company.id === second.id)?.archived_at).toBeNull();
+      await menu.getByRole("button", { name: label, exact: true }).click();
+      await expect(menu.getByRole("alert")).toHaveCount(0);
+      await expect(menu.locator(".company-batch-count")).toHaveCount(0);
+      const finished = await list();
+      if (action === "archive") expect(finished.find((company) => company.id === second.id)?.archived_at).toBeTruthy();
+      else expect(finished.find((company) => company.id === second.id)).toBeUndefined();
+    } finally {
+      await page.unrouteAll({ behavior: "wait" });
+      for (const company of companies) await deleteCompany(page, token, company.id);
+    }
+  });
+}
 
 test.describe("Company management", () => {
   test.beforeEach(async ({ page }) => {
@@ -192,13 +267,23 @@ test.describe("Company management", () => {
       await expect(page.locator(".terminal-container, .xterm, .xterm-screen").first()).toBeVisible({
         timeout: 15_000,
       });
+      await page.reload();
+      await expect(page.locator(".company-selector-name")).toHaveText(firstCompany.name);
+      await expect(page.locator(".conv-item").filter({ hasText: secondAgent.agentName })).toHaveCount(0);
 
       await switchTo(secondCompany.name);
       await expect(page.locator(".conv-item").filter({ hasText: firstAgent.agentName })).toHaveCount(0);
+      const directMessages = page.getByRole("button", { name: /^Direct Messages/ });
+      if (await directMessages.getAttribute("aria-expanded") !== "true") {
+        await directMessages.click();
+      }
       await expect(page.locator(".conv-item").filter({ hasText: secondAgent.agentName }).first()).toBeVisible({
         timeout: 15_000,
       });
       await expect(page.locator(".terminal-container:visible, .xterm:visible")).toHaveCount(0);
+      await expect(page.getByRole("heading", { name: "Welcome to Choruz" })).toBeVisible();
+      await page.reload();
+      await expect(page.locator(".company-selector-name")).toHaveText(secondCompany.name);
       await expect(page.getByRole("heading", { name: "Welcome to Choruz" })).toBeVisible();
     } finally {
       if (firstCompany) await deleteCompany(page, token, firstCompany.id);

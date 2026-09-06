@@ -5,11 +5,11 @@ The API gateway is the Axum process that serves every `/v1` route, the terminal 
 ## Owns
 
 - [`services/choruz-api-gateway/src/lib.rs`](../../services/choruz-api-gateway/src/lib.rs): `router_with_runtime` builds the `Router`, registers every route, constructs `ApiState`, and wraps the app in `meta_handlers::request_logging_middleware`; [`main.rs`](../../services/choruz-api-gateway/src/main.rs) loads `Config::from_env`, verifies database connectivity, and serves with graceful shutdown.
-- [`config.rs`](../../services/choruz-api-gateway/src/config.rs) (`Config`), [`local_auth.rs`](../../services/choruz-api-gateway/src/local_auth.rs) (`LocalAuthConfig::authenticate`), [`auth.rs`](../../services/choruz-api-gateway/src/auth.rs) (`ApiError`, `authenticated_principal`, `require_actor`, `require_self`, `require_human_operator`, `redact_sensitive_text`), [`state.rs`](../../services/choruz-api-gateway/src/state.rs) (`ApiState`, `PtyPool`).
+- [`config.rs`](../../services/choruz-api-gateway/src/config.rs) (`Config`), [`local_auth.rs`](../../services/choruz-api-gateway/src/local_auth.rs) (`LocalAuthConfig::authenticate`), [`auth.rs`](../../services/choruz-api-gateway/src/auth.rs) (`ApiError`, `authenticated_principal`, `require_actor`, `require_self`, `require_human_operator`, `redact_sensitive_text`), [`state.rs`](../../services/choruz-api-gateway/src/state.rs) (`ApiState`, `LocalHost`), [`host_runtime.rs`](../../services/choruz-api-gateway/src/host_runtime.rs) (`RuntimeHost`), [`host_link.rs`](../../services/choruz-api-gateway/src/host_link.rs) (`HostLinkHub`, `websocket_host_link`).
 - [`crates/choruz-auth/src/lib.rs`](../../crates/choruz-auth/src/lib.rs): `SESSION_COOKIE_NAME` (`choruz_session`), `SessionClaims`, `issue_session_token`, `verify_session_token`, `issue_secret`, `hash_secret`, `verify_secret`, `local_user_principal_id`.
 - Handler modules, one per surface: `handlers_principals.rs` (login, signup, agents), `handlers_conversations.rs`, `handlers_messages.rs`, `handlers_threads.rs`, `handlers_events.rs`, `handlers_companies.rs`, `handlers_runtime.rs`, `handlers_runtime_status.rs`, `handlers_runtime_hosts.rs`, `handlers_terminals.rs`, `handlers_sync_ws.rs`, `handlers_cron.rs`, `handlers_tasks.rs`, `handlers_channel_tasks.rs`, `handlers_filesystem.rs`, `handlers_ssh.rs`, `handlers_remote_control.rs`, `handlers_workspace_sessions.rs`, [`meta_handlers.rs`](../../services/choruz-api-gateway/src/meta_handlers.rs), [`ingress.rs`](../../services/choruz-api-gateway/src/ingress.rs).
 - [`plugins/mod.rs`](../../services/choruz-api-gateway/src/plugins/mod.rs): `registrations()` lists the six built-in Host plugins; a plugin's router is merged only when `common::plugins::plugin_enabled(id)` is true for the `CHORUZ_PLUGINS` allowlist. Routers exist for `kanban`, `remote-ssh`, and `remote-control`; `pixel-world`, `workspace-git`, and `agent-skills` are manifest-only.
-- Background tasks owned by the process: `keepalive::spawn_keepalive_task` (60s PTY keepalive), `sync_wakeup::SyncWakeupHub` (PostgreSQL `LISTEN`), `remote_control_bridge::spawn`, and the in-process `PtyPool` of terminal sessions.
+- Background tasks owned by the process: `keepalive::spawn_keepalive_task` (60s PTY keepalive), `sync_wakeup::SyncWakeupHub` (PostgreSQL `LISTEN`), `remote_control_bridge::spawn`, and the local device's `TerminalPool` of terminal sessions.
 
 Route groups registered in `lib.rs` (paths are literal; `{}` marks Axum path parameters):
 
@@ -34,6 +34,26 @@ Route groups registered in `lib.rs` (paths are literal; `{}` marks Axum path par
 
 ## Data
 
+Online authentication is separate from local login and Remote Control. The
+human-only `/v1/online/*` handlers in `handlers_online.rs` connect the current
+local principal to the account service selected by `CHORUZ_ONLINE_URL` (the
+hosted gateway by default). The service URL must be HTTPS, except loopback
+development. Redirects are refused. The account credential stays in the local
+`online_identity` row; API responses contain only state and public identity.
+Sign-out revokes the cloud session before removing the local row. An unavailable
+service returns an error and leaves the identity available for a retry.
+The request and response contract is in [OpenAPI](../../openapi/choruz.yaml).
+
+`online_groups.rs` owns one background mailbox client per signed-in local
+principal, independently of browser lifetime. Group-only messages pass through
+`handlers_messages::publish_message` as the invited human, sharing persistence,
+event notification and webhook delivery with HTTP messages. It does not dispatch
+arbitrary remote API requests.
+Outgoing history advances atomically with its durable shipment; incoming frames
+are acknowledged after local inbox persistence. Guest history cursors trigger
+periodic resynchronization so relay retention expiry does not permanently skip
+canonical messages. The group owner must keep Choruz running for new replies.
+
 - `domain::Principal` ([`crates/choruz-domain/src/lib.rs`](../../crates/choruz-domain/src/lib.rs)) is the authenticated identity: `id`, `workspace_id`, `principal_type` (`human` or `agent`), `name`, `scopes`, `secret_hash`, `disabled`, `deleted_at`, `channel_visibility`, `user_id`.
 - Session token: `SessionClaims { principal_id, workspace_id, display_name, expires_at_epoch_s }` serialised as `<base64url(json)>.<base64url(hmac-sha256)>`, signed with `CHORUZ_SESSION_SECRET`, verified in constant time, and delivered either as `Authorization: Bearer <token>` or the `choruz_session` cookie (`HttpOnly; SameSite=Lax; Path=/`).
 - Agent secret: `issue_secret()` returns `agt_<uuidv7>`; only `hash_secret` (SHA-256 hex) is stored in `principal.secret_hash`, and `DbService::authenticate_agent_secret` matches a presented bearer value against every active agent hash with `verify_secret`.
@@ -57,6 +77,9 @@ Environment read by the gateway ([`config.rs`](../../services/choruz-api-gateway
 
 ## Invariants
 
+- Message search uses `DbService::search_messages` for both scoped and global reads, preserving active membership and workspace/company reachability on every page. Its timestamp/message-ID cursor is exclusive and newest-first; the paired query parameters are documented in [OpenAPI](../../openapi/choruz.yaml) and tested by `search_pages_are_stable_and_authorized`.
+- Filesystem saves require `original_content` and compare it with the canonical target's bounded text before writing. A mismatch returns 409 with the disk snapshot; it does not modify the file. This detects prior edits, not arbitrary external writers racing after comparison. The [OpenAPI contract](../../openapi/choruz.yaml) owns the request fields.
+
 - The sender of a message is always the authenticated principal: `send_message` enforces `require_actor` on `actor_id`, and `POST /v2/ingest` rejects a `sender_id` field in the body. Pinned by `ingest_request_rejects_sender_id`, `agent_privacy_surfaces_are_scoped_to_authorized_workspace_context` and `company_workspace_authorization_guards_hold` in [`tests.rs`](../../services/choruz-api-gateway/src/tests/).
 - Only the `choruz_session` cookie is honoured; a legacy cookie name is neither accepted nor selected (`legacy_session_cookie_is_not_accepted_or_selected` in `local_auth.rs`, `session_cookie_uses_only_the_choruz_identity` in `crates/choruz-auth`).
 - A session token verifies only with the issuing secret and only before `expires_at_epoch_s` (`session_tokens_round_trip_and_expire` in `crates/choruz-auth`).
@@ -74,7 +97,7 @@ Environment read by the gateway ([`config.rs`](../../services/choruz-api-gateway
 - Rate limit exceeded: `429` with `retry_after_ms: 1000`; the window is per gateway instance and resets on restart.
 - Internal errors are logged at `tracing::error!` with the redacted message and returned as `500`; operators correlate through `x-request-id` and the `trace_id` field on the request span.
 - Insecure defaults in development are logged as warnings (`CHORUZ_SESSION_SECRET not set, using insecure default`).
-- Gateway restart drops every live PTY in `PtyPool`; terminal clients must reconnect and `ensure_terminal` again.
+- Gateway restart drops every live PTY in the local `TerminalPool`; terminal clients must reconnect and `ensure_terminal` again.
 - If `choruz-pipeline` is not running, `event_outbox` rows written by `send_message` and `ingest_message` stay unpublished but are not lost.
 
 ## Tests

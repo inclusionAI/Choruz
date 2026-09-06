@@ -13,6 +13,15 @@ pub enum HeadlessDriver {
     MathCode,
 }
 
+/// A managed Claude process owns its session, even when Choruz was launched
+/// from an existing Claude terminal. Account credentials remain inherited.
+pub const CLAUDE_PARENT_SESSION_ENV: &[&str] = &[
+    "CLAUDECODE",
+    "CLAUDE_CODE_CHILD_SESSION",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_CODE_BRIDGE_SESSION_ID",
+];
+
 /// Apply the binding workspace to a headless CLI command.
 ///
 /// OpenCode additionally resolves `--dir .` through `PWD`. Other Harnesses
@@ -25,6 +34,11 @@ pub fn configure_command_workspace(
     workspace: &Path,
 ) {
     command.current_dir(workspace);
+    if driver == HeadlessDriver::Claude {
+        for key in CLAUDE_PARENT_SESSION_ENV {
+            command.env_remove(key);
+        }
+    }
     if driver == HeadlessDriver::OpenCode {
         // Keep OpenCode's logical directory aligned with the physical cwd
         // used by session discovery (notably `/private/var` on macOS).
@@ -431,6 +445,24 @@ pub fn validate_model(value: &str) -> Result<&str, &'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn managed_claude_does_not_inherit_its_launchers_session() {
+        let mut command = tokio::process::Command::new("claude");
+        for key in CLAUDE_PARENT_SESSION_ENV {
+            command.env(key, "parent-session");
+        }
+        command.env("CLAUDE_CONFIG_DIR", "/isolated-account");
+        configure_command_workspace(&mut command, HeadlessDriver::Claude, Path::new("."));
+        let env: std::collections::HashMap<_, _> = command.as_std().get_envs().collect();
+        for key in CLAUDE_PARENT_SESSION_ENV {
+            assert_eq!(env.get(std::ffi::OsStr::new(key)), Some(&None));
+        }
+        assert_eq!(
+            env.get(std::ffi::OsStr::new("CLAUDE_CONFIG_DIR")),
+            Some(&Some(std::ffi::OsStr::new("/isolated-account")))
+        );
+    }
 
     #[test]
     fn only_opencode_overrides_pwd_for_relative_dir_resolution() {

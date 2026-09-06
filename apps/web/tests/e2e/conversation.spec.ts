@@ -1,7 +1,9 @@
 import { expect, test } from "@playwright/test";
+import { postgresQueryClient } from "../../lib/groups/group-provisioning-db";
 import { expandSidebarConversationSections, login, gotoDashboard } from "../fixtures/auth";
 import {
   createGroup,
+  createAgent,
   getConsoleSnapshot,
   provisionAgent,
   sendMessage,
@@ -71,6 +73,61 @@ test.describe("Conversations", () => {
     await expect(page.getByText(groupName)).toBeVisible({ timeout: 10_000 });
   });
 
+  for (const rejectFirst of [false, true]) {
+  test(`a delayed blank group submission creates one group on double click${rejectFirst ? " after a rejected request" : ""}`, async ({ page }) => {
+    const { token, principal } = await login(page);
+    const memberName = uniqueName("group-member");
+    await createAgent(page, token, principal.id, memberName);
+    const groupName = uniqueName("group-once");
+    await gotoDashboard(page);
+    await page.getByRole("button", { name: "Actions menu" }).click();
+    await page.getByRole("button", { name: "New Group", exact: true }).click();
+    const modal = page.getByRole("dialog", { name: "Create Group" });
+    await modal.getByLabel("Group name", { exact: true }).fill(groupName);
+    await modal.getByRole("button", { name: new RegExp(memberName) }).click();
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let received!: () => void;
+    const submitted = new Promise<void>((resolve) => { received = resolve; });
+    let posts = 0;
+    await page.route("**/api/v1/groups", async (route) => {
+      if (route.request().method() !== "POST" || route.request().postDataJSON().name !== groupName) {
+        await route.continue();
+        return;
+      }
+      posts += 1;
+      if (rejectFirst && posts === 1) {
+        await route.fulfill({ status: 400, contentType: "application/json", body: JSON.stringify({ error: "Creation rejected" }) });
+        return;
+      }
+      const response = await route.fetch();
+      received();
+      await held;
+      await route.fulfill({ response });
+    });
+    try {
+      if (rejectFirst) {
+        await modal.getByRole("button", { name: "Create (1 selected)", exact: true }).click();
+        await expect(modal.getByRole("alert")).toBeVisible();
+        await expect(modal.getByRole("button", { name: "Create (1 selected)", exact: true })).toBeEnabled();
+      }
+      await modal.getByRole("button", { name: "Create (1 selected)", exact: true }).dblclick();
+      await submitted;
+      await expect(modal.getByRole("button", { name: "Creating…", exact: true })).toBeDisabled();
+      await expect(modal.getByRole("button", { name: "Cancel", exact: true })).toBeDisabled();
+      release();
+      await expect(modal).not.toBeVisible();
+      const db = await postgresQueryClient();
+      const rows = await db.query("SELECT id FROM conversation WHERE creator_id = $1 AND name = $2", [principal.id, groupName]);
+      expect(rows.rows).toHaveLength(1);
+      expect(posts).toBe(rejectFirst ? 2 : 1);
+    } finally {
+      release();
+      await page.unrouteAll({ behavior: "wait" });
+    }
+  });
+  }
+
   /* ---------------------------------------------------------------------- */
   /*  Select conversation                                                    */
   /* ---------------------------------------------------------------------- */
@@ -95,10 +152,9 @@ test.describe("Conversations", () => {
     const item = page.locator(".conv-item").first();
     const id = await item.locator(".conv-item-main").getAttribute("data-conversation-id");
     expect(id).toBeTruthy();
-    await item.click();
-    await expect(
-      page.locator(`.conv-item:has(.conv-item-main[data-conversation-id="${id}"])`),
-    ).toHaveClass(/\bactive\b/);
+    const selected = page.locator(`.conv-item:has(.conv-item-main[data-conversation-id="${id}"])`);
+    await selected.locator(".conv-item-main").click();
+    await expect(selected).toHaveClass(/\bactive\b/);
   });
 
   /* ---------------------------------------------------------------------- */
@@ -171,19 +227,16 @@ test.describe("Conversations", () => {
   });
 
   test("should clear search and restore full list", async ({ page }) => {
-    await page.waitForSelector(".conv-item", { timeout: 10_000 });
-    const items = page.locator(".conv-item");
-    const countBefore = await items.count();
-    const firstName = (await items.first().textContent())?.trim() ?? "";
+    const { token, principal } = await login(page);
+    const group = await createGroup(page, token, principal.id, uniqueName("restore-search"));
+    await gotoDashboard(page);
+    const ownedItem = page.locator(`[data-conversation-id="${group.id}"]`);
+    await expect(ownedItem).toBeVisible();
     const searchInput = page.locator(".sidebar-search input");
     await searchInput.fill("zzz-nonexistent");
-    await expect(items).toHaveCount(0);
+    await expect(ownedItem).toHaveCount(0);
     await searchInput.fill("");
-    // Other workers can add conversations to the list while this runs, so
-    // the restored list is at least as long as before and still starts with
-    // the same conversation.
-    await expect.poll(() => items.count()).toBeGreaterThanOrEqual(countBefore);
-    await expect(items.first()).toContainText(firstName.slice(0, 20));
+    await expect(ownedItem).toBeVisible();
   });
 
   /* ---------------------------------------------------------------------- */

@@ -24,7 +24,7 @@ Removing an account hides it in Choruz (`disabled_at`) and leaves the device's c
 - **Probe the device's login on every Create Agent open**: rejected. A Claude probe starts the SDK and takes up to 20 seconds; Create Agent only registers the row and leaves verification to the dialog or to provisioning, which probes at most once per unverified default.
 - **Delete the profile directory when an account is removed**: rejected by the product owner. Removal means "no longer shown in Choruz"; what the computer holds stays.
 - **Re-register a removed device login whenever the manager opens**: rejected because Remove would only hide the row until the next modal open. Multi-account mode preserves the disabled row until the user chooses that login again.
-- **A probe-only connector job so a remote host's default account verifies without a browser sign-in**: deferred. It needs a new claim/complete route pair on the host API; until then the sign-in panel is the remote verification path.
+- **A probe-only path so a remote host's default account verifies without a browser sign-in**: shipped as `POST /v1/companies/{company_id}/harness-accounts/{account_id}/probe`, which runs `HostRequest::HarnessProbe` on the device that holds the login ([one host link carries every request to a remote device](../architecture/2026-09-04-host-link-for-remote-devices.md)); the dialog's Verify and Refresh actions work for every device.
 
 ## Consequences
 

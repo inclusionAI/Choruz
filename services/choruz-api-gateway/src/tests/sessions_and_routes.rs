@@ -1,5 +1,19 @@
 use super::*;
 
+async fn wait_for_advisory_waiters(client: &tokio_postgres::Client, expected: i64) {
+    for _ in 0..40 {
+        let waiting: i64 = client.query_one(
+            "SELECT COUNT(*)::bigint FROM pg_stat_activity WHERE datname = current_database() AND wait_event = 'advisory'",
+            &[],
+        ).await.unwrap().get(0);
+        if waiting >= expected {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!("expected {expected} operations waiting on their ownership guard");
+}
+
 #[tokio::test]
 async fn native_session_import_lock_key_executes_against_postgres() {
     let database = TestDatabase::create_without_migrations().await;
@@ -13,8 +27,13 @@ async fn native_session_import_lock_key_executes_against_postgres() {
         .transaction()
         .await
         .expect("begin native import lock transaction");
-    let lock_key =
-        native_session_import_lock_key("/projects/example", "codex_exec", "session-with-history");
+    let lock_key = native_session_import_lock_key(
+        None,
+        "/projects/example",
+        "codex_exec",
+        "session-with-history",
+        None,
+    );
     transaction
         .query_one(
             "SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0::bigint))",
@@ -27,6 +46,7 @@ async fn native_session_import_lock_key_executes_against_postgres() {
 
 #[tokio::test]
 async fn native_session_import_runs_end_to_end_and_is_idempotent() {
+    use std::os::unix::fs::PermissionsExt;
     let _guard = api_test_env_lock().lock().await;
     let real_home = env::var("HOME").expect("test home");
     let home = tempfile::Builder::new()
@@ -137,6 +157,303 @@ async fn native_session_import_runs_end_to_end_and_is_idempotent() {
         Some(company_workspace.to_string_lossy().as_ref()),
         "importing a session must not attach its workspace to the company"
     );
+
+    let previous = client
+        .query_one(
+            "SELECT binding_id, agent_principal_id, conversation_id FROM native_session_import",
+            &[],
+        )
+        .await
+        .unwrap();
+    let old_binding: String = previous.get(0);
+    let old_agent: String = previous.get(1);
+    let old_conversation: String = previous.get(2);
+    let replacement = db
+        .create_company(CreateCompanyRequest {
+            actor_id: human.id.clone(),
+            name: "Replacement".into(),
+            slug: Some("replacement".into()),
+            description: None,
+            folder_path: None,
+        })
+        .await
+        .unwrap();
+    let mut replacement_payload = payload.clone();
+    replacement_payload["company_id"] = json!(replacement.id);
+    let replacement_request = || {
+        Request::builder()
+            .method(Method::POST)
+            .uri("/v1/workspace-sessions/import")
+            .header(CONTENT_TYPE, "application/json")
+            .header("authorization", format!("Bearer {}", session_token(&human)))
+            .body(Body::from(replacement_payload.to_string()))
+            .unwrap()
+    };
+    let response = app.clone().oneshot(replacement_request()).await.unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::CONFLICT,
+        "a live company keeps its claim"
+    );
+
+    let launch_key = format!("terminal-launch:{old_binding}");
+    let cli = home.path().join("owned-cli");
+    fs::write(
+        &cli,
+        "#!/bin/sh\nprintf '%s' \"$$\" > child-pid\nexec /bin/cat\n",
+    )
+    .unwrap();
+    fs::set_permissions(&cli, fs::Permissions::from_mode(0o755)).unwrap();
+    client
+        .execute(
+            "UPDATE agent_runtime_bindings SET config_json = config_json || $2 WHERE id = $1",
+            &[&old_binding, &json!({"binary_path": cli})],
+        )
+        .await
+        .unwrap();
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/v1/terminals/{old_binding}/ensure"))
+                .header("authorization", format!("Bearer {}", session_token(&human)))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let mut old_pid = None;
+    for _ in 0..40 {
+        old_pid = fs::read_to_string(workspace.join("child-pid"))
+            .ok()
+            .and_then(|value| value.parse::<i32>().ok());
+        if old_pid.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let old_pid = old_pid.expect("old terminal child started");
+    client
+        .query_one(
+            "SELECT pg_advisory_lock(hashtextextended($1::text, 0::bigint))",
+            &[&launch_key],
+        )
+        .await
+        .unwrap();
+    let ensure_request = Request::builder()
+        .method(Method::POST)
+        .uri(format!("/v1/terminals/{old_binding}/ensure"))
+        .header("authorization", format!("Bearer {}", session_token(&human)))
+        .body(Body::empty())
+        .unwrap();
+    let launch = tokio::spawn(app.clone().oneshot(ensure_request));
+    let mut waiting = false;
+    for _ in 0..40 {
+        waiting = client.query_one("SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE datname = current_database() AND wait_event = 'advisory')", &[]).await.unwrap().get(0);
+        if waiting {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(
+        waiting,
+        "terminal ensure must acquire the shared launch guard"
+    );
+    db.delete_company(&company.id, &human.id).await.unwrap();
+    let other = db
+        .create_human_user("other-importer", "password-456")
+        .await
+        .unwrap();
+    let other_company = db
+        .create_company(CreateCompanyRequest {
+            actor_id: other.id.clone(),
+            name: "Other owner".into(),
+            slug: Some("other-owner".into()),
+            description: None,
+            folder_path: None,
+        })
+        .await
+        .unwrap();
+    let mut other_payload = payload.clone();
+    other_payload["company_id"] = json!(other_company.id);
+    let other_request = Request::builder()
+        .method(Method::POST)
+        .uri("/v1/workspace-sessions/import")
+        .header(CONTENT_TYPE, "application/json")
+        .header("authorization", format!("Bearer {}", session_token(&other)))
+        .body(Body::from(other_payload.to_string()))
+        .unwrap();
+    client
+        .query_one(
+            "SELECT pg_advisory_unlock(hashtextextended($1::text, 0::bigint))",
+            &[&launch_key],
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        launch.await.unwrap().unwrap().status(),
+        StatusCode::FORBIDDEN,
+        "a launch waiting across company deletion must reauthorize before spawning"
+    );
+    assert_eq!(
+        app.clone().oneshot(other_request).await.unwrap().status(),
+        StatusCode::CONFLICT,
+        "deletion does not transfer the claim to a different owner"
+    );
+    let commands = choruz_session::PgSessionStore::new(&database.database_url);
+    let session_key = format!("reclaim:{old_agent}");
+    commands
+        .upsert_session(&session_key, &old_agent, &old_conversation)
+        .await
+        .unwrap();
+    let command = choruz_session::InsertCommand {
+        command_id: choruz_common::new_id(),
+        route_id: choruz_common::new_id(),
+        session_key,
+        agent_id: old_agent.clone(),
+        conversation_id: old_conversation.clone(),
+        message_id: choruz_common::new_id(),
+        turn_id: choruz_common::new_id(),
+        prompt: "owned recovery test".into(),
+        max_attempts: 1,
+        metadata: json!({}),
+    };
+    commands.insert_command(&command).await.unwrap();
+    assert_eq!(
+        app.clone()
+            .oneshot(replacement_request())
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::CONFLICT,
+        "queued commands keep the old claim"
+    );
+    commands
+        .assign_lease(&command.command_id, "owned-test-executor")
+        .await
+        .unwrap();
+    let response = app.clone().oneshot(replacement_request()).await.unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::CONFLICT,
+        "recovery must not steal an in-flight turn"
+    );
+    let claimed: String = client
+        .query_one("SELECT binding_id FROM native_session_import", &[])
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(claimed, old_binding);
+    client
+        .execute(
+            "UPDATE agent_commands SET status = 'committed' WHERE command_id = $1",
+            &[&command.command_id],
+        )
+        .await
+        .unwrap();
+    client
+        .query_one(
+            "SELECT pg_advisory_lock(hashtext($1)::bigint)",
+            &[&old_agent],
+        )
+        .await
+        .unwrap();
+    let reclaim = tokio::spawn(app.clone().oneshot(replacement_request()));
+    wait_for_advisory_waiters(&client, 1).await;
+    let mut late_command = command.clone();
+    late_command.command_id = choruz_common::new_id();
+    late_command.route_id = choruz_common::new_id();
+    late_command.message_id = choruz_common::new_id();
+    late_command.turn_id = choruz_common::new_id();
+    let late_store = choruz_session::PgSessionStore::new(&database.database_url);
+    let late_insert = tokio::spawn(async move { late_store.insert_command(&late_command).await });
+    wait_for_advisory_waiters(&client, 2).await;
+    client
+        .query_one(
+            "SELECT pg_advisory_unlock(hashtext($1)::bigint)",
+            &[&old_agent],
+        )
+        .await
+        .unwrap();
+    let response = reclaim.await.unwrap().unwrap();
+    let status = response.status();
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "reclaim deleted company session: {}",
+        String::from_utf8_lossy(&body)
+    );
+    let body: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(body["imported"][0]["already_imported"], false);
+    assert_ne!(body["imported"][0]["binding_id"], old_binding);
+    assert_eq!(
+        unsafe { libc::kill(old_pid, 0) },
+        -1,
+        "reclaim must stop the old CLI before releasing its claim"
+    );
+    assert_eq!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::ESRCH)
+    );
+    let old = client.query_one("SELECT b.state, p.disabled FROM agent_runtime_bindings b JOIN principal p ON p.id = b.agent_principal_id WHERE b.id = $1", &[&old_binding]).await.unwrap();
+    assert_eq!(old.get::<_, String>(0), "disabled");
+    assert!(old.get::<_, bool>(1));
+    assert!(
+        matches!(
+            late_insert.await.unwrap(),
+            Err(choruz_session::SessionError::Conflict(_))
+        ),
+        "retired agents cannot queue another turn"
+    );
+    assert!(
+        client
+            .query_opt(
+                "SELECT id FROM conversation WHERE id = $1",
+                &[&old_conversation]
+            )
+            .await
+            .unwrap()
+            .is_some(),
+        "old conversation history remains"
+    );
+    assert!(
+        client
+            .query_opt("SELECT id FROM principal WHERE id = $1", &[&old_agent])
+            .await
+            .unwrap()
+            .is_some()
+    );
+    let claimed: String = client
+        .query_one("SELECT company_id FROM native_session_import", &[])
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(claimed, replacement.id);
+
+    // Company recovery must not reactivate its superseded session binding.
+    client
+        .execute(
+            "UPDATE company SET deleted_at = NULL WHERE id = $1",
+            &[&company.id],
+        )
+        .await
+        .unwrap();
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/v1/terminals/{old_binding}/ensure"))
+                .header("authorization", format!("Bearer {}", session_token(&human)))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]

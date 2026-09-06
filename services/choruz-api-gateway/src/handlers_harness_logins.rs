@@ -18,9 +18,8 @@ use axum::{
 };
 use choruz_agent_runtime::headless::HeadlessDriver;
 use choruz_common::{AppError, new_id};
-use choruz_harness_login::{
-    AccountProbe, CodexLoginLocation, DEFAULT_LOGIN_TIMEOUT, LoginJob, LoginSink, run_login,
-};
+use choruz_harness_login::{AccountProbe, DEFAULT_LOGIN_TIMEOUT, LoginJob, LoginSink, run_login};
+use choruz_host_runtime::{HarnessProbeResult, HostRequest};
 use chrono::{Duration, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -32,6 +31,7 @@ use crate::{
         VerifyHarnessAccountRequest, internal, require_host, store_account_probe,
         store_authenticated_account, validate_authenticated_account, validate_probe,
     },
+    host_runtime::RuntimeHost,
 };
 
 const HARNESS_LOGIN_TTL_MINUTES: i64 = 15;
@@ -411,6 +411,111 @@ async fn run_local_login(store: choruz_store::EventStore, job: LoginJob, scope: 
     }
 }
 
+/// `POST /v1/companies/{company_id}/harness-accounts/{account_id}/probe`:
+/// read the account's identity, models and exact quota on the device that
+/// holds its login, and store the snapshot. A probe that fails records the
+/// reason on the account (`reauth_required` for a missing login, `error`
+/// otherwise) and answers 409.
+pub(crate) async fn probe_harness_account(
+    headers: HeaderMap,
+    State(state): State<ApiState>,
+    Path((company_id, account_id)): Path<(String, String)>,
+) -> Result<StatusCode, ApiError> {
+    require_company_access(&headers, &state, &company_id).await?;
+    let client = state.event_store.connect().await.map_err(ApiError::from)?;
+    let account = client
+        .query_opt(
+            "SELECT driver_type, profile_kind, runtime_host_id FROM harness_account
+              WHERE id = $1 AND company_id = $2 AND disabled_at IS NULL",
+            &[&account_id, &company_id],
+        )
+        .await
+        .map_err(internal("find harness account for probe"))?
+        .ok_or_else(|| ApiError(AppError::NotFound("harness account not found".into())))?;
+    let driver_type: String = account.get("driver_type");
+    let profile_kind: String = account.get("profile_kind");
+    let runtime_host_id: Option<String> = account.get("runtime_host_id");
+    let host = match runtime_host_id.as_deref() {
+        Some(host_id) => RuntimeHost::for_host(&state, host_id).map_err(ApiError)?,
+        None => RuntimeHost::local(&state),
+    };
+    let probed: Result<HarnessProbeResult, AppError> = host
+        .call(HostRequest::HarnessProbe {
+            driver_type,
+            account_id: account_id.clone(),
+            profile_kind,
+        })
+        .await;
+    match probed {
+        Ok(result) => {
+            let probe = AccountProbe {
+                fingerprint: result.account_fingerprint,
+                subscription_type: result.subscription_type,
+                models: result.models,
+                usage: result.usage,
+            };
+            crate::handlers_runtime_hosts::validate_probe(&probe)?;
+            crate::handlers_runtime_hosts::store_account_probe(
+                &client,
+                &account_id,
+                &company_id,
+                runtime_host_id.as_deref(),
+                &probe,
+            )
+            .await?;
+            Ok(StatusCode::NO_CONTENT)
+        }
+        Err(error) => {
+            let message = probe_failure_message(&error.to_string());
+            let status = if message.contains("sign in") {
+                "reauth_required"
+            } else {
+                "error"
+            };
+            client
+                .execute(
+                    "UPDATE harness_account SET status = $2, last_error = $3, updated_at = NOW()
+                      WHERE id = $1 AND disabled_at IS NULL",
+                    &[&account_id, &status, &message],
+                )
+                .await
+                .map_err(internal("record harness account probe failure"))?;
+            Err(ApiError(AppError::Conflict(message)))
+        }
+    }
+}
+
+/// The user-facing reason a probe failed; Harness output never reaches the
+/// dashboard verbatim.
+fn probe_failure_message(detail: &str) -> String {
+    let lower = detail.to_ascii_lowercase();
+    if lower.contains("not connected") {
+        return detail.trim_start_matches("conflict: ").to_owned();
+    }
+    if lower.contains("no selectable models") {
+        return "This account returned no selectable models; sign in again and verify it".into();
+    }
+    if lower.contains("auth") || lower.contains("login") || lower.contains("credential") {
+        return "Harness login is invalid; sign in to this profile and verify again".into();
+    }
+    if lower.contains("timed out") {
+        return "Harness account probe timed out".into();
+    }
+    if lower.contains("start ")
+        || lower.contains("no such file")
+        || lower.contains("not configured")
+    {
+        return "Harness binary is not configured on this device".into();
+    }
+    if lower.contains("rate limits") || lower.contains("quota") {
+        return "Harness did not return exact quota data for this account".into();
+    }
+    if lower.contains("identity is unavailable") || lower.contains("account is unavailable") {
+        return "Harness account identity is unavailable; sign in and verify again".into();
+    }
+    "Harness account probe failed".into()
+}
+
 pub(crate) async fn start_harness_account_login(
     headers: HeaderMap,
     State(state): State<ApiState>,
@@ -455,6 +560,23 @@ pub(crate) async fn start_harness_account_login(
     )
     .await
     .map_err(internal("expire stale harness account logins"))?;
+    if let Some(row) = tx
+        .query_opt(
+            &format!(
+                "SELECT {LOGIN_VIEW_COLUMNS} FROM harness_account_login
+                  WHERE account_id = $1 AND company_id = $2
+                    AND state IN ('queued', 'awaiting_browser', 'authorizing')"
+            ),
+            &[&account_id, &company_id],
+        )
+        .await
+        .map_err(internal("resume harness account login"))?
+    {
+        tx.commit()
+            .await
+            .map_err(internal("commit resumed harness account login"))?;
+        return Ok((StatusCode::OK, Json(login_from_row(&row))));
+    }
     let login_id = new_id();
     // A remote login waits in `queued` for the connector to claim it; the
     // gateway claims a local login itself in the same transaction.
@@ -506,7 +628,6 @@ pub(crate) async fn start_harness_account_login(
             account_id,
             driver,
             profile_kind,
-            codex_login_location: CodexLoginLocation::Local,
         };
         let scope = LoginScope {
             login_id,

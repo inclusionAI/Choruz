@@ -1644,7 +1644,7 @@ async fn console_snapshot_reports_enabled_host_plugins() {
 }
 
 #[tokio::test]
-async fn console_snapshot_includes_visible_conversation_member_principals() {
+async fn snapshots_retain_removed_member_names_without_restoring_membership() {
     let database = TestDatabase::create().await;
     let app = choruz_application::ChatApp::new();
     let router = router_with_db(app.clone(), &database.database_url);
@@ -1713,8 +1713,64 @@ async fn console_snapshot_includes_visible_conversation_member_principals() {
     }
     seed_conversation_to_db(&database.database_url, &conversation).await;
 
+    let client = choruz_store::EventStore::new(&database.database_url)
+        .connect()
+        .await
+        .unwrap();
+    client
+        .execute(
+            "UPDATE conversation_member SET removed_at=NOW() WHERE conv_id=$1 AND principal_id=$2",
+            &[&conversation.id, &bob.id],
+        )
+        .await
+        .unwrap();
+    let outsider = app
+        .create_principal(CreatePrincipalRequest {
+            workspace_id: "ws-channel-task-members".into(),
+            principal_type: PrincipalType::Human,
+            name: "Private group owner".into(),
+            avatar_url: None,
+        })
+        .unwrap();
+    seed_principal_to_db(&database.database_url, &outsider).await;
+    let private_group = app
+        .create_group(CreateGroupRequest {
+            actor_id: outsider.id.clone(),
+            name: "Private group".into(),
+            description: None,
+            avatar_url: None,
+            member_ids: vec![bob.id.clone()],
+            workspace_id: Some("ws-channel-task-members".into()),
+        })
+        .unwrap();
+    seed_conversation_to_db(&database.database_url, &private_group).await;
+    let (bootstrap_status, bootstrap) = api_bootstrap(router.clone(), &alice, "").await;
+    assert_eq!(bootstrap_status, StatusCode::OK);
+    assert!(
+        bootstrap["principals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["id"] == bob.id),
+        "bootstrap must retain a removed member's display name"
+    );
+    let bootstrap_group = &bootstrap["conversations"]["items"][0]["conversation"];
+    assert_eq!(bootstrap_group["id"], conversation.id);
+    let members = bootstrap_group["members"].as_object().unwrap();
+    assert!(members.contains_key(&alice.id));
+    assert!(!members.contains_key(&bob.id));
     let (snapshot_status, snapshot) = api_console_snapshot(router, &alice).await;
     assert_eq!(snapshot_status, StatusCode::OK);
+    for catalog in [&bootstrap["principals"], &snapshot["principals"]] {
+        assert!(
+            !catalog
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|p| p["id"] == outsider.id),
+            "private conversation names must remain private"
+        );
+    }
     let principal_ids: Vec<_> = snapshot["principals"]
         .as_array()
         .unwrap()

@@ -172,7 +172,7 @@ still valuable, but should run as opt-in, nightly, or environment-gated checks.
 | `CHAT-007` | P1 | Edit/delete messages. | Editable own messages update in real time; deleted messages disappear for all clients. | Gap |
 | `CHAT-008` | P0 | Group vs direct behavior. | Group conversations show the chat composer; direct terminal-mode bindings show the PTY surface. | Partial: `terminal.spec.ts`; strengthened with a focused direct xterm vs group-with-agent transcript/composer assertion, pending host e2e verification |
 | `CHAT-009` | P1 | Manage chats. | Manage mode enters, selects, cancels, and deletes without corrupting the sidebar. | Covered: `sidebar.spec.ts`; historical `B-004` |
-| `CHAT-010` | P0 | Conversation membership guard. | Removed or non-member principals cannot read, send, search, or receive realtime updates for the conversation. | Covered/Partial: `services/choruz-api-gateway/src/tests/::removed_and_never_members_cannot_access_conversation_surfaces`, `crates/choruz-fanout/src/gateway.rs::fanout_stops_sending_to_removed_member`, and `replay_denies_removed_member_with_stale_cursor` cover API and fanout guards; add browser-level e2e only if UI regressions recur |
+| `CHAT-010` | P0 | Conversation membership guard. | Removed or non-member principals cannot read, send, search, or receive realtime updates for the conversation. | Partial: `services/choruz-api-gateway/src/tests/::removed_and_never_members_cannot_access_conversation_surfaces` covers API membership guards; `sync_websocket_requires_auth_replays_unacked_and_isolates_device_acks` covers authenticated per-principal sync delivery. Browser-level membership revocation coverage remains a gap. |
 | `CHAT-011` | P1 | Empty and oversized messages. | Empty messages are blocked; oversized or multiline messages fail gracefully or persist exactly as specified. | Partial: `messaging.spec.ts`, `keyboard.spec.ts`; add API boundary tests |
 | `CHAT-012` | P1 | Special content rendering. | ANSI escapes, raw legacy reply tags, HTML, and malformed markdown do not break layout or leak unsafe markup. | Covered: `outbox.spec.ts`, `message-list.spec.ts`, and `messaging.spec.ts`, including an inert-HTML/XSS assertion. |
 
@@ -200,7 +200,7 @@ still valuable, but should run as opt-in, nightly, or environment-gated checks.
 | `OUTBOX-005` | P1 | Invalid command. | Missing `type`, bad group, or malformed JSON creates a visible error/dead-letter without crashing the pipeline. | Gap |
 | `OUTBOX-006` | P1 | Command ordering. | Multiple `.choruz/send` calls are processed independently and in intended order. | Partial: `outbox.spec.ts`; strengthen with ordering audit |
 | `OUTBOX-007` | P0 | Group name vs conversation ID routing. | Agents must address groups by group name in Choruz protocol commands; UUID misuse fails visibly. | Covered/Partial: outbox handler tests cover UUID-shaped group names, member-scoped group-name routing, in-transaction membership recheck, missing/ambiguous group visible errors, Maildir single-claim concurrency, claim mtime refresh, stale claim recovery, multi-reply preservation, and watcher `set_cron` conversation resolution; watcher tests cover PTY-only draining, active-member guard, and visible reply publishing |
-| `OUTBOX-008` | P1 | Duplicate command idempotency. | Replayed outbox commands do not duplicate groups, agents, cron jobs, or messages beyond the protocol contract. | Gap |
+| `OUTBOX-008` | P1 | Duplicate command idempotency. | Replayed remote outbox shipments do not republish a command after an acknowledgement is lost; reusing a command name for different content is rejected. | Covered: `an_accepted_shipment_is_not_republished_after_its_command_was_drained`, `a_shipment_name_cannot_be_reused_for_different_content`, `a_remote_command_waits_until_its_shipment_is_accepted` |
 
 ## Realtime, Persistence, and Recovery
 
@@ -314,10 +314,10 @@ still valuable, but should run as opt-in, nightly, or environment-gated checks.
 
 | ID | Priority | Scenario | Expected Behavior | Automation |
 | --- | --- | --- | --- | --- |
-| `TELEM-001` | P1 | Analytics event shape. | Analytics POSTs include event name, timestamp, and expected metadata. | Covered: `telemetry.spec.ts` |
-| `TELEM-002` | P0 | Sensitive data exclusion. | Session tokens, secrets, private message contents, attachment names/bytes, and local paths are excluded from telemetry payloads, logs, and persistence. | Covered: `apps/web/lib/api/telemetry-sanitize.test.ts`, `apps/web/app/api/analytics/route.test.ts`, and `services/choruz-api-gateway/src/tests/::telemetry_ingest_redacts_sensitive_payloads_before_persisting` |
-| `TELEM-003` | P1 | Analytics outage. | Analytics endpoint failure does not break product workflows. | Covered: `telemetry.spec.ts` |
-| `TELEM-004` | P1 | Trace correlation. | Conversation switch and message send traces can be correlated without exposing credentials. | Covered/Partial: `telemetry.spec.ts` |
+| `TELEM-001` | P1 | Activity identity. | Events preserve occurrence time and authenticated actor/workspace; replay stores one row. | Covered: `telemetry.spec.ts` and gateway observability tests |
+| `TELEM-002` | P0 | Sensitive data exclusion. | Tokens, authentication codes, private message contents, attachment names/bytes and local paths are excluded. | Covered: `telemetry-sanitize.test.ts` and gateway observability tests |
+| `TELEM-003` | P1 | Lost acknowledgement. | Reload retains pending activity; successful retry removes it without duplicate persistence. | Covered: `telemetry.spec.ts` and `activity-outbox.test.ts` |
+| `TELEM-004` | P1 | Trace correlation. | Send clicks join their failed/successful HTTP lifecycle and selected view context without recording the draft. | Covered: `telemetry.spec.ts`, `choruz-trace.test.ts`, `transport.test.ts` |
 
 ## UX, Accessibility, and Layout
 
@@ -397,7 +397,7 @@ practical slice to automate.
 | 7 | P0 | `OUTBOX-001` | Release blocker: agent-originated `.choruz/send` group text is core to agent workflows. | Reviewed coverage added in `outbox_handler.rs::process_outbox_commands_delivers_group_send_to_named_group`; broader UI outbox coverage remains in `outbox.spec.ts` |
 | 8 | P0 | `RT-006` | Release blocker: pipeline backlog and dead-letter visibility are required to diagnose broken agent workflows. | Reviewed router coverage added for valid backlog drain and malformed outbox dead-lettering; full host smoke remains a residual gap |
 | 9 | P0 | `CRON-004` | Release blocker: scheduled work is launch scope and must trigger the target agent through the normal pipeline. | Reviewed scheduler coverage added for due announced job inserting a visible message and pending agent command; full executor smoke remains a residual gap |
-| 10 | P0 | `TELEM-002` | Release blocker: telemetry must not leak tokens, secrets, private messages, attachment names/bytes, or local paths. | Covered by frontend sanitizer, legacy analytics log, and gateway persistence regressions |
+| 10 | P0 | `TELEM-002` | Release blocker: telemetry must not leak tokens, secrets, private messages, attachment names/bytes, or local paths. | Covered by frontend sanitizer and gateway persistence regressions |
 | 11 | P0 | `COMP-002` | Not a release blocker: major cross-company leaks are fixed; broader active-company/file/attachment UI coverage can follow. | Fast-follow e2e/API coverage |
 | 12 | P0 | `TEAM-001` / `TEAM-002` | Not a release blocker for cross-platform collaboration; deterministic webhook-agent collaboration is covered and mixed real-driver behavior remains environment-dependent. | `team-collaboration.spec.ts` plus final Claude/Codex real-driver CUA |
 | 13 | P0 | `AGENT-010` / `AGENT-011` | Not a release blocker: provider behavior will be manually tested; executor contracts already have deterministic coverage. | Fast-follow API/runtime matrix and webhook integration tests |

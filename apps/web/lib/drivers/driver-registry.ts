@@ -11,6 +11,48 @@ export const DRIVER_IDS = [
 
 export type DriverId = (typeof DRIVER_IDS)[number];
 
+export type DriverBinaryEnvVar =
+  | "CHORUZ_CLAUDE_BINARY"
+  | "CHORUZ_CODEX_BINARY"
+  | "CHORUZ_PI_BINARY"
+  | "CHORUZ_GROK_BINARY"
+  | "CHORUZ_OPENCODE_BINARY"
+  | "CHORUZ_MATHCODE_BINARY";
+
+type DriverBinaryDefinition = {
+  envVar: DriverBinaryEnvVar;
+  runtimeEnvVar?: string;
+  defaultBinary: string;
+};
+
+const CODEX_BINARY: DriverBinaryDefinition = {
+  envVar: "CHORUZ_CODEX_BINARY", runtimeEnvVar: "CHORUZ_CODEX_CLI_PATH", defaultBinary: "codex",
+};
+
+export const DRIVER_BINARIES: Record<DriverId | "codex_app_server", DriverBinaryDefinition | undefined> = {
+  claude_terminal: { envVar: "CHORUZ_CLAUDE_BINARY", runtimeEnvVar: "CHORUZ_CLAUDE_CLI_PATH", defaultBinary: "claude" },
+  codex_terminal: CODEX_BINARY,
+  codex_exec: CODEX_BINARY,
+  codex_app_server: CODEX_BINARY,
+  pi_terminal: { envVar: "CHORUZ_PI_BINARY", runtimeEnvVar: "CHORUZ_PI_CLI_PATH", defaultBinary: "pi" },
+  grok_terminal: { envVar: "CHORUZ_GROK_BINARY", runtimeEnvVar: "CHORUZ_GROK_CLI_PATH", defaultBinary: "grok" },
+  opencode_terminal: { envVar: "CHORUZ_OPENCODE_BINARY", runtimeEnvVar: "CHORUZ_OPENCODE_CLI_PATH", defaultBinary: "opencode" },
+  mathcode_terminal: { envVar: "CHORUZ_MATHCODE_BINARY", defaultBinary: "mathcode" },
+  webhook_agent: undefined,
+};
+
+/** Resolve within the supplied environment; webhook agents have no executable. */
+export function resolveDriverBinary(
+  driverId: DriverId | "codex_app_server",
+  env: Record<string, string | undefined> = process.env,
+): string | undefined {
+  const definition = DRIVER_BINARIES[driverId];
+  if (!definition) return undefined;
+  return env[definition.envVar]?.trim()
+    || (definition.runtimeEnvVar ? env[definition.runtimeEnvVar]?.trim() : undefined)
+    || definition.defaultBinary;
+}
+
 export const LOCAL_TERMINAL_DRIVER_IDS: DriverId[] = [
   "claude_terminal",
   "codex_terminal",

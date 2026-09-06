@@ -27,20 +27,12 @@ async function loginAndOpenPixelWorld(
     );
   }
   await page.goto(`${WEB_BASE}/dashboard`);
-  await page.waitForLoadState("networkidle");
-  await page.waitForTimeout(2000);
-
-  // Sidebar refactor moved "Pixel World" behind the "+" Actions menu.
-  // Open the menu first, then click the menu item.
-  const actionsBtn = page.getByRole('button', { name: 'Actions menu' });
-  if (await actionsBtn.isVisible()) {
-    await actionsBtn.click();
-    const pixelBtn = page.getByRole('button', { name: 'Pixel World' });
-    if (await pixelBtn.isVisible()) {
-      await pixelBtn.click();
-      await page.waitForTimeout(5000);
-    }
-  }
+  await page.getByRole('button', { name: 'Actions menu' }).click();
+  await page.getByRole('button', { name: 'Pixel World' }).click();
+  await expect(page.locator('.pixel-world-panel canvas')).toBeVisible();
+  await page.waitForFunction(() =>
+    (window as any).__PHASER_READY === true && (window as any).__PHASER_PLAYER?.active,
+  );
 }
 
 test.describe("Pixel World", () => {

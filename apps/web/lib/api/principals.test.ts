@@ -20,6 +20,7 @@ describe("isAgent", () => {
   it("is true only for ids in the agent roster", () => {
     expect(isAgent(agents, "agent-1")).toBe(true);
     expect(isAgent(agents, "user-1")).toBe(false);
+    expect(isAgent([viewer, ...agents], "user-1")).toBe(false);
   });
 });
 

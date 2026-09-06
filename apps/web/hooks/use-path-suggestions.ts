@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react";
 import type { DirEntry } from "../lib/api/choruz-types";
+import { executeRuntimeHostOperation } from "../lib/api/choruz-api";
 import { transportFetch } from "../lib/api/transport";
 
 const DEBOUNCE_MS = 150;
@@ -13,10 +14,30 @@ export type DirectoryListing = {
   entries: DirEntry[];
 };
 
-/** Lists a directory's subdirectories. Rejects on HTTP errors and on abort. */
-export async function listDirectory(path: string, signal?: AbortSignal): Promise<DirectoryListing> {
-  const res = await fetch(
-    `/api/filesystem?action=list&path=${encodeURIComponent(path)}&include_files=false`,
+export type FilesystemTarget = {
+  runtimeHostId?: string | null;
+  sessionToken?: string;
+};
+
+/** Lists subdirectories and optionally files. Rejects on HTTP errors and abort. */
+export async function listDirectory(
+  path: string,
+  signal?: AbortSignal,
+  target: FilesystemTarget = {},
+  includeFiles = false,
+): Promise<DirectoryListing> {
+  if (target.runtimeHostId) {
+    if (!target.sessionToken) throw new Error("A session is required to browse another device");
+    return executeRuntimeHostOperation<DirectoryListing>(
+      target.sessionToken,
+      target.runtimeHostId,
+      "filesystem.list",
+      { path, include_files: includeFiles },
+      signal,
+    );
+  }
+  const res = await transportFetch(
+    `/api/filesystem?action=list&path=${encodeURIComponent(path)}&include_files=${includeFiles}`,
     { signal },
   );
   if (!res.ok) throw new Error(`Cannot read ${path}`);
@@ -25,7 +46,21 @@ export async function listDirectory(path: string, signal?: AbortSignal): Promise
 }
 
 /** The user's home directory, or null when the backend cannot say. */
-export async function fetchHomeDirectory(signal?: AbortSignal): Promise<string | null> {
+export async function fetchHomeDirectory(
+  signal?: AbortSignal,
+  target: FilesystemTarget = {},
+): Promise<string | null> {
+  if (target.runtimeHostId) {
+    if (!target.sessionToken) throw new Error("A session is required to browse another device");
+    const data = await executeRuntimeHostOperation<{ home?: string }>(
+      target.sessionToken,
+      target.runtimeHostId,
+      "filesystem.home",
+      {},
+      signal,
+    );
+    return data.home ?? null;
+  }
   const res = await transportFetch("/api/filesystem?action=home", { signal });
   const data = (await res.json()) as { home?: string };
   return data.home ?? null;
@@ -38,7 +73,13 @@ export async function fetchHomeDirectory(signal?: AbortSignal): Promise<string |
  * suggestion list. Callers own the input, the list markup, and what Tab
  * and Enter do with `highlighted`.
  */
-export function usePathSuggestions({ includeParent = false }: { includeParent?: boolean } = {}) {
+export function usePathSuggestions({
+  includeParent = false,
+  target = {},
+}: {
+  includeParent?: boolean;
+  target?: FilesystemTarget;
+} = {}) {
   const [suggestions, setSuggestions] = useState<DirEntry[]>([]);
   const [open, setOpen] = useState(false);
   const [index, setIndex] = useState(0);
@@ -61,7 +102,7 @@ export function usePathSuggestions({ includeParent = false }: { includeParent?: 
 
       setLoading(true);
       try {
-        const listing = await listDirectory(parentDir, controller.signal);
+        const listing = await listDirectory(parentDir, controller.signal, target);
         let entries = listing.entries.filter((e) => e.type === "directory");
         if (prefix) entries = entries.filter((e) => e.name.toLowerCase().startsWith(prefix));
         if (includeParent && listing.parent) {
@@ -80,7 +121,7 @@ export function usePathSuggestions({ includeParent = false }: { includeParent?: 
         if (!controller.signal.aborted) setLoading(false);
       }
     },
-    [includeParent],
+    [includeParent, target.runtimeHostId, target.sessionToken],
   );
 
   /**

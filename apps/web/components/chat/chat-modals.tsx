@@ -44,8 +44,12 @@ export type ChatModalsProps = {
   searchQuery: string;
   searchResults: SearchResultItem[];
   searchLoading: boolean;
+  searchHasMore: boolean;
+  searchError: string | null;
+  onSearchLoadMore: () => void;
+  onSearchRetry: () => void;
   onSearchInput: (value: string) => void;
-  onSearchResultClick: (conversationId: string) => void;
+  onSearchResultClick: (conversationId: string, messageId: string) => void;
   // Create group modal
   showCreateGroup: boolean;
   activeCompanyId: string | null;
@@ -93,6 +97,10 @@ export function ChatModals({
   searchQuery,
   searchResults,
   searchLoading,
+  searchHasMore,
+  searchError,
+  onSearchLoadMore,
+  onSearchRetry,
   onSearchInput,
   onSearchResultClick,
   showCreateGroup,
@@ -139,6 +147,10 @@ export function ChatModals({
           searchQuery={searchQuery}
           searchResults={searchResults}
           searchLoading={searchLoading}
+          searchHasMore={searchHasMore}
+          searchError={searchError}
+          onSearchLoadMore={onSearchLoadMore}
+          onSearchRetry={onSearchRetry}
           onSearchInput={onSearchInput}
           onSearchResultClick={onSearchResultClick}
           width={detailResize.width}

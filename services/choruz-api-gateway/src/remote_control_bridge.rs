@@ -5,11 +5,7 @@
 //! dashboard against this host. Everything that crosses the Cloud Gateway is an
 //! `e2e` envelope encrypted with the device session key.
 
-use std::{
-    collections::HashMap,
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use aes_gcm::{
     Aes256Gcm, Nonce,
@@ -19,7 +15,7 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use futures_util::{SinkExt, StreamExt};
 use rand::RngCore;
 use serde_json::{Value, json};
-use tokio::{sync::mpsc, task::JoinHandle};
+use tokio::{sync::mpsc, task::JoinHandle, time::Instant};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use crate::{
@@ -28,7 +24,7 @@ use crate::{
     remote_control_executor::{ExecutorTargets, RelayExecutor, TokenIssuer},
 };
 
-const TRANSPORT_LIVENESS_TIMEOUT: Duration = Duration::from_secs(75);
+const SOCKET_LIVENESS_TIMEOUT: Duration = Duration::from_secs(75);
 const EXECUTOR_OUTBOUND_CAPACITY: usize = 256;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -207,6 +203,7 @@ async fn serve_bridge_session(
     heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     heartbeat.tick().await;
     let mut last_transport_frame = Instant::now();
+    let mut last_rendezvous_frame = Instant::now();
 
     loop {
         tokio::select! {
@@ -234,24 +231,35 @@ async fn serve_bridge_session(
             }
             frame = rendezvous_rx.next() => {
                 let Some(frame) = frame else { return Err("rendezvous closed".into()) };
-                if let Message::Text(text) = frame.map_err(|error| error.to_string())? {
-                    let control: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
-                    if control.get("type").and_then(Value::as_str) == Some("gateway.peer_joined")
-                        && control.get("role").and_then(Value::as_str) == Some("device")
-                    {
-                        offer_transport(
-                            &mut rendezvous_tx,
-                            material,
-                            control.get("device_id").and_then(Value::as_str),
-                        ).await?;
+                last_rendezvous_frame = Instant::now();
+                match frame.map_err(|error| error.to_string())? {
+                    Message::Text(text) => {
+                        let control: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+                        if control.get("type").and_then(Value::as_str) == Some("gateway.peer_joined")
+                            && control.get("role").and_then(Value::as_str) == Some("device")
+                        {
+                            offer_transport(
+                                &mut rendezvous_tx,
+                                material,
+                                control.get("device_id").and_then(Value::as_str),
+                            ).await?;
+                        }
                     }
+                    Message::Ping(bytes) => rendezvous_tx.send(Message::Pong(bytes)).await.map_err(|error| error.to_string())?,
+                    Message::Close(_) => return Err("rendezvous closed".into()),
+                    _ => {}
                 }
             }
             _ = heartbeat.tick() => {
-                if last_transport_frame.elapsed() > TRANSPORT_LIVENESS_TIMEOUT {
+                if last_transport_frame.elapsed() > SOCKET_LIVENESS_TIMEOUT {
                     return Err("transport peer stopped responding".into());
                 }
-                transport_tx.send(Message::Ping(Vec::new().into())).await.map_err(|error| error.to_string())?;
+                if last_rendezvous_frame.elapsed() > SOCKET_LIVENESS_TIMEOUT {
+                    return Err("rendezvous peer stopped responding".into());
+                }
+                let probe = Message::Text(json!({"type": "gateway.ping", "nonce": "host-liveness"}).to_string().into());
+                transport_tx.send(probe.clone()).await.map_err(|error| error.to_string())?;
+                rendezvous_tx.send(probe).await.map_err(|error| error.to_string())?;
             }
         }
     }
@@ -434,6 +442,10 @@ fn decrypt_envelope(session_key: &str, outer: &Value) -> Result<Value, String> {
         .map_err(|error| error.to_string())?;
     serde_json::from_slice(&plaintext).map_err(|error| error.to_string())
 }
+
+#[cfg(test)]
+#[path = "tests/remote_bridge.rs"]
+mod socket_tests;
 
 #[cfg(test)]
 mod tests {

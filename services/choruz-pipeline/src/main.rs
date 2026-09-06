@@ -1,16 +1,14 @@
 //! choruz-pipeline: message pipeline runner.
 //!
-//! Wires together 11 crates into a complete CDC -> Router -> Session ->
-//! Executor -> Writer -> Fanout processing chain, running as a single
-//! independent process (replacing the retired predecessor daemons
-//! daemons that have been retired).
+//! Wires together the CDC -> Router -> Session -> Executor -> Writer
+//! processing chain, running as a single independent process.
 //!
 //! # Environment variables
 //!
 //! See `config.rs` for the full list. Key variables:
 //!
 //! - `CHORUZ_DATABASE_URL` or `CHORUZ_PG_*` — PostgreSQL connection
-//! - `CHORUZ_PIPELINE_METRICS_PORT` — WebSocket fanout HTTP port (default 3020)
+//! - `CHORUZ_PIPELINE_METRICS_PORT` — health, readiness and metrics HTTP port (default 3020)
 //! - `RUST_LOG` — tracing filter (default `info`)
 
 #![allow(
@@ -24,18 +22,17 @@ mod config;
 mod cron_scheduler;
 mod dispatch;
 mod executor;
-mod instructions;
 mod lease_monitor;
 mod meta;
 mod outbox_handler;
 mod outbox_watcher;
-mod pg_event_source;
 mod pg_member_provider;
 mod pg_notify;
 mod pg_result_store;
 mod pipeline;
 #[cfg(test)]
 mod pipeline_test;
+mod rebootstrap;
 mod retry_scheduler;
 
 #[tokio::main]
@@ -51,7 +48,7 @@ async fn main() {
         // workspace has hand-edited instructions and the auto-refresh skipped
         // it. We dispatch BEFORE booting the pipeline because the command is a
         // one-shot tool, not a long-running service.
-        let exit = instructions::run_rebootstrap_command(args.into_iter().skip(1).collect()).await;
+        let exit = rebootstrap::run_rebootstrap_command(args.into_iter().skip(1).collect()).await;
         std::process::exit(exit);
     }
 

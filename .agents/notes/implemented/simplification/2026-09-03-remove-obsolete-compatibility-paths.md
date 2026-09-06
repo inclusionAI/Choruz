@@ -8,7 +8,9 @@ Several pre-release compatibility paths silently accepted data that Choruz does 
 
 ## Decision
 
-Each contract has one accepted shape. `/ws/fanout` accepts only `user_id` and `client_id`; `/v1/console` omits presence data; `/v2/ingest` rejects unknown fields and derives the sender solely from authentication; instruction bootstrapping refuses an unknown driver; webhook delivery refuses an empty secret before making a request; and host lifecycle ownership requires both PID and recorded process start time.
+Each contract has one accepted shape. `/v1/console` omits presence data; `/v2/ingest` rejects unknown fields and derives the sender solely from authentication; instruction bootstrapping refuses an unknown driver; webhook delivery refuses an empty secret before making a request; and host lifecycle ownership requires both PID and recorded process start time.
+
+The pipeline fanout endpoint is retired by the [realtime endpoint decision](2026-09-05-retire-unused-pipeline-fanout.md).
 
 The active `metadata.workflow` task-routing contract, unread counters, quote-reply semantics, company-less workspace authorization and top-level event `sender_id` remain because they carry current product behaviour rather than unused compatibility data.
 
@@ -26,4 +28,4 @@ Stale callers fail where they cross the contract instead of receiving an empty o
 
 ## Testing
 
-Unit and browser tests assert that removed fanout fields, ingest `sender_id`, unknown drivers, empty webhook secrets and one-line process records are rejected, and that the console response omits `presences`.
+Unit and browser tests assert that ingest `sender_id`, unknown drivers, empty webhook secrets and one-line process records are rejected, and that the console response omits `presences`.

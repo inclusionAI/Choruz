@@ -32,7 +32,7 @@ pub(crate) struct RuntimeHostPairing {
 pub(crate) struct RuntimeHostView {
     pub(crate) id: String,
     pub(crate) company_id: String,
-    name: String,
+    pub(crate) name: String,
     status: String,
     last_seen_at: Option<String>,
     created_at: String,
@@ -41,7 +41,7 @@ pub(crate) struct RuntimeHostView {
 #[derive(Debug, Deserialize)]
 pub(crate) struct RedeemPairingRequest {
     code: String,
-    name: String,
+    pub(crate) name: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -52,7 +52,7 @@ pub(crate) struct RedeemPairingResponse {
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct RenameHostRequest {
-    name: String,
+    pub(crate) name: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -64,6 +64,9 @@ pub(crate) struct AssignBindingHostRequest {
 pub(crate) struct ClaimedCommand {
     command_id: String,
     attempt_id: String,
+    /// The binding the turn runs under; the connector ships the turn's outbox
+    /// commands against it.
+    binding_id: String,
     agent_id: String,
     conversation_id: String,
     turn_id: String,
@@ -79,7 +82,7 @@ pub(crate) struct ClaimedCommand {
 #[derive(Debug, Clone, Serialize)]
 struct ClaimedHarnessAccount {
     id: String,
-    name: String,
+    pub(crate) name: String,
     profile_kind: String,
 }
 
@@ -87,7 +90,7 @@ struct ClaimedHarnessAccount {
 pub(crate) struct RegisterHarnessAccountRequest {
     id: String,
     driver_type: String,
-    name: String,
+    pub(crate) name: String,
     profile_kind: String,
 }
 
@@ -417,6 +420,16 @@ pub(crate) async fn require_host(
             "missing x-choruz-host-token header".into(),
         ))
     })?;
+    authenticate_host_token(state, host_id, token).await
+}
+
+/// The unrevoked host whose token this is, for callers that carry the token
+/// outside an HTTP header (the host link's hello frame).
+pub(crate) async fn authenticate_host_token(
+    state: &ApiState,
+    host_id: &str,
+    token: &str,
+) -> Result<RuntimeHostView, ApiError> {
     let token_hash = keyed_hash(secret(state), "runtime-host-token", token);
     let client = state.event_store.connect().await.map_err(ApiError::from)?;
     let row = client
@@ -430,6 +443,19 @@ pub(crate) async fn require_host(
         .map_err(internal("authenticate runtime host"))?
         .ok_or_else(|| ApiError(AppError::Unauthorized("invalid runtime host token".into())))?;
     Ok(host_from_row(&row))
+}
+
+pub(crate) async fn mark_host_seen(state: &ApiState, host_id: &str) -> Result<(), ApiError> {
+    let client = state.event_store.connect().await.map_err(ApiError::from)?;
+    client
+        .execute(
+            "UPDATE runtime_host SET status = 'online', last_seen_at = NOW(), updated_at = NOW()
+             WHERE id = $1 AND revoked_at IS NULL",
+            &[&host_id],
+        )
+        .await
+        .map_err(internal("heartbeat runtime host"))?;
+    Ok(())
 }
 
 pub(crate) fn internal(context: &'static str) -> impl FnOnce(tokio_postgres::Error) -> ApiError {
@@ -716,15 +742,7 @@ pub(crate) async fn heartbeat(
     Path(host_id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
     require_host(&headers, &state, &host_id).await?;
-    let client = state.event_store.connect().await.map_err(ApiError::from)?;
-    client
-        .execute(
-            "UPDATE runtime_host SET status = 'online', last_seen_at = NOW(), updated_at = NOW()
-             WHERE id = $1 AND revoked_at IS NULL",
-            &[&host_id],
-        )
-        .await
-        .map_err(internal("heartbeat runtime host"))?;
+    mark_host_seen(&state, &host_id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -918,6 +936,7 @@ pub(crate) async fn claim_command(
     Ok(Json(Some(ClaimedCommand {
         command_id: command.command_id,
         attempt_id: assignment.attempt_id,
+        binding_id: binding.id.clone(),
         agent_id: command.agent_id,
         conversation_id: command.conversation_id,
         turn_id: command.turn_id,
@@ -1011,4 +1030,98 @@ fn session_error(error: choruz_session::SessionError) -> ApiError {
         }
         _ => ApiError(AppError::Internal(error.to_string())),
     }
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct ShipOutboxRequest {
+    commands: Vec<choruz_host_runtime::outbox::ShippedOutboxCommand>,
+}
+
+/// `GET /v1/runtime-hosts/{host_id}/commands/{command_id}/attachments/{attachment_id}`:
+/// the bytes of a file attached to a turn the host has claimed, so the
+/// connector stages it into the workspace inbox before the turn as the
+/// pipeline does locally. The command must be placed on this host and name
+/// the attachment; the agent's own attachment access applies on top.
+pub(crate) async fn download_command_attachment(
+    headers: HeaderMap,
+    State(state): State<ApiState>,
+    Path((host_id, command_id, attachment_id)): Path<(String, String, String)>,
+) -> Result<axum::response::Response, ApiError> {
+    use axum::http::header::{CONTENT_DISPOSITION, CONTENT_TYPE};
+    use axum::response::IntoResponse;
+
+    require_host(&headers, &state, &host_id).await?;
+    let command = state
+        .session
+        .get_command(&command_id)
+        .await
+        .map_err(|error| ApiError(AppError::Internal(format!("load command: {error}"))))?
+        .ok_or_else(|| ApiError(AppError::NotFound("command not found".into())))?;
+    let placed_here = command
+        .metadata
+        .get("runtime_host_id")
+        .and_then(Value::as_str)
+        == Some(host_id.as_str());
+    if !placed_here {
+        return Err(ApiError(AppError::Forbidden(
+            "command does not run on this runtime host".into(),
+        )));
+    }
+    let named = choruz_host_runtime::inbox::incoming_attachments(&command.metadata)
+        .iter()
+        .any(|attachment| attachment.attachment_id == attachment_id);
+    if !named {
+        return Err(ApiError(AppError::Forbidden(
+            "attachment is not part of this command".into(),
+        )));
+    }
+    let agent = state.db.get_principal(&command.agent_id).await?;
+    let (attachment, bytes) = state.attachments.get(&agent, &attachment_id).await?;
+    Ok((
+        [
+            (CONTENT_TYPE, attachment.content_type),
+            (
+                CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{}\"", attachment.filename),
+            ),
+        ],
+        bytes,
+    )
+        .into_response())
+}
+
+/// `POST /v1/runtime-hosts/{host_id}/bindings/{binding_id}/outbox`: the
+/// connector delivers the outbox commands an agent on its device wrote. They
+/// land in the binding's controller-side mirror for this host, which the
+/// pipeline's outbox watcher drains like a local workspace. At most
+/// `MAX_COMMANDS_PER_SHIPMENT` commands and `MAX_SHIPPED_FILE_BYTES` per file;
+/// the route's body limit bounds the whole request.
+pub(crate) async fn ship_binding_outbox(
+    headers: HeaderMap,
+    State(state): State<ApiState>,
+    Path((host_id, binding_id)): Path<(String, String)>,
+    Json(payload): Json<ShipOutboxRequest>,
+) -> Result<StatusCode, ApiError> {
+    require_host(&headers, &state, &host_id).await?;
+    let binding = state.runtime.get_binding(&binding_id).await?;
+    let placed_here = binding
+        .config_json
+        .get("runtime_host_id")
+        .and_then(Value::as_str)
+        == Some(host_id.as_str());
+    if !placed_here {
+        return Err(ApiError(AppError::Forbidden(
+            "binding does not run on this runtime host".into(),
+        )));
+    }
+    let commands = payload.commands;
+    // The mirror is keyed by the shipping host too, so a batch a former
+    // device delivers after the binding moved lands where nothing drains it.
+    tokio::task::spawn_blocking(move || {
+        choruz_host_runtime::outbox::store_shipped_commands(&binding_id, &host_id, &commands)
+    })
+    .await
+    .map_err(|error| ApiError(AppError::Internal(format!("store outbox: {error}"))))?
+    .map_err(ApiError)?;
+    Ok(StatusCode::NO_CONTENT)
 }

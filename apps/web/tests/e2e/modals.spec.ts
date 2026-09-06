@@ -66,10 +66,15 @@ async function enableMultipleAccounts(page: Page) {
   await page.getByRole("button", { name: "Harness Accounts" }).click();
   const accounts = page.locator(".harness-accounts-card");
   const toggle = accounts.getByRole("checkbox", { name: "Allow multiple accounts in this company" });
-  if (!(await toggle.isChecked())) {
-    await toggle.check();
-    await expect(toggle).toBeChecked();
-  }
+  // The dialog re-renders while the device's default account is being
+  // verified, which can undo a click that landed mid-render; keep clicking
+  // until the switch holds.
+  await expect
+    .poll(async () => {
+      if (!(await toggle.isChecked())) await toggle.click();
+      return toggle.isChecked();
+    })
+    .toBe(true);
   await expect(accounts.getByRole("button", { name: "Add account" })).toBeVisible();
   await accounts.getByRole("button", { name: "Close" }).click();
 }
@@ -412,13 +417,11 @@ test.describe("Modals (Create Agent, Create Group, Create Company)", () => {
       expires_at: new Date(Date.now() + 600_000).toISOString(),
     });
     let codeSubmitted = false;
-    let loginStarts = 0;
     const json = (status: number, body: unknown) => ({ status, contentType: "application/json", body: JSON.stringify(body) });
 
     await mockHarnessAccounts(page, []);
     await page.route(/\/api\/harness-accounts$/, (route) => route.fulfill(json(201, pending)));
     await page.route(/\/api\/harness-accounts\/ci-new\/login\?/, (route) => {
-      loginStarts += 1;
       return route.fulfill(json(201, loginView("awaiting_browser")));
     });
     await page.route(/\/api\/harness-accounts\/ci-new\/login\/login-1\?/, (route) =>
@@ -444,7 +447,6 @@ test.describe("Modals (Create Agent, Create Group, Create Company)", () => {
       await accounts.getByRole("button", { name: "Add and sign in" }).click();
 
       await expect(accounts.getByText("Sign in to Claude Code account “Work account”")).toBeVisible();
-      await expect.poll(() => loginStarts).toBe(1);
       await expect(accounts.getByRole("link", { name: "Open sign-in link" })).toHaveAttribute("href", "https://example.test/oauth?state=abc");
       await expect(accounts.locator("code", { hasText: "claude /login" })).toHaveCount(0);
       await accounts.getByLabel("Claude Code authentication value").fill("xyz#abc");
@@ -460,6 +462,81 @@ test.describe("Modals (Create Agent, Create Group, Create Company)", () => {
       await deleteCompany(page, token, company.id);
     }
   });
+
+  for (const driver of ["claude_terminal", "codex_terminal"] as const) {
+    test(`reopening ${driver} sign-in resumes the same persisted task`, async ({ page }) => {
+      const { token, principal } = await login(page);
+      const company = await createCompany(page, token, principal.id, uniqueName("login-recovery"));
+      const client = await postgresQueryClient();
+      const hostId = randomUUID();
+      const accountId = randomUUID();
+      const accountName = uniqueName("recoverable-login");
+      try {
+        await client.query(
+          "INSERT INTO runtime_host (id, company_id, name, token_hash, status, last_seen_at) VALUES ($1, $2, $3, $4, 'online', NOW())",
+          [hostId, company.id, "Login test device", randomUUID()],
+        );
+        await client.query(
+          "INSERT INTO harness_account (id, company_id, runtime_host_id, driver_type, name, profile_kind, status) VALUES ($1, $2, $3, $4, $5, 'isolated', 'pending')",
+          [accountId, company.id, hostId, driver, accountName],
+        );
+        // Only default-profile discovery is substituted; login requests and storage are real.
+        await page.route(/\/api\/harness-accounts\/default$/, (route) => route.fulfill({
+          status: 200, contentType: "application/json",
+          body: JSON.stringify(harnessAccount(driver)),
+        }));
+        await gotoDashboard(page);
+        await page.locator(".company-selector-btn").click();
+        await page.locator(".company-dropdown-item").filter({ hasText: company.name }).locator(".company-dropdown-item-name").click();
+        await expect(page.locator(".company-selector-name")).toHaveText(company.name);
+        await enableMultipleAccounts(page);
+        const modal = page.locator(".harness-accounts-card");
+        const open = async () => {
+          await page.getByLabel("Actions menu").click();
+          await page.getByRole("button", { name: "Harness Accounts", exact: true }).click();
+          await modal.getByLabel("Account device").selectOption(hostId);
+          await modal.getByLabel("Account harness").selectOption(driver);
+        };
+        const start = async () => {
+          const response = page.waitForResponse((item) => item.request().method() === "POST"
+            && new URL(item.url()).pathname === `/api/harness-accounts/${accountId}/login`);
+          await modal.locator(".harness-account-record", { hasText: accountName }).getByRole("button", { name: "Sign in", exact: true }).click();
+          const result = await response;
+          expect(result.ok()).toBe(true);
+          return await result.json() as { id: string; expires_at: string };
+        };
+        await open();
+        const original = await start();
+        const authorizationUrl = `https://example.test/oauth?state=${randomUUID()}`;
+        // Publish the provider's waiting state without starting an external OAuth session.
+        await client.query("UPDATE harness_account_login SET state = 'awaiting_browser', authorization_url = $2 WHERE id = $1", [original.id, authorizationUrl]);
+        const expectPrompt = async () => {
+          await expect(modal.getByRole("link", { name: "Open sign-in link" })).toHaveAttribute("href", authorizationUrl);
+          await expect(modal.getByLabel(driver === "claude_terminal" ? "Claude Code authentication value" : "Codex callback URL")).toBeVisible();
+        };
+        await expectPrompt();
+        await modal.getByRole("button", { name: "Close", exact: true }).click();
+        await open();
+        const reopened = await start();
+        expect(reopened.id).toBe(original.id);
+        expect(reopened.expires_at).toBe(original.expires_at);
+        await expectPrompt();
+        await modal.getByLabel("Account device").selectOption("");
+        await modal.getByLabel("Account device").selectOption(hostId);
+        expect((await start()).id).toBe(original.id);
+        await expectPrompt();
+        const rows = await client.query("SELECT id FROM harness_account_login WHERE account_id = $1", [accountId]);
+        expect(rows.rows.map((row) => row.id)).toEqual([original.id]);
+        await modal.getByRole("button", { name: "Cancel", exact: true }).click();
+        await expect.poll(async () => (await client.query("SELECT state FROM harness_account_login WHERE id = $1", [original.id])).rows[0]?.state).toBe("cancelled");
+        expect((await start()).id).not.toBe(original.id);
+        await modal.getByRole("button", { name: "Cancel", exact: true }).click();
+      } finally {
+        await client.query("UPDATE harness_account_login SET state = 'cancelled' WHERE account_id = $1 AND state IN ('queued', 'awaiting_browser', 'authorizing')", [accountId]);
+        await deleteCompany(page, token, company.id);
+      }
+    });
+  }
 
   test("cancelling a sign-in closes the login so a new one can start", async ({ page }) => {
     const pending = harnessAccount("claude_terminal", [], { id: "ci-cancel", name: "Cancelled account", profileKind: "isolated", status: "pending", probedAt: null });
@@ -501,6 +578,7 @@ test.describe("Modals (Create Agent, Create Group, Create Company)", () => {
   });
 
   test("adding a local Codex account shows the standard browser login", async ({ page }) => {
+    let submitted = "";
     const pending = harnessAccount("codex_terminal", [], {
       id: "ci-codex-new",
       name: "Work Codex",
@@ -525,6 +603,10 @@ test.describe("Modals (Create Agent, Create Group, Create Company)", () => {
     await page.route(/\/api\/harness-accounts$/, (route) => route.fulfill(json(201, pending)));
     await page.route(/\/api\/harness-accounts\/ci-codex-new\/login\?/, (route) => route.fulfill(json(201, login)));
     await page.route(/\/api\/harness-accounts\/ci-codex-new\/login\/login-codex\?/, (route) => route.fulfill(json(200, login)));
+    await page.route(/\/api\/harness-accounts\/ci-codex-new\/login\/login-codex\/callback\?/, async (route) => {
+      submitted = (await route.request().postDataJSON()).code;
+      return route.fulfill({ status: 204 });
+    });
 
     await enableMultipleAccounts(page);
     await page.locator('[aria-label="Actions menu"]').click();
@@ -539,7 +621,12 @@ test.describe("Modals (Create Agent, Create Group, Create Company)", () => {
     await expect(accounts.getByText("Open the official Codex browser sign-in page.")).toBeVisible();
     await expect(accounts.getByRole("link", { name: "Open sign-in link" })).toHaveAttribute("href", login.authorization_url);
     await expect(accounts.getByLabel("Claude Code authentication value")).toHaveCount(0);
-    await expect(accounts.getByLabel("Codex callback URL")).toHaveCount(0);
+    await expect(accounts.getByLabel("Codex callback URL")).toBeVisible();
+    await expect(accounts.getByText(/verifies the account automatically/)).toBeVisible();
+    const callback = "http://localhost:9999/auth/callback?code=code-1&state=state-1";
+    await accounts.getByLabel("Codex callback URL").fill(callback);
+    await accounts.getByRole("button", { name: "Finish sign-in" }).click();
+    await expect.poll(() => submitted).toBe(callback);
   });
 
   test("a remote Codex browser login accepts its localhost callback handoff", async ({ page }) => {

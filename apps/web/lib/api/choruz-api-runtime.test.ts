@@ -4,7 +4,9 @@ import {
   fetchConversationRuntimeStatus,
   fetchRuntimeBinding,
   fetchRuntimeBindings,
+  executeRuntimeHostOperation,
   importWorkspaceSessions,
+  onboardRuntimeHost,
   rebindRuntimeBinding,
 } from "./choruz-api";
 
@@ -143,5 +145,82 @@ describe("runtime binding API helpers", () => {
         { harness: "open_code", native_session_id: "opencode-1", workspace_path: "/projects/tools" },
       ],
     });
+  });
+
+  it("targets a selected device for remote filesystem work and session imports", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ entries: [], imported: [] }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await executeRuntimeHostOperation(
+      "session-token",
+      "host west",
+      "filesystem.list",
+      { path: "/srv/projects", include_files: false },
+    );
+    await importWorkspaceSessions(
+      "session-token",
+      "company-1",
+      "/srv/projects",
+      [{
+        harness: "claude",
+        native_session_id: "session-1",
+        workspace_path: "/srv/projects/app",
+      }],
+      "host west",
+    );
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "http://127.0.0.1:3000/v1/runtime-hosts/host%20west/operations",
+    );
+    expect(JSON.parse((fetchMock.mock.calls[0]?.[1] as RequestInit).body as string)).toEqual({
+      kind: "filesystem.list",
+      request: { path: "/srv/projects", include_files: false },
+    });
+    expect(JSON.parse((fetchMock.mock.calls[1]?.[1] as RequestInit).body as string)).toMatchObject({
+      company_id: "company-1",
+      runtime_host_id: "host west",
+    });
+  });
+
+  it("onboards a runtime host only through the encrypted transport body", async () => {
+    const relayFetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      host_id: "host-remote",
+      host_name: "GPU server",
+    }), { status: 200, headers: { "content-type": "application/json" } }));
+    const payload = {
+      controller_gateway_url: "https://gateway.example",
+      controller_credential: "v1.AAAAAAAAAAAAAAAAAAAAAA.BBBBBBBBBBBBBBBBBBBBBB",
+      runtime_host_code: "12345678",
+      name: "GPU server",
+    };
+
+    await expect(onboardRuntimeHost({ fetch: relayFetch, socket: vi.fn() }, payload)).resolves.toEqual({
+      host_id: "host-remote",
+      host_name: "GPU server",
+    });
+
+    const [path, init] = relayFetch.mock.calls[0] as [string, RequestInit];
+    expect(path).toBe("/api/v1/runtime-host-onboarding");
+    expect(new Headers(init.headers).has("authorization")).toBe(false);
+    expect(JSON.parse(init.body as string)).toEqual(payload);
+  });
+
+  it("shows the remote onboarding diagnostic instead of stringifying its error envelope", async () => {
+    const relayFetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      error: { detail: "connector pairing failed" },
+    }), { status: 500, headers: { "content-type": "application/json" } }));
+
+    await expect(onboardRuntimeHost(
+      { fetch: relayFetch, socket: vi.fn() },
+      {
+        controller_gateway_url: "https://gateway.example",
+        controller_credential: "v1.AAAAAAAAAAAAAAAAAAAAAA.BBBBBBBBBBBBBBBBBBBBBB",
+        runtime_host_code: "12345678",
+        name: "GPU server",
+      },
+    )).rejects.toThrow("connector pairing failed");
   });
 });

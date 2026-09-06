@@ -1936,6 +1936,20 @@ async fn router_drains_valid_outbox_backlog_and_marks_published() {
     let agent_id = format!("agent-{}", choruz_common::new_id());
     let node_id = "router-backlog-test";
     let mut outbox_ids = Vec::new();
+    let workspace_id = choruz_common::new_id();
+    client
+        .execute(
+            "INSERT INTO principal (id, workspace_id, type, name, disabled, created_at, updated_at)
+         VALUES ($1, $2, 'human', $1, FALSE, NOW(), NOW())",
+            &[&sender_id, &workspace_id],
+        )
+        .await
+        .expect("seed backlog sender");
+    client.execute(
+        "INSERT INTO conversation (id, workspace_id, type, name, creator_id, created_at, updated_at)
+         VALUES ($1, $2, 'group', 'Backlog', $3, NOW(), NOW())",
+        &[&conversation_id, &workspace_id, &sender_id],
+    ).await.expect("seed backlog conversation");
 
     for seq in 1..=2_i64 {
         let event_id = format!("evt-{}", choruz_common::new_id());

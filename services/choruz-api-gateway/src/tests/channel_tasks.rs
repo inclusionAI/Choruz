@@ -1,6 +1,112 @@
 use super::*;
 
 #[tokio::test]
+async fn company_member_can_create_and_update_tasks_without_losing_workspace_isolation() {
+    let _env = ChannelTaskEnvGuard::enabled();
+    let database = TestDatabase::create().await;
+    let db =
+        choruz_application::DbService::new(choruz_store::EventStore::new(&database.database_url));
+    let human = db
+        .create_human_user("company-owner", "password-123")
+        .await
+        .unwrap();
+    let outsider = db
+        .create_human_user("outside-owner", "password-456")
+        .await
+        .unwrap();
+    let company = db
+        .create_company(CreateCompanyRequest {
+            actor_id: human.id.clone(),
+            name: "Task Company".into(),
+            slug: None,
+            description: None,
+            folder_path: None,
+        })
+        .await
+        .unwrap();
+    let agent = db
+        .create_agent(CreateAgentRequest {
+            actor_id: human.id.clone(),
+            name: "Task Agent".into(),
+            scopes: vec![],
+            workspace_id: Some(company.id.clone()),
+            channel_visibility: None,
+        })
+        .await
+        .unwrap()
+        .principal;
+    let conversation = db
+        .create_group(CreateGroupRequest {
+            actor_id: human.id.clone(),
+            name: "Task Group".into(),
+            description: None,
+            avatar_url: None,
+            member_ids: vec![agent.id.clone()],
+            workspace_id: Some(company.id.clone()),
+        })
+        .await
+        .unwrap();
+    assert_ne!(human.workspace_id, conversation.workspace_id);
+    let (client, connection) = tokio_postgres::connect(&database.database_url, NoTls)
+        .await
+        .unwrap();
+    tokio::spawn(async move {
+        let _ = connection.await;
+    });
+    client.execute(
+        "INSERT INTO conversation_events (conversation_id, seq, event_id, event_type, sender_id, content, content_type)
+         VALUES ($1, 1, 'company-task-message', 'message', $2, 'Track this', 'text')",
+        &[&conversation.id, &human.id],
+    ).await.unwrap();
+    let router = router_with_db(choruz_application::ChatApp::new(), &database.database_url);
+    let (status, created) = api_json_payload_request(router.clone(), &human, Method::POST,
+        format!("/v1/conversations/{}/tasks/from-message", conversation.id),
+        json!({"message_id":"company-task-message", "title":"Company task", "assignee_principal_id":agent.id}),
+    ).await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    assert_eq!(created["created_by"], human.id);
+    let task_path = format!("/v1/tasks/{}", created["task_id"].as_str().unwrap());
+    let (status, updated) = api_json_payload_request(
+        router.clone(),
+        &human,
+        Method::PATCH,
+        task_path.clone(),
+        json!({"status":"in_progress"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{updated}");
+    assert_eq!(updated["status"], "in_progress");
+    let (status, _) = api_json_payload_request(
+        router.clone(),
+        &outsider,
+        Method::GET,
+        task_path.clone(),
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    // Revoking company access must not be bypassed by a stale conversation membership.
+    client
+        .execute(
+            "DELETE FROM company_member WHERE company_id = $1 AND principal_id = $2",
+            &[&company.id, &human.id],
+        )
+        .await
+        .unwrap();
+    for method in [Method::GET, Method::PATCH] {
+        let (status, _) = api_json_payload_request(
+            router.clone(),
+            &human,
+            method,
+            task_path.clone(),
+            json!({"status":"done"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+}
+
+#[tokio::test]
 async fn conversation_export_includes_channel_tasks_with_safe_projection() {
     let database = TestDatabase::create().await;
     let app = choruz_application::ChatApp::new();

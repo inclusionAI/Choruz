@@ -6,10 +6,10 @@
 //! Missing sessions are logged for now; actual rebuild happens
 //! when the user opens the terminal.
 
-use crate::PtyPool;
+use choruz_host_runtime::TerminalPool;
 
 /// Spawn the keepalive background loop. Call once at startup.
-pub(crate) fn spawn_keepalive_task(event_store: choruz_store::EventStore, pty_pool: PtyPool) {
+pub(crate) fn spawn_keepalive_task(event_store: choruz_store::EventStore, pty_pool: TerminalPool) {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
         loop {
@@ -24,7 +24,7 @@ pub(crate) fn spawn_keepalive_task(event_store: choruz_store::EventStore, pty_po
 /// One pass of the keepalive scan.
 async fn keepalive_scan(
     event_store: &choruz_store::EventStore,
-    pty_pool: &PtyPool,
+    pty_pool: &TerminalPool,
 ) -> Result<(), String> {
     let client = event_store
         .connect()

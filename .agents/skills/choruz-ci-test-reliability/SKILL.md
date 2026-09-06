@@ -1,9 +1,11 @@
 ---
 name: choruz-ci-test-reliability
-description: Design, review, and diagnose Choruz tests and fixtures that can fail nondeterministically under CI concurrency: parallel Playwright workers sharing one PostgreSQL and one API, vitest workers, cargo tests on a shared test database, clocks, ports, and asynchronous teardown. Use when adding or changing tests with those risks, investigating a flaky CI run, or reviewing test isolation.
+description: "Design, review, and diagnose Choruz tests and fixtures that can fail nondeterministically under CI concurrency: parallel Playwright workers sharing one PostgreSQL and one API, vitest workers, cargo tests on a shared test database, clocks, ports, and asynchronous teardown. Use when adding or changing tests with those risks, investigating a flaky CI run, or reviewing test isolation."
 ---
 
 # Reliable Choruz CI tests
+
+When loaded from a personal skills directory, resolve repository links from this skill's canonical `.agents/skills/choruz-ci-test-reliability/` location in the active Choruz checkout, not from the installed copy.
 
 Build tests that remain correct under the repository's real CI topology, not only when run alone on a quiet workstation. This skill owns isolation and reliability decisions; [docs/testing/pr-test-policy.md](../../../docs/testing/pr-test-policy.md) owns which tests a change must add, and [choruz-pre-push-checks](../choruz-pre-push-checks/SKILL.md) owns which commands to run before a push.
 
@@ -49,7 +51,7 @@ Register cleanup right after acquisition so an assertion failure also releases t
 
 ## Prove the intended regression
 
-- Observe the regression fail before the fix when practical: introduce the bug, watch red, revert.
+- Establish assertion strength and safe negative controls through the policy's [behaviour acceptance evidence](../../../docs/testing/pr-test-policy.md#behaviour-acceptance-evidence). A repeatably green test can still assert the wrong result; isolation does not prove product correctness.
 - For a fixed flake, run the spec repeatedly with the CI settings: `bash infra/host/web_e2e.sh tests/e2e/<spec> --repeat-each=3`.
 - For a race, use barriers to prove overlap; repeated execution alone is not a race test.
 - Verify external state (a row, an event, a file, a process exit) instead of trusting the component's self-report.

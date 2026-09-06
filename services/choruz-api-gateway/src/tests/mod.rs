@@ -56,9 +56,14 @@ mod agents;
 mod channel_tasks;
 mod contracts;
 mod conversations;
+mod filesystem;
 mod harness_logins;
 mod messages;
 mod observability;
+#[cfg(unix)]
+mod onboarding;
+mod online;
+mod online_groups;
 mod runtime;
 mod sessions_and_routes;
 mod sync;
@@ -204,14 +209,14 @@ struct WebhookReceiverState {
     headers: Arc<Mutex<Vec<HeaderMap>>>,
 }
 
-struct TestDatabase {
-    database_url: String,
+pub(crate) struct TestDatabase {
+    pub(crate) database_url: String,
     admin_database_url: String,
     database_name: String,
 }
 
 impl TestDatabase {
-    async fn create() -> Self {
+    pub(crate) async fn create() -> Self {
         let admin_database_url = connection_string("postgres");
         let database_name = format!("choruz_api_gateway_{}", Uuid::now_v7().simple());
         let (admin_client, connection) = connect_admin_database(&admin_database_url).await;

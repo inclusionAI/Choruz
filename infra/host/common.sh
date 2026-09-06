@@ -246,6 +246,10 @@ PID_DIR="${RUNTIME_DIR}/pids"
 
 mkdir -p "${DATA_DIR}" "${LOG_DIR}" "${PID_DIR}"
 
+host_service_runtime_dir() {
+  printf '%s\n' "${CHORUZ_CODEX_RUNTIME_DIR:-${TMPDIR:-/tmp}/choruz-codex-runtime-$(id -u)-$(printf '%s' "${ROOT_DIR}" | cksum | awk '{print $1}')}"
+}
+
 require_bin() {
   local binary_name="$1"
   if ! command -v "${binary_name}" >/dev/null 2>&1; then
@@ -407,7 +411,9 @@ service_ready() {
   local expected_service="$4"
   local body
   process_matches_worktree "${pid}" "${process_regex}" || return 1
-  body="$(curl -fsS --max-time 2 "${url}" 2>/dev/null)" || return 1
+  body="$(curl -fsS --max-time 2 --write-out '\n%{http_code}' "${url}" 2>/dev/null)" || return 1
+  [[ "${body##*$'\n'}" == "200" ]] || return 1
+  body="${body%$'\n'*}"
   if command -v jq >/dev/null 2>&1; then
     jq -e --arg service "${expected_service}" \
       '.status == "ready" and .service == $service and .protocol_version == 1' \

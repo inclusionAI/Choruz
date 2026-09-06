@@ -1,6 +1,6 @@
 # choruz-events
 
-Event envelope and topic payloads of the message pipeline: `EventEnvelope` wraps every bus message, and `topics.rs` holds one payload struct per topic (`ConversationEventPayload`, `RouteDecisionPayload`, `AgentCommandPayload`, `AgentResultPayload`, `ToolEffectPayload`, `DeadLetterPayload`, `DeliveryPayload`). The stage crates `choruz-store`, `choruz-router`, `choruz-session`, `choruz-executor`, `choruz-writer` and `choruz-fanout`, and `services/choruz-pipeline`, depend on it.
+Event envelope and topic payloads of the message pipeline: `EventEnvelope` wraps every bus message, and `topics.rs` holds one payload struct per topic (`ConversationEventPayload`, `RouteDecisionPayload`, `AgentCommandPayload`, `AgentResultPayload`, `ToolEffectPayload`, `DeadLetterPayload`, `DeliveryPayload`). The stage crates `choruz-store`, `choruz-router`, `choruz-session`, `choruz-executor`, `choruz-writer`, and `services/choruz-pipeline`, depend on it.
 
 ## Entry points
 

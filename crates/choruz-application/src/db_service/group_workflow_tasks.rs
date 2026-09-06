@@ -1711,9 +1711,13 @@ impl DbService {
         actor_id: &str,
         conversation_id: &str,
     ) -> Result<(), AppError> {
-        self.get_principal(actor_id).await?;
+        let principal = self.get_principal(actor_id).await?;
         let conversation = self.get_conversation(conversation_id).await?;
-        if conversation.members.contains_key(actor_id) {
+        if conversation.members.contains_key(actor_id)
+            && self
+                .principal_can_access_workspace(&principal, &conversation.workspace_id)
+                .await?
+        {
             return Ok(());
         }
         Err(AppError::Forbidden(
@@ -1989,8 +1993,7 @@ async fn insert_channel_task_fanout_event_tx(
         })
         .map_err(|e| AppError::Internal(format!("serialize channel task fanout payload: {e}")))?;
 
-    // The WebSocket fanout gateway polls conversation_events directly. Do not
-    // enqueue these task-only rows into event_outbox, which is consumed by the
+    // Do not enqueue these task-only rows into event_outbox, which is consumed by the
     // router and would turn silent board changes into agent input.
     tx.execute(
         "INSERT INTO conversation_events
@@ -2032,8 +2035,8 @@ async fn apply_channel_task_patch_tx(
     source_message_id: Option<&str>,
     base_payload: &serde_json::Value,
 ) -> Result<(GroupWorkflowEvent, Option<RapidChannelTaskUpdateLog>), AppError> {
-    require_channel_task_member_access_tx(tx, actor_id, &existing.conversation_id).await?;
-    let actor_type = channel_task_actor_type_tx(tx, actor_id, &existing.conversation_id).await?;
+    let actor_type =
+        require_channel_task_member_access_tx(tx, actor_id, &existing.conversation_id).await?;
     let agent_coordinator_authorized = if let Some(workflow_kind) = workflow_kind {
         authorize_workflow_metadata_patch_tx(
             tx,
@@ -2188,7 +2191,8 @@ async fn apply_workflow_status_update_tx(
         WorkflowStatusEffect::KnownNoop => {
             let locked_task = lock_group_workflow_task_tx(tx, &task.id).await?;
             let actor_type =
-                channel_task_actor_type_tx(tx, actor_id, &locked_task.conversation_id).await?;
+                require_channel_task_member_access_tx(tx, actor_id, &locked_task.conversation_id)
+                    .await?;
             match authorize_workflow_metadata_patch_tx(
                 tx,
                 actor_id,
@@ -2558,11 +2562,11 @@ async fn require_channel_task_member_access_tx(
     tx: &Transaction<'_>,
     actor_id: &str,
     conversation_id: &str,
-) -> Result<(), AppError> {
+) -> Result<String, AppError> {
     validate_required_text("actor_id", actor_id)?;
     let row = tx
         .query_opt(
-            "SELECT 1
+            "SELECT p.type
              FROM principal p
              JOIN conversation c ON c.id = $2
              JOIN conversation_member cm
@@ -2570,15 +2574,22 @@ async fn require_channel_task_member_access_tx(
               AND cm.principal_id = p.id
               AND cm.removed_at IS NULL
              WHERE p.id = $1
-               AND p.workspace_id = c.workspace_id
+               AND (p.workspace_id = c.workspace_id OR (
+                   p.type = 'human' AND EXISTS (
+                       SELECT 1 FROM company_member m
+                       JOIN company co ON co.id = m.company_id
+                       WHERE m.company_id = c.workspace_id
+                         AND m.principal_id = p.id AND co.deleted_at IS NULL
+                   )
+               ))
                AND p.disabled = FALSE
                AND p.deleted_at IS NULL",
             &[&actor_id, &conversation_id],
         )
         .await
         .map_err(|e| AppError::Internal(format!("check channel task membership: {e}")))?;
-    if row.is_some() {
-        Ok(())
+    if let Some(row) = row {
+        Ok(row.get("type"))
     } else {
         Err(AppError::Forbidden(
             "principal is not a member of this conversation".into(),
@@ -2656,28 +2667,6 @@ async fn require_visible_group_agent_actor_tx(
             "generic channel task creation is only available to visible group agents".into(),
         ))
     }
-}
-
-async fn channel_task_actor_type_tx(
-    tx: &Transaction<'_>,
-    actor_id: &str,
-    conversation_id: &str,
-) -> Result<String, AppError> {
-    let row = tx
-        .query_opt(
-            "SELECT p.type
-             FROM principal p
-             JOIN conversation c ON c.id = $2
-             WHERE p.id = $1
-               AND p.workspace_id = c.workspace_id
-               AND p.disabled = FALSE
-               AND p.deleted_at IS NULL",
-            &[&actor_id, &conversation_id],
-        )
-        .await
-        .map_err(|e| AppError::Internal(format!("load channel task actor type: {e}")))?;
-    row.map(|row| row.get("type"))
-        .ok_or_else(|| AppError::Forbidden("actor cannot access this channel task".into()))
 }
 
 async fn authorize_channel_task_patch_tx(
@@ -3143,7 +3132,14 @@ fn channel_task_snapshot_select_sql(where_clause: &str) -> String {
          )
         LEFT JOIN principal creator
           ON creator.id = gwt.created_by
-         AND creator.workspace_id = c.workspace_id
+         AND (creator.workspace_id = c.workspace_id OR (
+             creator.type = 'human' AND EXISTS (
+                 SELECT 1 FROM company_member m
+                 JOIN company co ON co.id = m.company_id
+                 WHERE m.company_id = c.workspace_id
+                   AND m.principal_id = creator.id AND co.deleted_at IS NULL
+             )
+         ))
          AND creator.disabled = FALSE
          AND creator.deleted_at IS NULL
          AND NOT (creator.type = 'agent' AND creator.channel_visibility = 'internal')

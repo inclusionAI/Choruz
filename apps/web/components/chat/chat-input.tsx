@@ -8,6 +8,8 @@ import {
   useState,
   type ChangeEvent,
   type KeyboardEvent,
+  type Dispatch,
+  type SetStateAction,
 } from "react";
 import { Paperclip, X, ArrowUp } from "lucide-react";
 
@@ -17,27 +19,7 @@ import { Avatar } from "../ui/avatar";
 import { principalName, isAgent } from "../../lib/api/principals";
 import { formatFileSize } from "../../lib/format-bytes";
 import { Spinner } from "../ui/spinner";
-
-function draftStorageKey(principalId: string, conversationId: string): string {
-  return `choruz:draft:${principalId}:${conversationId}`;
-}
-
-function readDraft(principalId: string, conversationId: string): string {
-  try {
-    return sessionStorage.getItem(draftStorageKey(principalId, conversationId)) ?? "";
-  } catch {
-    return "";
-  }
-}
-
-function writeDraft(principalId: string, conversationId: string, content: string): void {
-  try {
-    if (content) sessionStorage.setItem(draftStorageKey(principalId, conversationId), content);
-    else sessionStorage.removeItem(draftStorageKey(principalId, conversationId));
-  } catch {
-    // Storage can be unavailable in privacy-restricted browser contexts.
-  }
-}
+import { readDraft, writeDraft } from "../../lib/chat-drafts";
 
 // ---------------------------------------------------------------------------
 // Props
@@ -54,10 +36,12 @@ export type ChatInputProps = {
   agents: Principal[];
   activeConv: Conversation | null;
   placeholder: string;
-  /** Called when the user sends the composer; attachments remain queued until this point. */
-  onSendMessage: (content: string, attachments: File[]) => Promise<void>;
+  /** Report each attachment only after its message is accepted, so a retry retains only unsent files. */
+  onSendMessage: (content: string, attachments: File[], onAttachmentSent?: () => void) => Promise<void>;
   replyTo?: ReplyTo | null;
   onCancelReply?: () => void;
+  pendingFilesByConversation: Record<string, File[]>;
+  setPendingFilesByConversation: Dispatch<SetStateAction<Record<string, File[]>>>;
 };
 
 // ---------------------------------------------------------------------------
@@ -72,16 +56,24 @@ export function ChatInput({
   onSendMessage,
   replyTo,
   onCancelReply,
+  pendingFilesByConversation,
+  setPendingFilesByConversation,
 }: ChatInputProps) {
   const [inputText, setInputText] = useState("");
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
   const [mentionQuery, setMentionQuery] = useState<string | null>(null);
   const [mentionIdx, setMentionIdx] = useState(0);
-  const [pendingFilesByConversation, setPendingFilesByConversation] = useState<Record<string, File[]>>({});
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const restoreFocusAfterSendRef = useRef(false);
+
+  useEffect(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    textarea.style.height = "auto";
+    textarea.style.height = Math.min(textarea.scrollHeight, 120) + "px";
+  }, [inputText]);
 
   useEffect(() => {
     if (sending || !restoreFocusAfterSendRef.current) return;
@@ -130,6 +122,7 @@ export function ChatInput({
     const draft = inputText;
     const content = draft.trim();
     const attachments = pendingFiles;
+    let sentAttachments = 0;
     setSending(true);
     setSendError(null);
     setInputText("");
@@ -141,13 +134,13 @@ export function ChatInput({
     });
 
     try {
-      await onSendMessage(content, attachments);
+      await onSendMessage(content, attachments, () => { sentAttachments++; });
       writeDraft(principal.id, sendingConversationId, "");
     } catch (err) {
       trace.event("chat_input_send_error", { error: String(err), contentLen: content.length });
       setPendingFilesByConversation((previous) => ({
         ...previous,
-        [sendingConversationId]: attachments,
+        [sendingConversationId]: attachments.slice(sentAttachments),
       }));
       if (activeConversationIdRef.current === sendingConversationId) {
         setInputText(draft);
@@ -159,7 +152,7 @@ export function ChatInput({
         activeConversationIdRef.current === sendingConversationId;
       setSending(false);
     }
-  }, [inputText, pendingFiles, sending, onSendMessage, activeConv?.id, principal.id]);
+  }, [inputText, pendingFiles, sending, onSendMessage, activeConv?.id, principal.id, setPendingFilesByConversation]);
 
   const openFilePicker = useCallback(() => {
     if (sending) return;
@@ -177,7 +170,7 @@ export function ChatInput({
         [activeConv.id]: [...(previous[activeConv.id] ?? []), ...files],
       }));
     },
-    [activeConv?.id, sending],
+    [activeConv?.id, sending, setPendingFilesByConversation],
   );
 
   const removePendingFile = useCallback((index: number) => {
@@ -190,32 +183,7 @@ export function ChatInput({
       else next[activeConv.id] = nextFiles;
       return next;
     });
-  }, [activeConv?.id]);
-
-  // Expose test API for browser automation (Safari bridge)
-  useEffect(() => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const w = window as any;
-    w.__choruz_sendMessage = (text: string) => {
-      setInputText(text);
-      // Schedule send after React state update
-      setTimeout(async () => {
-        setSending(true);
-        try {
-          await onSendMessage(text, []);
-          setInputText("");
-          setSendError(null);
-        } catch (err) {
-          setInputText(text);
-          setSendError(err instanceof Error ? err.message : "Message failed to send. Try again.");
-        } finally {
-          setSending(false);
-        }
-      }, 50);
-      return "queued";
-    };
-    return () => { delete w.__choruz_sendMessage; };
-  }, [onSendMessage]);
+  }, [activeConv?.id, setPendingFilesByConversation]);
 
   const handleInputChange = useCallback(
     (e: ChangeEvent<HTMLTextAreaElement>) => {
@@ -237,10 +205,6 @@ export function ChatInput({
         setMentionQuery(null);
       }
 
-      // Auto-resize textarea
-      const ta = e.target;
-      ta.style.height = "auto";
-      ta.style.height = Math.min(ta.scrollHeight, 120) + "px";
     },
     [activeConv?.id, principal.id],
   );

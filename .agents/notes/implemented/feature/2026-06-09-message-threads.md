@@ -14,7 +14,7 @@ The discriminator is defined once per language: `THREAD_FLAG_SQL` (`COALESCE(met
 
 Threads are flat. `EventStore::canonicalize_thread_root_in_tx` follows a reply-to-reply target to its root inside the `DbService::send_message` transaction (`crates/choruz-application/src/db_service/messages.rs`), so every read is a single-level lookup and `reply_event_id` never points at another reply. The target must be a message-like event (`event_type IN ('message','message.created','reply')`) in the same conversation; anything else is `NotFound`, and `thread: true` without `reply_to_id` is `AppError::Validation("threaded reply requires metadata.reply_to_id")`.
 
-There is no dedicated write route. Humans post `POST /v1/messages` with `metadata: { reply_to_id, thread: true, broadcast? }`; every pipeline stage (outbox, router, fanout, idempotency) sees a normal message. Reads are `GET /v1/conversations/{conversation_id}/messages?view=timeline` (quiet replies hidden, one batched `thread_summaries` array per page), `GET /v1/conversations/{conversation_id}/threads/{thread_root_id}?since_seq&limit` and `POST …/threads/{thread_root_id}/view`, handled by `list_timeline_messages`, `list_thread_replies` and `mark_thread_viewed` behind `handlers_threads.rs` (`get_thread`, `view_thread`) and the `view=timeline` branch of `list_messages` in `handlers_messages.rs`. Thread reads share `require_conversation_read_access` with `list_messages`, so thread visibility equals conversation visibility.
+There is no dedicated write route. Humans post `POST /v1/messages` with `metadata: { reply_to_id, thread: true, broadcast? }`; the pipeline and sync feed carry a normal message. Reads are `GET /v1/conversations/{conversation_id}/messages?view=timeline` (quiet replies hidden, one batched `thread_summaries` array per page), `GET /v1/conversations/{conversation_id}/threads/{thread_root_id}?since_seq&limit` and `POST …/threads/{thread_root_id}/view`, handled by `list_timeline_messages`, `list_thread_replies` and `mark_thread_viewed` behind `handlers_threads.rs` (`get_thread`, `view_thread`) and the `view=timeline` branch of `list_messages` in `handlers_messages.rs`. Thread reads share `require_conversation_read_access` with `list_messages`, so thread visibility equals conversation visibility.
 
 ## Data
 
@@ -43,14 +43,33 @@ A quiet threaded reply does not bump `conversation.total_msg_count` and does not
 
 Subsystem reference: [docs/subsystems/threads.md](../../../../docs/subsystems/threads.md). History: [Message threads RFC (archived)](../../archived/feature/2026-06-09-message-threads.md).
 
+The thread composer ignores Enter during IME composition. Each root mounts its
+own composer state and keeps text in the same tab-local session storage helper
+as the main composer (`apps/web/lib/chat-drafts.ts`), scoped by principal,
+conversation and root. Closing or switching threads retains unsent text;
+successful sending clears only the submitted draft, not a newer draft written
+after reopening the thread. Storage is best-effort when browser privacy rules
+make it unavailable; drafts are not synchronized between devices.
+
+Incoming replies follow the bottom only while the reader remains near it.
+Scrolling into older replies preserves the reading position; returning to the
+bottom resumes following. The panel uses the timeline's 150-pixel threshold
+without persisting scroll state or changing message delivery.
+An incoming reply while reading history shows a New replies button that returns
+to the bottom; scrolling back also clears the notice.
+
 ## Alternatives considered
 
-- **Dedicated `thread` and `broadcast` columns on `conversation_events`**: rejected because a migration on the hottest table buys nothing the JSONB flags do not; `reply_to_id` and channel-task payloads already live in `metadata`, and the fanout envelope carries `metadata` for free. The cost of a JSONB predicate is contained by the partial index, which only admits rows that are already flagged replies.
+**A separate thread draft store.** Rejected because the main composer already
+owns a session-storage convention. Sharing that helper preserves one storage
+policy without keeping hidden thread panels or introducing server-side drafts.
+
+- **Dedicated `thread` and `broadcast` columns on `conversation_events`**: rejected because a migration on the hottest table buys nothing the JSONB flags do not; `reply_to_id` and channel-task payloads already live in `metadata`, and the sync message payload carries that metadata. The cost of a JSONB predicate is contained by the partial index, which only admits rows that are already flagged replies.
 - **A new `thread_root_id` column instead of reusing `reply_event_id`**: rejected because it double-stores the same relationship and forces a backfill decision for legacy quote-replies; reuse plus a discriminator costs one JSONB check on a filtered subset.
 - **Denormalized reply counters on the root row**: rejected in favour of a per-page `GROUP BY` over the partial index; writes stay a single insert with no counter drift, and `thread_summaries` is an opaque array so a summary table can back it later without an API change.
 - **Broadcast default `false` for agent thread replies**: rejected because it hides agent activity inside collapsed threads, judged too surprising for an operations tool; agents opt out per message with `"broadcast": false` for noisy intermediate updates.
 - **Nested threads**: rejected in favour of flat Slack semantics; a reply to a reply canonicalizes to the root, which keeps every read a single-level lookup with no recursive CTE.
-- **A dedicated sync event type for thread replies, copying the `channel_task.*` identifier-envelope pattern**: rejected because those are non-message domain events fetched separately, whereas a thread reply is a message; clients route on `metadata` and nothing in the fanout crate changes.
+- **A dedicated sync event type for thread replies, copying the `channel_task.*` identifier-envelope pattern**: rejected because those are non-message domain events fetched separately, whereas a thread reply is a message; clients route on `metadata` within the existing sync message payload.
 - **Backfilling historical quote-replies into threads**: rejected; existing `reply_event_id` rows keep rendering as quote blocks, and only rows written with `thread: true` get thread semantics.
 - **Thread-level membership or follow/unfollow state**: rejected for the first release because follow state doubles the receipt table's semantics; every conversation member sees thread unread, and follow state is an additive column on `thread_read_receipt` if it ever proves noisy.
 - **A `0NNN`-series migration**: rejected because the index targets `conversation_events`, which `V001` creates, and the `0NNN` series applies before every V-file.
@@ -62,4 +81,4 @@ Subsystem reference: [docs/subsystems/threads.md](../../../../docs/subsystems/th
 - Agent threads still add main-timeline volume until agents use `"broadcast": false`, which is the accepted price of operator visibility; `metadata_for_group_send_injects_thread_fields` pins the default.
 - The envelope carries only the root id, so an agent that needs earlier thread context must fetch it; the executor injects no thread transcript lines.
 - Canonicalization, target validation, counter gating, receipts and cascade are pinned by `thread_reply_canonicalizes_to_root`, `thread_reply_rejects_bad_targets`, `thread_reply_counter_semantics`, `quiet_thread_reply_preserves_sender_unread_state`, `thread_detail_and_receipts` and `delete_conversation_cascades_thread_receipts` in `services/choruz-api-gateway/src/tests/`, `send_to_group_threads_canonicalize_and_gate_unread` in `outbox_handler.rs`, and `build_prompt_adds_thread_field_for_threaded_replies` in `router.rs`.
-- The end-to-end contract is pinned by `apps/web/tests/threads.spec.ts` ("thread rollup, side panel, and quiet-reply timeline filtering", "thread unread badge: lights on agent reply, survives conversation view, clears on thread view", "broadcast reply shows in both the timeline and the thread").
+- The end-to-end contract is pinned by `apps/web/tests/e2e/threads.spec.ts`, including IME confirmation followed by a normal send, close/reopen and root-switch draft retention, unread badges, and quiet/broadcast timeline filtering.

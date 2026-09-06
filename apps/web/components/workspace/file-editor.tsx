@@ -96,6 +96,7 @@ export function FileEditor({ filePath, workspaceId, sessionToken, onClose, onDir
   const [originalContent, setOriginalContent] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [conflictContent, setConflictContent] = useState<string | null>(null);
   const [mode, setMode] = useState<"edit" | "preview">("edit");
   const editorRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
@@ -138,33 +139,38 @@ export function FileEditor({ filePath, workspaceId, sessionToken, onClose, onDir
 
   // Load file content
   useEffect(() => {
+    let cancelled = false;
     setContent(null);
     setOriginalContent(null);
     setError(null);
+    setConflictContent(null);
     const params = new URLSearchParams({ action: "read", path: filePath });
     if (workspaceId) params.set("workspace_id", workspaceId);
     transportFetch(`/api/filesystem?${params.toString()}`)
       .then(r => r.json())
       .then(data => {
+        if (cancelled) return;
         if (data.error) setError(typeof data.error === "string" ? data.error : JSON.stringify(data.error));
         else { setContent(data.content); setOriginalContent(data.content); contentRef.current = data.content; }
       })
-      .catch(e => setError(e.message));
+      .catch(e => { if (!cancelled) setError(e.message); });
+    return () => { cancelled = true; };
   }, [filePath, workspaceId]);
 
   // Save handler
-  const handleSave = useCallback(async () => {
+  const handleSave = useCallback(async (expectedContent = originalContent) => {
     const cur = contentRef.current;
-    if (cur === originalContent || saving || cur === null) return;
+    if (cur === expectedContent || saving || cur === null) return;
     setSaving(true);
     const span = trace.start("file_save", { path: filePath });
     try {
-      const res = await fetch('/api/filesystem', {
+      const res = await transportFetch('/api/filesystem', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path: filePath, content: cur, ...(workspaceId ? { workspace_id: workspaceId } : {}) }),
+        body: JSON.stringify({ path: filePath, content: cur, original_content: expectedContent, ...(workspaceId ? { workspace_id: workspaceId } : {}) }),
       });
       const data = await res.json();
+      setConflictContent(res.status === 409 && typeof data.current_content === "string" ? data.current_content : null);
       if (data.error) {
         const errMsg = typeof data.error === "string" ? data.error : JSON.stringify(data.error);
         span.end({ error: errMsg });
@@ -181,6 +187,20 @@ export function FileEditor({ filePath, workspaceId, sessionToken, onClose, onDir
     setSaving(false);
   }, [originalContent, saving, filePath, workspaceId]);
 
+  const reloadConflict = () => {
+    if (conflictContent === null) return;
+    const view = viewRef.current;
+    view?.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: conflictContent } });
+    contentRef.current = conflictContent;
+    setContent(conflictContent);
+    setOriginalContent(conflictContent);
+    setConflictContent(null);
+    setError(null);
+  };
+
+  const saveRef = useRef(handleSave);
+  saveRef.current = handleSave;
+
   // Initialize CodeMirror when content is loaded (skip in preview mode — the
   // editor DOM target isn't mounted and there's nothing to render.)
   useEffect(() => {
@@ -189,8 +209,6 @@ export function FileEditor({ filePath, workspaceId, sessionToken, onClose, onDir
       viewRef.current.destroy();
       viewRef.current = null;
     }
-
-    const saveRef = { current: handleSave };
 
     const extensions = [
       lineNumbers(),
@@ -251,12 +269,7 @@ export function FileEditor({ filePath, workspaceId, sessionToken, onClose, onDir
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [content === null ? null : filePath, mode]); // reinit when file changes OR when switching back from preview
 
-  // Update save handler ref
-  useEffect(() => {
-    // Keep the save keymap up to date — no need to rebuild the editor
-  }, [handleSave]);
-
-  if (error) return (
+  if (error && content === null) return (
     <div className="file-editor">
       <div className="file-editor-toolbar">
         <span className="file-editor-path">{filePath}</span>
@@ -283,11 +296,18 @@ export function FileEditor({ filePath, workspaceId, sessionToken, onClose, onDir
         <span className="file-editor-path">{filePath}</span>
         <div className="file-editor-actions">
           {isDirty && <span className="file-editor-dirty">Modified</span>}
-          <button onClick={handleSave} disabled={!isDirty || saving} className="file-editor-save-btn">
+          <button onClick={() => handleSave()} disabled={!isDirty || saving} className="file-editor-save-btn">
             {saving ? 'Saving…' : 'Save'}
           </button>
         </div>
       </div>
+      {error && <div className="file-editor-error" role="alert">
+        {error}
+        {conflictContent !== null && <>
+          <button onClick={reloadConflict} disabled={saving} className="file-editor-save-btn">Reload</button>
+          <button onClick={() => handleSave(conflictContent)} disabled={saving} className="file-editor-save-btn">Overwrite</button>
+        </>}
+      </div>}
       {mode === "preview" ? (
         <div className="file-editor-preview">
           <Suspense fallback={<div className="file-editor-loading"><Spinner label="Loading preview…" /></div>}>

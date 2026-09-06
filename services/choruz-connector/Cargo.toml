@@ -12,14 +12,20 @@ path = "src/main.rs"
 [dependencies]
 choruz-agent-runtime = { path = "../../crates/choruz-agent-runtime" }
 choruz-harness-login = { path = "../../crates/choruz-harness-login" }
+choruz-host-runtime = { path = "../../crates/choruz-host-runtime" }
 choruz-infrastructure = { path = "../../crates/choruz-infrastructure" }
+choruz-relay-client = { path = "../../crates/choruz-relay-client" }
+axum.workspace = true
+futures-util.workspace = true
 chrono.workspace = true
+fs2 = "0.4"
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 tempfile = "3"
 tokio.workspace = true
+tokio-tungstenite.workspace = true
 tracing.workspace = true
 uuid.workspace = true
 

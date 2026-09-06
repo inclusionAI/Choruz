@@ -1889,11 +1889,28 @@ fn dead_letter_from_row(row: &Row) -> DeadLetter {
     }
 }
 
-async fn runtime_host_metadata(
+/// Command metadata with the agent's `runtime_host_id` stamped in when its
+/// active binding runs on a remote device, so the connector for that device
+/// claims the turn instead of the local pipeline. Every path that inserts an
+/// `agent_commands` row goes through this: `insert_command` and the cron
+/// scheduler's own insert.
+/// Callers hold the Agent command lock; a disabled principal cannot enqueue
+/// work after session recovery retires its binding.
+pub async fn runtime_host_metadata(
     tx: &tokio_postgres::Transaction<'_>,
     agent_id: &str,
     metadata: &serde_json::Value,
 ) -> SessionResult<serde_json::Value> {
+    let disabled: bool = tx
+        .query_one(
+            "SELECT EXISTS (SELECT 1 FROM principal WHERE id = $1 AND disabled)",
+            &[&agent_id],
+        )
+        .await?
+        .get(0);
+    if disabled {
+        return Err(SessionError::Conflict("agent is disabled".into()));
+    }
     let runtime_host_id = tx
         .query_opt(
             "SELECT config_json->>'runtime_host_id' AS runtime_host_id

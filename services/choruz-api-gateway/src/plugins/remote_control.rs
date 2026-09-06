@@ -1,14 +1,20 @@
 use axum::{
     Router,
+    extract::DefaultBodyLimit,
     routing::{delete, get, post, put},
 };
 
 use crate::{
-    ApiState, handlers_harness_logins, handlers_remote_control, handlers_runtime_hosts,
-    handlers_workspace_sessions,
+    ApiState, handlers_harness_logins, handlers_remote_control, handlers_runtime_host_onboarding,
+    handlers_runtime_host_operations, handlers_runtime_hosts, handlers_workspace_sessions,
 };
 
 use super::HostPluginManifest;
+
+/// One outbox shipment: `MAX_SHIPMENT_BYTES` of encoded files plus the
+/// commands themselves.
+const OUTBOX_SHIPMENT_BODY_LIMIT: usize =
+    choruz_host_runtime::outbox::MAX_SHIPMENT_BYTES + 2 * 1024 * 1024;
 
 pub(super) fn manifest() -> HostPluginManifest {
     HostPluginManifest {
@@ -22,6 +28,9 @@ pub(super) fn manifest() -> HostPluginManifest {
             "workspace-session-import",
             "multi-runtime-hosts",
             "host-aware-agent-routing",
+            "remote-runtime-host-onboarding",
+            "runtime-host-filesystem-operations",
+            "runtime-host-link",
         ],
         client_capabilities: &["sidebar-action", "modal", "web-dashboard"],
     }
@@ -64,6 +73,18 @@ pub(super) fn router() -> Router<ApiState> {
         .route(
             "/v1/runtime-host-pairings/redeem",
             post(handlers_runtime_hosts::redeem_pairing),
+        )
+        .route(
+            "/v1/runtime-host-onboarding",
+            post(handlers_runtime_host_onboarding::onboard),
+        )
+        .route(
+            "/v1/runtime-hosts/{host_id}/operations",
+            post(handlers_runtime_host_operations::create_operation),
+        )
+        .route(
+            "/v1/ws/runtime-hosts/link",
+            get(crate::host_link::websocket_host_link),
         )
         .route(
             "/v1/companies/{company_id}/runtime-hosts",
@@ -116,6 +137,15 @@ pub(super) fn router() -> Router<ApiState> {
         .route(
             "/v1/runtime-hosts/{host_id}/commands/{command_id}/heartbeat",
             post(handlers_runtime_hosts::heartbeat_command),
+        )
+        .route(
+            "/v1/runtime-hosts/{host_id}/bindings/{binding_id}/outbox",
+            post(handlers_runtime_hosts::ship_binding_outbox)
+                .layer(DefaultBodyLimit::max(OUTBOX_SHIPMENT_BODY_LIMIT)),
+        )
+        .route(
+            "/v1/runtime-hosts/{host_id}/commands/{command_id}/attachments/{attachment_id}",
+            get(handlers_runtime_hosts::download_command_attachment),
         )
         .route(
             "/v1/runtime/bindings/{binding_id}/host",

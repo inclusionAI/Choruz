@@ -8,6 +8,7 @@ import type { ChatMessage, Conversation, Principal } from "../../lib/api/choruz-
 import { MessageBubble } from "./message-bubble";
 import { Spinner } from "../ui/spinner";
 import { EmptyState } from "../ui/empty-state";
+import { readDraft, writeDraft } from "../../lib/chat-drafts";
 
 // ---------------------------------------------------------------------------
 // ThreadPanel — Slack-style side panel for one message thread. Shows the root message, its replies, and a
@@ -20,11 +21,12 @@ export type ThreadPanelProps = {
   root: ChatMessage;
   replies: ChatMessage[];
   principal: Principal;
-  agents: Principal[];
+  principals: Principal[];
   activeConv: Conversation;
   /** True while the authoritative GET /threads/{root} fetch is in flight. */
   loading: boolean;
   error: string | null;
+  navigationTarget?: string | null;
   onClose: () => void;
   /** Sends a threaded reply; `broadcast` mirrors the checkbox state. */
   onSendReply: (content: string, broadcast: boolean) => Promise<void>;
@@ -34,33 +36,44 @@ export function ThreadPanel({
   root,
   replies,
   principal,
-  agents,
+  principals,
   activeConv,
   loading,
   error,
+  navigationTarget,
   onClose,
   onSendReply,
 }: ThreadPanelProps) {
-  const [draft, setDraft] = useState("");
+  const draftScope = `${activeConv.id}:thread:${root.id}`;
+  const [draft, setDraft] = useState(() => readDraft(principal.id, draftScope));
   const [broadcast, setBroadcast] = useState(false);
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const followingReplies = useRef(true);
+  const [hasNewReplies, setHasNewReplies] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  // Pin the list to the newest reply as messages arrive.
   useEffect(() => {
     const el = listRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
+    if (el && followingReplies.current) el.scrollTop = el.scrollHeight;
+    if (!followingReplies.current) setHasNewReplies(true);
   }, [replies.length, root.id]);
 
-  // Reset the composer when switching threads.
   useEffect(() => {
-    setDraft("");
-    setBroadcast(false);
-    setSendError(null);
     textareaRef.current?.focus();
-  }, [root.id]);
+  }, []);
+
+  useEffect(() => {
+    if (!navigationTarget || loading) return;
+    const message = listRef.current?.querySelector(`[data-msg-id="${navigationTarget}"]`);
+    if (!message) return;
+    followingReplies.current = false;
+    message.scrollIntoView({ block: "center" });
+    message.classList.add("msg-highlight");
+    const timer = setTimeout(() => message.classList.remove("msg-highlight"), 1500);
+    return () => { clearTimeout(timer); message.classList.remove("msg-highlight"); };
+  }, [navigationTarget, loading, replies]);
 
   const handleSend = useCallback(async () => {
     const content = draft.trim();
@@ -69,17 +82,18 @@ export function ThreadPanel({
     setSendError(null);
     try {
       await onSendReply(content, broadcast);
+      if (readDraft(principal.id, draftScope) === draft) writeDraft(principal.id, draftScope, "");
       setDraft("");
     } catch (err) {
       setSendError(err instanceof Error ? err.message : String(err));
     } finally {
       setSending(false);
     }
-  }, [draft, broadcast, sending, onSendReply]);
+  }, [draft, broadcast, sending, onSendReply, principal.id, draftScope]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-      if (e.key === "Enter" && !e.shiftKey) {
+      if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
         e.preventDefault();
         void handleSend();
       }
@@ -102,7 +116,7 @@ export function ThreadPanel({
         idx={idx}
         allMsgs={threadMsgs}
         principal={principal}
-        agents={agents}
+        principals={principals}
         isTerminalChat={false}
         scrollToMessage={noop}
         touchActiveId={null}
@@ -111,7 +125,7 @@ export function ThreadPanel({
         onTouchMove={noop}
       />
     ));
-  }, [root, replies, principal, agents, noop]);
+  }, [root, replies, principal, principals, noop]);
 
   return (
     <aside className="thread-panel" aria-label="Thread">
@@ -133,20 +147,32 @@ export function ThreadPanel({
         </button>
       </div>
 
-      <div className="thread-panel-messages" ref={listRef}>
+      <div className="thread-panel-messages" ref={listRef} onScroll={(event) => {
+        const el = event.currentTarget;
+        followingReplies.current = el.scrollHeight - el.scrollTop - el.clientHeight < 150;
+        if (followingReplies.current) setHasNewReplies(false);
+      }}>
         {threadMsgNodes}
         {repliesPlaceholder(replies.length, loading, error)}
         {error && <div className="thread-panel-error">{error}</div>}
       </div>
 
       <div className="thread-panel-composer">
+        {hasNewReplies && <button type="button" className="thread-panel-send" onClick={() => {
+          followingReplies.current = true;
+          setHasNewReplies(false);
+          if (listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight;
+        }}>New replies</button>}
         <textarea
           ref={textareaRef}
           value={draft}
           rows={2}
           aria-label="Reply in thread"
           placeholder="Reply in thread…"
-          onChange={(e) => setDraft(e.target.value)}
+          onChange={(e) => {
+            setDraft(e.target.value);
+            writeDraft(principal.id, draftScope, e.target.value);
+          }}
           onKeyDown={handleKeyDown}
           disabled={sending}
         />

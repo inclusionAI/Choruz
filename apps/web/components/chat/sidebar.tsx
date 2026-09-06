@@ -205,6 +205,35 @@ export function Sidebar({
   const [companyActionLoading, setCompanyActionLoading] = useState<string | null>(null);
   const [companySelectMode, setCompanySelectMode] = useState(false);
   const [selectedCompanyIds, setSelectedCompanyIds] = useState<Set<string>>(new Set());
+  const [companyActionError, setCompanyActionError] = useState<string | null>(null);
+
+  const runCompanyAction = async (action: "archive" | "unarchive" | "delete", ids: string[], batch = false) => {
+    if (companyActionLoading !== null) return;
+    const span = trace.start("company_action", { action, count: ids.length });
+    const failed: string[] = [];
+    setCompanyActionError(null);
+    const apply = action === "archive" ? onArchiveCompany : action === "unarchive" ? onUnarchiveCompany : onDeleteCompany;
+    for (const id of ids) {
+      setCompanyActionLoading(id);
+      try {
+        if (!apply) throw new Error("Company action unavailable");
+        await apply(id);
+      } catch {
+        failed.push(id);
+      }
+    }
+    setCompanyActionLoading(null);
+    setContextMenuId(null);
+    if (batch) {
+      setSelectedCompanyIds(new Set(failed));
+      setCompanySelectMode(failed.length > 0);
+    }
+    if (failed.length) {
+      const names = failed.map((id) => companies.find((company) => company.id === id)?.name ?? id);
+      setCompanyActionError(`${ids.length - failed.length} of ${ids.length} completed. Could not ${action}: ${names.join(", ")}. Try again.`);
+    }
+    span.end(failed.length ? { error: `${failed.length} failed`, completed: ids.length - failed.length } : { status: "ok" });
+  };
 
   // Explorer / conversation list vertical resize
   const [explorerHeight, setExplorerHeight] = useState<number | null>(null);
@@ -411,6 +440,7 @@ export function Sidebar({
                 }}
               />
               <div className="company-dropdown">
+                {companyActionError && <p role="alert" className="form-error">{companyActionError}</p>}
                 {dropdownCompanies.map((c) => {
                   const isHidden = hiddenCompanies.includes(c.id);
                   return (
@@ -422,6 +452,7 @@ export function Sidebar({
                           {companySelectMode && (
                             <input
                               type="checkbox"
+                              disabled={companyActionLoading !== null}
                               checked={selectedCompanyIds.has(c.id)}
                               onChange={() => {
                                 setSelectedCompanyIds(prev => {
@@ -478,6 +509,7 @@ export function Sidebar({
                           <button
                             type="button"
                             className="company-dropdown-item-name"
+                            disabled={companyActionLoading !== null}
                             onClick={() => {
                               if (companySelectMode) {
                                 setSelectedCompanyIds(prev => {
@@ -543,45 +575,18 @@ export function Sidebar({
                                 {isHidden ? "Show" : "Hide"}
                               </button>
                               <button
-                                disabled={companyActionLoading === c.id}
-                                onClick={async () => {
-                                  const action = c.archived_at ? "unarchive_company" : "archive_company";
-                                  const span = trace.start(action, { companyId: c.id, companyName: c.name });
-                                  setCompanyActionLoading(c.id);
-                                  try {
-                                    if (c.archived_at) {
-                                      await onUnarchiveCompany?.(c.id);
-                                    } else {
-                                      await onArchiveCompany?.(c.id);
-                                    }
-                                    span.end({ status: "ok" });
-                                  } catch (err) {
-                                    span.end({ error: String(err) });
-                                  } finally {
-                                    setCompanyActionLoading(null);
-                                    setContextMenuId(null);
-                                  }
-                                }}
+                                disabled={companyActionLoading !== null}
+                                onClick={() => void runCompanyAction(c.archived_at ? "unarchive" : "archive", [c.id])}
                               >
                                 {c.archived_at ? "Unarchive" : "Archive"}
                               </button>
                               <div className="dropdown-menu-divider" role="separator" />
                               <button
                                 className="company-context-danger"
-                                disabled={companyActionLoading === c.id}
-                                onClick={async () => {
+                                disabled={companyActionLoading !== null}
+                                onClick={() => {
                                   if (!window.confirm(`Delete "${c.name}"? This can be recovered within 30 days.`)) return;
-                                  const span = trace.start("delete_company", { companyId: c.id, companyName: c.name });
-                                  setCompanyActionLoading(c.id);
-                                  try {
-                                    await onDeleteCompany?.(c.id);
-                                    span.end({ status: "ok" });
-                                  } catch (err) {
-                                    span.end({ error: String(err) });
-                                  } finally {
-                                    setCompanyActionLoading(null);
-                                    setContextMenuId(null);
-                                  }
+                                  void runCompanyAction("delete", [c.id]);
                                 }}
                               >
                                 Delete
@@ -618,11 +623,12 @@ export function Sidebar({
                     <span className="company-batch-count">{selectedCompanyIds.size} selected</span>
                     <button
                       className="company-batch-btn"
+                      disabled={companyActionLoading !== null}
                       onClick={() => setSelectedCompanyIds(new Set(dropdownCompanies.map(c => c.id)))}
                     >All</button>
                     <button
                       className="company-batch-btn"
-                      disabled={selectedCompanyIds.size === 0}
+                      disabled={selectedCompanyIds.size === 0 || companyActionLoading !== null}
                       onClick={() => {
                         trace.event("batch_company_action", { action: "hide", count: selectedCompanyIds.size });
                         const next = [...hiddenCompanies, ...selectedCompanyIds];
@@ -633,44 +639,19 @@ export function Sidebar({
                     <button
                       className="company-batch-btn"
                       disabled={selectedCompanyIds.size === 0 || companyActionLoading !== null}
-                      onClick={async () => {
-                        const span = trace.start("batch_company_action", { action: "archive", count: selectedCompanyIds.size });
-                        try {
-                          for (const id of selectedCompanyIds) {
-                            setCompanyActionLoading(id);
-                            try { await onArchiveCompany?.(id); } catch {}
-                          }
-                          span.end({ status: "ok" });
-                        } catch (err) {
-                          span.end({ error: String(err) });
-                        } finally {
-                          setCompanyActionLoading(null);
-                          setCompanySelectMode(false);
-                        }
-                      }}
+                      onClick={() => void runCompanyAction("archive", [...selectedCompanyIds], true)}
                     >Archive</button>
                     <button
                       className="company-batch-btn is-danger"
                       disabled={selectedCompanyIds.size === 0 || companyActionLoading !== null}
-                      onClick={async () => {
+                      onClick={() => {
                         if (!window.confirm(`Delete ${selectedCompanyIds.size} companies?`)) return;
-                        const span = trace.start("batch_company_action", { action: "delete", count: selectedCompanyIds.size });
-                        try {
-                          for (const id of selectedCompanyIds) {
-                            setCompanyActionLoading(id);
-                            try { await onDeleteCompany?.(id); } catch {}
-                          }
-                          span.end({ status: "ok" });
-                        } catch (err) {
-                          span.end({ error: String(err) });
-                        } finally {
-                          setCompanyActionLoading(null);
-                          setCompanySelectMode(false);
-                        }
+                        void runCompanyAction("delete", [...selectedCompanyIds], true);
                       }}
                     >Delete</button>
                     <button
                       className="company-batch-btn"
+                      disabled={companyActionLoading !== null}
                       onClick={() => { setCompanySelectMode(false); setSelectedCompanyIds(new Set()); }}
                     >Cancel</button>
                   </div>
@@ -680,7 +661,6 @@ export function Sidebar({
           )}
         </div>
       )}
-      {/* File tree explorer — shown when active company has a folder_path */}
       {(() => {
         const activeCompany = companies.find((c) => c.id === activeCompanyId);
         return activeCompany?.folder_path ? (
@@ -703,6 +683,15 @@ export function Sidebar({
               aria-label="Resize file explorer"
             />
           </>
+        ) : activeCompany && onChangeCompanyWorkspace ? (
+          <button
+            type="button"
+            className="company-batch-btn"
+            onClick={() => {
+              setWorkspaceUpdateError(null);
+              setWorkspacePickerCompanyId(activeCompany.id);
+            }}
+          >Choose workspace folder</button>
         ) : null;
       })()}
 

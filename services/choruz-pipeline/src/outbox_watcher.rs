@@ -26,10 +26,11 @@
 //! `read_dir` on N small workspaces — cheap.
 
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use choruz_agent_runtime::RuntimeBinding;
 use choruz_agent_runtime::{DriverType, RuntimeStore};
 use choruz_store::EventStore;
 
@@ -56,70 +57,14 @@ pub async fn run_outbox_watcher_loop(
                         &binding.driver_type,
                         &binding.agent_principal_id,
                         &active_headless_agents,
+                        remote_host_id(&binding).is_some(),
                     ) {
                         continue;
                     }
-                    if binding.workspace_path.is_empty() {
-                        continue;
+                    for work_dir in binding_outbox_dirs(&binding) {
+                        drain_outbox_dir(&binding, &work_dir, &gateway_base_url, &event_store)
+                            .await;
                     }
-                    let work_dir = PathBuf::from(&binding.workspace_path);
-                    let maildir_new = work_dir.join(".choruz-outbox").join("new");
-                    if !maildir_new.is_dir() {
-                        continue;
-                    }
-                    // Cheap pre-check: skip the cookie+http overhead inside
-                    // process_outbox_commands when there's nothing to do.
-                    let has_files = std::fs::read_dir(&maildir_new)
-                        .map(|mut it| it.any(|e| e.is_ok()))
-                        .unwrap_or(false);
-                    if !has_files {
-                        continue;
-                    }
-
-                    let session_key = format!("watcher:{}", binding.id);
-                    // PTY/webhook bindings do not flow through the headless
-                    // executor writer, so visible replies/errors from outbox
-                    // commands are published directly to the bound
-                    // conversation here. Side-effect commands still hit
-                    // gateway/web directly inside the handler.
-                    let result = crate::outbox_handler::process_outbox_commands_with_stats(
-                        &session_key,
-                        &binding.agent_principal_id,
-                        &work_dir,
-                        &gateway_base_url,
-                        Some(&event_store),
-                    )
-                    .await;
-                    if !result.command_results.is_empty() {
-                        // The handler already persists non-chat command
-                        // results under `.choruz-outbox/results/`; PTY watcher
-                        // mode has no writer result channel, so keep them out
-                        // of the timeline and surface the durable result path
-                        // plus telemetry here.
-                        tracing::info!(
-                            binding_id = %binding.id,
-                            agent_id = %binding.agent_principal_id,
-                            command_results = ?result.command_results,
-                            "outbox watcher: processed non-chat command results"
-                        );
-                    }
-                    if !result.reply.trim().is_empty() {
-                        publish_watcher_reply(
-                            &event_store,
-                            &session_key,
-                            &binding.conversation_id,
-                            &binding.agent_principal_id,
-                            &result.reply,
-                        )
-                        .await;
-                    }
-
-                    tracing::debug!(
-                        binding_id = %binding.id,
-                        agent_id = %binding.agent_principal_id,
-                        workspace = %binding.workspace_path,
-                        "outbox watcher: drained maildir"
-                    );
                 }
             }
             Err(e) => {
@@ -128,6 +73,96 @@ pub async fn run_outbox_watcher_loop(
         }
         tokio::time::sleep(interval).await;
     }
+}
+
+/// Run every pending command file of one outbox directory of the binding.
+async fn drain_outbox_dir(
+    binding: &RuntimeBinding,
+    work_dir: &Path,
+    gateway_base_url: &str,
+    event_store: &EventStore,
+) {
+    let maildir_new = work_dir.join(".choruz-outbox").join("new");
+    if !maildir_new.is_dir() {
+        return;
+    }
+    // Cheap pre-check: skip the cookie+http overhead inside
+    // process_outbox_commands when there's nothing to do.
+    let has_files = std::fs::read_dir(&maildir_new)
+        .map(|mut it| it.any(|e| e.is_ok()))
+        .unwrap_or(false);
+    if !has_files {
+        return;
+    }
+
+    let session_key = format!("watcher:{}", binding.id);
+    // PTY/webhook bindings do not flow through the headless
+    // executor writer, so visible replies/errors from outbox
+    // commands are published directly to the bound
+    // conversation here. Side-effect commands still hit
+    // gateway/web directly inside the handler.
+    let result = crate::outbox_handler::process_outbox_commands_with_stats(
+        &session_key,
+        &binding.agent_principal_id,
+        work_dir,
+        gateway_base_url,
+        Some(event_store),
+    )
+    .await;
+    if !result.command_results.is_empty() {
+        // The handler already persists non-chat command
+        // results under `.choruz-outbox/results/`; PTY watcher
+        // mode has no writer result channel, so keep them out
+        // of the timeline and surface the durable result path
+        // plus telemetry here.
+        tracing::info!(
+            binding_id = %binding.id,
+            agent_id = %binding.agent_principal_id,
+            command_results = ?result.command_results,
+            "outbox watcher: processed non-chat command results"
+        );
+    }
+    if !result.reply.trim().is_empty() {
+        publish_watcher_reply(
+            event_store,
+            &session_key,
+            &binding.conversation_id,
+            &binding.agent_principal_id,
+            &result.reply,
+        )
+        .await;
+    }
+
+    tracing::debug!(
+        binding_id = %binding.id,
+        agent_id = %binding.agent_principal_id,
+        outbox = %work_dir.display(),
+        "outbox watcher: drained maildir"
+    );
+}
+
+/// Where a binding's outbox lives on this device: the workspace itself for
+/// a local binding; for a binding on a runtime host, every controller-side
+/// mirror a device has shipped into, so a shipment accepted while the
+/// binding moved between devices is drained like any other.
+fn binding_outbox_dirs(binding: &RuntimeBinding) -> Vec<PathBuf> {
+    if remote_host_id(binding).is_some() {
+        return choruz_host_runtime::outbox::remote_outbox_mirrors(&binding.id);
+    }
+    if binding.workspace_path.is_empty() {
+        return Vec::new();
+    }
+    vec![PathBuf::from(&binding.workspace_path)]
+}
+
+/// The device a binding is placed on, when it is not the gateway's own.
+fn remote_host_id(binding: &RuntimeBinding) -> Option<&str> {
+    binding
+        .config_json
+        .get("runtime_host_id")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|host_id| !host_id.is_empty())
 }
 
 fn drains_via_watcher(driver_type: &DriverType) -> bool {
@@ -142,12 +177,18 @@ fn drains_via_watcher(driver_type: &DriverType) -> bool {
     )
 }
 
+/// A binding is drained here when its commands never pass through the
+/// headless executor's own drain: terminal and webhook drivers locally, and
+/// every binding on a remote device, whose turns end on that device and
+/// whose commands arrive in the mirror. An agent with a headless turn in
+/// flight keeps its outbox until that turn's drain runs.
 fn should_drain_binding(
     driver_type: &DriverType,
     agent_id: &str,
     active_headless_agents: &HashSet<String>,
+    remote: bool,
 ) -> bool {
-    drains_via_watcher(driver_type) && !active_headless_agents.contains(agent_id)
+    (drains_via_watcher(driver_type) || remote) && !active_headless_agents.contains(agent_id)
 }
 
 async fn load_active_headless_agents(event_store: &EventStore) -> Result<HashSet<String>, String> {
@@ -332,11 +373,60 @@ async fn publish_watcher_reply(
 
 #[cfg(test)]
 mod tests {
-    use super::{drains_via_watcher, publish_watcher_reply, should_drain_binding};
-    use choruz_agent_runtime::DriverType;
+    use super::{
+        binding_outbox_dirs, drains_via_watcher, publish_watcher_reply, should_drain_binding,
+    };
+    use choruz_agent_runtime::{DriverType, RuntimeBinding};
     use choruz_store::EventStore;
     use std::collections::HashSet;
+    use std::path::PathBuf;
     use tokio_postgres::NoTls;
+
+    #[test]
+    fn a_remote_binding_drains_its_controller_side_mirror() {
+        let local = RuntimeBinding {
+            id: "binding-local".into(),
+            conversation_id: "conversation".into(),
+            agent_principal_id: "agent".into(),
+            driver_type: DriverType::ClaudeTerminal,
+            workspace_path: "/srv/local".into(),
+            git_worktree_path: None,
+            external_session_id: None,
+            external_thread_id: None,
+            last_event_cursor: 0,
+            last_acked_event_cursor: 0,
+            last_seen_server_seq: 0,
+            state: choruz_agent_runtime::BindingState::Idle,
+            last_error: None,
+            in_flight_turn_id: None,
+            last_trigger_message_id: None,
+            config_json: serde_json::json!({}),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        };
+        assert_eq!(
+            binding_outbox_dirs(&local),
+            vec![PathBuf::from("/srv/local")]
+        );
+        let remote = RuntimeBinding {
+            id: "binding-remote".into(),
+            workspace_path: "/home/b/project".into(),
+            config_json: serde_json::json!({ "runtime_host_id": "host-1" }),
+            ..local.clone()
+        };
+        assert_eq!(
+            binding_outbox_dirs(&remote),
+            choruz_host_runtime::outbox::remote_outbox_mirrors("binding-remote"),
+            "a remote binding's workspace is on the device; its mirrors are drained"
+        );
+        assert!(
+            binding_outbox_dirs(&RuntimeBinding {
+                workspace_path: String::new(),
+                ..local
+            })
+            .is_empty()
+        );
+    }
 
     #[test]
     fn watcher_drains_external_runtime_bindings() {
@@ -358,13 +448,32 @@ mod tests {
             &DriverType::CodexTerminal,
             "agent-1",
             &active,
+            false,
         ));
 
         assert!(should_drain_binding(
             &DriverType::CodexTerminal,
             "agent-2",
             &active,
+            false,
         ));
+    }
+
+    #[test]
+    fn a_remote_headless_binding_is_drained_from_its_mirror() {
+        let active = HashSet::from(["agent-busy".to_owned()]);
+        assert!(
+            !should_drain_binding(&DriverType::ClaudePrint, "agent-idle", &active, false),
+            "a local headless binding drains after its own turn"
+        );
+        assert!(
+            should_drain_binding(&DriverType::ClaudePrint, "agent-idle", &active, true),
+            "a remote headless binding's commands only ever arrive in the mirror"
+        );
+        assert!(
+            !should_drain_binding(&DriverType::ClaudePrint, "agent-busy", &active, true),
+            "a turn in flight still owns the outbox"
+        );
     }
 
     #[tokio::test]

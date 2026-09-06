@@ -18,7 +18,7 @@ for line in sys.stdin:
             "account": {"email": "dev@example.test", "subscriptionType": "max"},
             "models": [],
         }
-        if authenticated and not os.environ.get("FAKE_CLAUDE_NO_SNAPSHOT"):
+        if (authenticated or os.environ.get("FAKE_CLAUDE_SIGNED_IN")) and not os.environ.get("FAKE_CLAUDE_NO_SNAPSHOT"):
             response["models"] = [{"value": "claude-sonnet-4-5", "displayName": "Sonnet 4.5"}]
     elif subtype == "claude_authenticate":
         response = {"manualUrl": "https://claude.ai/oauth/authorize?state=state-1"}
@@ -60,7 +60,7 @@ for line in sys.stdin:
         result = {
             "type": "chatgpt",
             "loginId": "browser-login-1",
-            "authUrl": "https://auth.openai.com/oauth?state=state-1&redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback",
+            "authUrl": open(os.path.join(os.environ["FAKE_CODEX_DIR"], "auth-url")).read(),
         }
     elif method == "account/read":
         result = {"account": {"type": "chatgpt", "email": "codex@example.test", "planType": "team"}}
@@ -260,6 +260,17 @@ impl LoginFixture {
 
 #[tokio::test]
 async fn local_codex_login_uses_browser_completion_and_verifies_the_account() {
+    codex_gateway_login(false).await;
+}
+
+#[tokio::test]
+async fn gateway_codex_login_accepts_a_callback_from_another_browser_device() {
+    codex_gateway_login(true).await;
+}
+
+async fn codex_gateway_login(paste_callback: bool) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
     let _env = api_test_env_lock().lock().await;
     let dir = isolated_test_dir("codex-login");
     let binary = dir.join("codex");
@@ -268,6 +279,12 @@ async fn local_codex_login_uses_browser_completion_and_verifies_the_account() {
     let _fake_dir = EnvVarGuard::set_path("FAKE_CODEX_DIR", &dir);
     let profiles = dir.join("accounts");
     let _profiles = EnvVarGuard::set_path("CHORUZ_HARNESS_ACCOUNT_ROOT", &profiles);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let authorization = format!(
+        "https://auth.openai.com/oauth?state=state-1&redirect_uri=http%3A%2F%2F127.0.0.1%3A{}%2Fauth%2Fcallback",
+        listener.local_addr().unwrap().port()
+    );
+    fs::write(dir.join("auth-url"), authorization.as_str()).unwrap();
     let fixture = LoginFixture::create().await;
     let account_id = fixture.account_for_driver(None, "codex_terminal").await;
 
@@ -277,11 +294,35 @@ async fn local_codex_login_uses_browser_completion_and_verifies_the_account() {
     let waiting = fixture
         .wait_for_state(&account_id, &login_id, "awaiting_browser")
         .await;
-    assert_eq!(
-        waiting["authorization_url"],
-        "https://auth.openai.com/oauth?state=state-1&redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback"
-    );
+    assert_eq!(waiting["authorization_url"], authorization.as_str());
+    assert_eq!(waiting["runtime_host_id"], Value::Null);
     assert_eq!(waiting["user_code"], Value::Null);
+    if paste_callback {
+        assert_eq!(
+            fixture
+                .submit_callback(
+                    &account_id,
+                    &login_id,
+                    "http://localhost:9999/auth/callback?code=code-1&state=state-1"
+                )
+                .await,
+            StatusCode::NO_CONTENT
+        );
+        let (mut stream, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept())
+            .await
+            .expect("gateway login must consume the pasted callback")
+            .unwrap();
+        let mut request = vec![0; 2048];
+        let size = stream.read(&mut request).await.unwrap();
+        assert!(
+            String::from_utf8_lossy(&request[..size])
+                .starts_with("GET /auth/callback?code=code-1&state=state-1 ")
+        );
+        stream
+            .write_all(b"HTTP/1.1 302 Found\r\ncontent-length: 0\r\n\r\n")
+            .await
+            .unwrap();
+    }
     fs::write(dir.join("authorized"), "authorized").unwrap();
 
     let verified = fixture
@@ -326,8 +367,9 @@ async fn local_claude_login_accepts_the_complete_callback_and_verifies_the_accou
     assert_eq!(login["driver_type"], "claude_terminal");
     let login_id = login["id"].as_str().unwrap().to_owned();
 
-    let (duplicate, _) = fixture.start(&account_id).await;
-    assert_eq!(duplicate, StatusCode::CONFLICT);
+    let (resumed_status, resumed) = fixture.start(&account_id).await;
+    assert_eq!(resumed_status, StatusCode::OK);
+    assert_eq!(resumed["id"], login["id"]);
 
     let waiting = fixture
         .wait_for_state(&account_id, &login_id, "awaiting_browser")
@@ -578,8 +620,9 @@ async fn cancelling_an_open_login_lets_a_new_one_start_at_once() {
     let (status, login) = fixture.start(&account_id).await;
     assert_eq!(status, StatusCode::CREATED, "{login}");
     let login_id = login["id"].as_str().unwrap().to_owned();
-    let (duplicate, _) = fixture.start(&account_id).await;
-    assert_eq!(duplicate, StatusCode::CONFLICT);
+    let (resumed_status, resumed) = fixture.start(&account_id).await;
+    assert_eq!(resumed_status, StatusCode::OK);
+    assert_eq!(resumed["id"], login["id"]);
 
     assert_eq!(
         fixture.cancel(&account_id, &login_id).await,
@@ -597,6 +640,34 @@ async fn cancelling_an_open_login_lets_a_new_one_start_at_once() {
     assert_eq!(status, StatusCode::CREATED, "{replacement}");
     assert_ne!(replacement["id"], login_id);
     drop(fixture.database);
+}
+
+#[tokio::test]
+async fn concurrent_login_starts_resume_one_authoritative_job() {
+    let fixture = LoginFixture::create().await;
+    let host_id = fixture.runtime_host().await;
+    let account_id = fixture.account(Some(&host_id)).await;
+    let (first, second) = tokio::join!(fixture.start(&account_id), fixture.start(&account_id));
+    assert!(
+        (first.0 == StatusCode::CREATED && second.0 == StatusCode::OK)
+            || (second.0 == StatusCode::CREATED && first.0 == StatusCode::OK)
+    );
+    assert_eq!(first.1["id"], second.1["id"]);
+    let count: i64 = fixture
+        .client
+        .query_one(
+            "SELECT COUNT(*) FROM harness_account_login WHERE account_id = $1",
+            &[&account_id],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(count, 1);
+    let login_id = first.1["id"].as_str().unwrap();
+    assert_eq!(
+        fixture.cancel(&account_id, login_id).await,
+        StatusCode::NO_CONTENT
+    );
 }
 
 #[tokio::test]
@@ -692,4 +763,99 @@ async fn remote_harness_login_waits_for_the_connector_and_expires() {
         .get(0);
     assert_eq!(stale, "expired");
     drop(fixture.database);
+}
+
+impl LoginFixture {
+    async fn probe(&self, account_id: &str) -> (StatusCode, Value) {
+        api_json_request(
+            self.router.clone(),
+            &self.operator,
+            Method::POST,
+            format!(
+                "/v1/companies/{}/harness-accounts/{account_id}/probe",
+                self.operator.workspace_id
+            ),
+        )
+        .await
+    }
+
+    async fn account_row(&self, account_id: &str) -> tokio_postgres::Row {
+        self.client
+            .query_one(
+                "SELECT status, last_error, models_json, usage_json, probed_at
+                   FROM harness_account WHERE id = $1",
+                &[&account_id],
+            )
+            .await
+            .unwrap()
+    }
+}
+
+#[tokio::test]
+async fn probing_a_signed_in_local_account_stores_its_snapshot_without_a_sign_in() {
+    let _env = api_test_env_lock().lock().await;
+    let dir = isolated_test_dir("harness-probe");
+    let binary = dir.join("claude");
+    write_executable_script(&binary, FAKE_CLAUDE);
+    let _binary = EnvVarGuard::set_path("CHORUZ_CLAUDE_BINARY", &binary);
+    let _fake_dir = EnvVarGuard::set_path("FAKE_CLAUDE_DIR", &dir);
+    let _signed_in = EnvVarGuard::set_path("FAKE_CLAUDE_SIGNED_IN", std::path::Path::new("1"));
+    let _profiles = EnvVarGuard::set_path("CHORUZ_HARNESS_ACCOUNT_ROOT", &dir.join("accounts"));
+    let fixture = LoginFixture::create().await;
+    let account_id = fixture.account(None).await;
+
+    let (status, body) = fixture.probe(&account_id).await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    let row = fixture.account_row(&account_id).await;
+    assert_eq!(row.get::<_, String>("status"), "active");
+    assert_eq!(row.get::<_, Option<String>>("last_error"), None);
+    assert_eq!(
+        row.get::<_, Value>("models_json")[0]["id"],
+        "claude-sonnet-4-5"
+    );
+    assert_eq!(
+        row.get::<_, Value>("usage_json")["windows"][0]["remainingPercent"],
+        87.5
+    );
+    assert!(
+        row.get::<_, Option<chrono::DateTime<chrono::Utc>>>("probed_at")
+            .is_some()
+    );
+    drop(fixture);
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[tokio::test]
+async fn probing_an_account_without_a_login_records_the_reason_and_answers_409() {
+    let _env = api_test_env_lock().lock().await;
+    let dir = isolated_test_dir("harness-probe-unsigned");
+    let binary = dir.join("claude");
+    write_executable_script(&binary, FAKE_CLAUDE);
+    let _binary = EnvVarGuard::set_path("CHORUZ_CLAUDE_BINARY", &binary);
+    let _fake_dir = EnvVarGuard::set_path("FAKE_CLAUDE_DIR", &dir);
+    let _profiles = EnvVarGuard::set_path("CHORUZ_HARNESS_ACCOUNT_ROOT", &dir.join("accounts"));
+    let fixture = LoginFixture::create().await;
+    let account_id = fixture.account(None).await;
+
+    let (status, body) = fixture.probe(&account_id).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    let row = fixture.account_row(&account_id).await;
+    assert_eq!(row.get::<_, String>("status"), "reauth_required");
+    assert!(
+        row.get::<_, Option<String>>("last_error")
+            .unwrap_or_default()
+            .contains("sign in"),
+    );
+
+    // A remote account whose device holds no link is refused without being
+    // marked: the device, not the login, is what is missing.
+    let host_id = fixture.runtime_host().await;
+    let remote_account_id = fixture.account(Some(&host_id)).await;
+    let (status, body) = fixture.probe(&remote_account_id).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert!(body.to_string().contains("not connected"), "{body}");
+    let row = fixture.account_row(&remote_account_id).await;
+    assert_eq!(row.get::<_, String>("status"), "pending");
+    drop(fixture);
+    fs::remove_dir_all(&dir).ok();
 }

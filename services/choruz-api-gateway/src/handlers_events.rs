@@ -13,108 +13,41 @@ use crate::{
 };
 
 // ── Telemetry ─────────────────────────────────────────────────────────
-
+static ACTIVITY_BATCHES: std::sync::LazyLock<choruz_common::metrics::IntCounterVec> =
+    std::sync::LazyLock::new(|| {
+        choruz_common::metrics::register_counter_vec(
+            "choruz_activity_batches_total",
+            "Authenticated activity batch persistence attempts.",
+            &["outcome"],
+        )
+    });
 #[derive(Debug, Deserialize)]
 pub(crate) struct TelemetryPayload {
-    events: Vec<serde_json::Value>,
+    events: Vec<choruz_application::db_service::TelemetryEvent>,
 }
 
 pub(crate) async fn ingest_telemetry(
     headers: HeaderMap,
     State(state): State<ApiState>,
-    Json(payload): Json<TelemetryPayload>,
+    Json(mut payload): Json<TelemetryPayload>,
 ) -> Result<StatusCode, ApiError> {
     let principal = authenticated_principal(&headers, &state).await?;
-
-    // Persist to DB so telemetry is queryable, AND emit a structured log
-    // for every event so FE telemetry ends up in the same grep-able stream
-    // as backend span logs. Without the second step, "logs alone" could not
-    // reach any FE event; a production engineer had to know to query
-    // `telemetry_event` separately to see clicks / pixel_world transitions
-    // / agent_reply events.
-    let client = state.event_store.connect().await.map_err(ApiError::from)?;
-    for evt in &payload.events {
-        let name = evt.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-        let trace_id = evt.get("traceId").and_then(|v| v.as_str());
-        let duration = evt.get("durationMs").and_then(|v| v.as_i64());
-        let data = evt.get("data").cloned().map(sanitize_telemetry_value);
-
-        // Structured log — only a small allowlist of known-safe correlation
-        // fields is promoted to stdout; everything else is represented as
-        // just its key list. Without this split, logging the full `data`
-        // payload (as round 4 originally did) widens PII exposure from DB
-        // to centralized logs — search queries, file paths, company names,
-        // WS frame previews, agent display names all ride in `data`.
-        //
-        // What counts as "safe" here = opaque identifiers or small
-        // enumerations that the FE demonstrably sets to non-user-typed
-        // values. Anything a user can shape (names, queries, free text)
-        // is intentionally excluded.
-        let data_keys: Vec<String> = data
-            .as_ref()
-            .and_then(|v| v.as_object())
-            .map(|obj| obj.keys().cloned().collect())
-            .unwrap_or_default();
-        let data_len = data.as_ref().map(|v| v.to_string().len()).unwrap_or(0);
-        let pick = |k: &str| -> Option<String> {
-            data.as_ref()
-                .and_then(|v| v.get(k))
-                .and_then(|v| v.as_str().map(|s| s.to_string()))
-        };
-        let backend_trace_id = pick("backend_trace_id");
-        let source = pick("source");
-        let src_conversation_id = pick("conversation_id");
-        let src_agent_id = pick("agent_id");
-        let src_message_id = pick("message_id").or_else(|| pick("event_id"));
-        let src_pixel_world_instance_id = pick("pixel_world_instance_id");
-        let src_from_state = pick("from_state");
-        let src_to_state = pick("to_state");
-        let src_arrival_state = pick("arrival_state");
-        let src_resume_state = pick("resume_state");
-        let content_len = data
-            .as_ref()
-            .and_then(|v| v.get("content_len"))
-            .and_then(|v| v.as_i64());
-        tracing::info!(
-            event = "fe_telemetry",
-            source = "fe",
-            name = %name,
-            trace_id = trace_id.unwrap_or("none"),
-            principal_id = %principal.id,
-            duration_ms = duration.unwrap_or(-1),
-            backend_trace_id = backend_trace_id.as_deref().unwrap_or("none"),
-            fe_source = source.as_deref().unwrap_or("-"),
-            conversation_id = src_conversation_id.as_deref().unwrap_or("-"),
-            agent_id = src_agent_id.as_deref().unwrap_or("-"),
-            message_id = src_message_id.as_deref().unwrap_or("-"),
-            pixel_world_instance_id = src_pixel_world_instance_id.as_deref().unwrap_or("-"),
-            from_state = src_from_state.as_deref().unwrap_or("-"),
-            to_state = src_to_state.as_deref().unwrap_or("-"),
-            arrival_state = src_arrival_state.as_deref().unwrap_or("-"),
-            resume_state = src_resume_state.as_deref().unwrap_or("-"),
-            content_len = content_len.unwrap_or(-1),
-            // Key list covers any non-allowlisted field the FE emitted, so
-            // operators can still spot schema drift without leaking values.
-            data_keys = ?data_keys,
-            data_len,
-            "frontend telemetry event"
-        );
-
-        if let Err(e) = client
-            .execute(
-                "INSERT INTO telemetry_event (principal_id, trace_id, name, duration_ms, data)
-             VALUES ($1, $2, $3, $4, $5)",
-                &[&principal.id, &trace_id, &name, &duration, &data],
-            )
-            .await
-        {
-            tracing::warn!(error = %e, name, "telemetry DB write failed (non-fatal)");
-        }
+    for event in &mut payload.events {
+        event.data = event.data.take().map(sanitize_telemetry_value);
     }
+    let result = state.db.record_telemetry(&principal, &payload.events).await;
+    ACTIVITY_BATCHES
+        .with_label_values(&[if result.is_ok() {
+            "committed"
+        } else {
+            "failed"
+        }])
+        .inc();
+    result?;
     Ok(StatusCode::NO_CONTENT)
 }
 
-fn sanitize_telemetry_value(value: serde_json::Value) -> serde_json::Value {
+pub(crate) fn sanitize_telemetry_value(value: serde_json::Value) -> serde_json::Value {
     match value {
         serde_json::Value::Object(mut object) => {
             let private_payload = object
@@ -169,6 +102,11 @@ fn telemetry_key_is_sensitive(key: &str) -> bool {
                 | "attachmentname"
                 | "path"
                 | "paths"
+                | "authenticationcode"
+                | "authorizationcode"
+                | "devicecode"
+                | "pairingcredential"
+                | "credential"
         )
         || compact_key.ends_with("filename")
         || key.contains("secret")
@@ -280,4 +218,4 @@ pub(crate) async fn flush_webhook_deliveries(
 }
 
 // Old /v1/ws/events WebSocket endpoint removed.
-// Event push is handled by choruz-fanout (/ws/fanout on pipeline port).
+// Dashboard changes are delivered by handlers_sync_ws through /v1/ws/sync.

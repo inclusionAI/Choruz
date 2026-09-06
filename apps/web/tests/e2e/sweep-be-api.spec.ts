@@ -312,7 +312,7 @@ test.describe("BE feature sweep", () => {
       headers: { Authorization: `Bearer ${me.token}`, "content-type": "application/json" },
       data: {
         events: [
-          { source: "FE", traceId: `sw-${Date.now()}`, spanId: "s1", name: "sweep_event", ts: new Date().toISOString(), data: { k: "v" } },
+          { eventId: crypto.randomUUID(), schemaVersion: 1, sessionId: "sweep", traceId: `sw-${Date.now()}`, spanId: "s1", name: "sweep_event", ts: new Date().toISOString(), data: { k: "v" } },
         ],
       },
     });

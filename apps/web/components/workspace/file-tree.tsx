@@ -32,6 +32,12 @@ interface TreeNodeData {
   loaded?: boolean;
 }
 
+function withChildren(nodes: TreeNodeData[], path: string, children: TreeNodeData[]): TreeNodeData[] {
+  return nodes.map((node) => node.path === path
+    ? { ...node, children, loaded: true }
+    : node.children ? { ...node, children: withChildren(node.children, path, children) } : node);
+}
+
 // ---------------------------------------------------------------------------
 // File icon helper
 // ---------------------------------------------------------------------------
@@ -177,7 +183,11 @@ const TreeNode = memo(function TreeNode({
 // FileTree main component
 // ---------------------------------------------------------------------------
 
-export function FileTree({ rootPath, workspaceId, defaultCollapsed = false, style, onOpenFile, onChangeRoot }: FileTreeProps) {
+export function FileTree(props: FileTreeProps) {
+  return <FileTreeContents key={JSON.stringify([props.workspaceId, props.rootPath])} {...props} />;
+}
+
+function FileTreeContents({ rootPath, workspaceId, defaultCollapsed = false, style, onOpenFile, onChangeRoot }: FileTreeProps) {
   const [collapsed, setCollapsed] = useState(defaultCollapsed);
   const [tree, setTree] = useState<TreeNodeData[]>([]);
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set());
@@ -192,34 +202,30 @@ export function FileTree({ rootPath, workspaceId, defaultCollapsed = false, styl
   // Load root directory contents
   const fetchDirectory = useCallback(
     async (dirPath: string): Promise<TreeNodeData[]> => {
-      try {
-        const params = new URLSearchParams({
-          action: "list",
-          path: dirPath,
-          include_files: "true",
-        });
-        if (workspaceId) params.set("workspace_id", workspaceId);
-        const res = await transportFetch(`/api/filesystem?${params.toString()}`);
-        if (!res.ok) return [];
-        const data = (await res.json()) as { entries?: DirEntry[] };
-        const entries = data.entries || [];
+      const params = new URLSearchParams({
+        action: "list",
+        path: dirPath,
+        include_files: "true",
+      });
+      if (workspaceId) params.set("workspace_id", workspaceId);
+      const res = await transportFetch(`/api/filesystem?${params.toString()}`);
+      if (!res.ok) throw new Error(`Could not read ${dirPath} (${res.status}). Check access and retry.`);
+      const data = (await res.json()) as { entries?: DirEntry[] };
+      const entries = data.entries || [];
 
-        // Sort: directories first, then files, both alphabetical
-        entries.sort((a, b) => {
-          if (a.type === "directory" && b.type !== "directory") return -1;
-          if (a.type !== "directory" && b.type === "directory") return 1;
-          return a.name.toLowerCase().localeCompare(b.name.toLowerCase());
-        });
+      // Sort: directories first, then files, both alphabetical
+      entries.sort((a, b) => {
+        if (a.type === "directory" && b.type !== "directory") return -1;
+        if (a.type !== "directory" && b.type === "directory") return 1;
+        return a.name.toLowerCase().localeCompare(b.name.toLowerCase());
+      });
 
-        return entries.map((e) => ({
-          name: e.name,
-          path: e.path,
-          type: e.type as "directory" | "file",
-          loaded: e.type !== "directory",
-        }));
-      } catch {
-        return [];
-      }
+      return entries.map((e) => ({
+        name: e.name,
+        path: e.path,
+        type: e.type as "directory" | "file",
+        loaded: e.type !== "directory",
+      }));
     },
     [workspaceId],
   );
@@ -262,22 +268,16 @@ export function FileTree({ rootPath, workspaceId, defaultCollapsed = false, styl
 
       // Lazy load: if not yet loaded, fetch children
       if (!loadedPathsRef.current.has(path)) {
-        const children = await fetchDirectory(path);
-        loadedPathsRef.current.add(path);
+        try {
+          const children = await fetchDirectory(path);
+          loadedPathsRef.current.add(path);
+          setError(null);
 
-        setTree((prev) => {
-          const updateChildren = (nodes: TreeNodeData[]): TreeNodeData[] =>
-            nodes.map((n) => {
-              if (n.path === path) {
-                return { ...n, children, loaded: true };
-              }
-              if (n.children) {
-                return { ...n, children: updateChildren(n.children) };
-              }
-              return n;
-            });
-          return updateChildren(prev);
-        });
+          setTree((prev) => withChildren(prev, path, children));
+        } catch (cause) {
+          setError(cause instanceof Error ? cause.message : "Could not read folder. Retry the folder or refresh.");
+          setExpandedPaths((prev) => { const next = new Set(prev); next.delete(path); return next; });
+        }
       }
     },
     [fetchDirectory],
@@ -287,34 +287,27 @@ export function FileTree({ rootPath, workspaceId, defaultCollapsed = false, styl
   const handleRefresh = useCallback(async () => {
     trace.event("refresh_files", { rootPath });
     setLoading(true);
-    loadedPathsRef.current.clear();
-    loadedPathsRef.current.add(rootPath);
+    setError(null);
+    try {
+      loadedPathsRef.current.clear();
 
-    const nodes = await fetchDirectory(rootPath);
-    setTree(nodes);
+      const nodes = await fetchDirectory(rootPath);
+      loadedPathsRef.current.add(rootPath);
+      setTree(nodes);
 
-    // Re-load all expanded paths
-    const expanded = new Set(expandedPaths);
-    for (const p of expanded) {
-      const children = await fetchDirectory(p);
-      loadedPathsRef.current.add(p);
-      // Update tree with the loaded children
-      setTree((prev) => {
-        const updateChildren = (ns: TreeNodeData[]): TreeNodeData[] =>
-          ns.map((n) => {
-            if (n.path === p) {
-              return { ...n, children, loaded: true };
-            }
-            if (n.children) {
-              return { ...n, children: updateChildren(n.children) };
-            }
-            return n;
-          });
-        return updateChildren(prev);
-      });
+      // Re-load all expanded paths
+      const expanded = new Set(expandedPaths);
+      for (const p of expanded) {
+        const children = await fetchDirectory(p);
+        loadedPathsRef.current.add(p);
+        setTree((prev) => withChildren(prev, p, children));
+      }
+
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not read files. Retry refresh.");
+    } finally {
+      setLoading(false);
     }
-
-    setLoading(false);
   }, [rootPath, expandedPaths, fetchDirectory]);
 
   // The tab stop follows the last focused row; if that row was hidden by a
@@ -387,7 +380,7 @@ export function FileTree({ rootPath, workspaceId, defaultCollapsed = false, styl
             <div className="file-tree-loading"><Spinner label="Loading…" /></div>
           )}
           {error && (
-            <div className="file-tree-error">{error}</div>
+            <div className="file-tree-error" role="alert">{error} <button type="button" onClick={handleRefresh} disabled={loading}>Retry</button></div>
           )}
           {tree.map((node) => (
             <TreeNode

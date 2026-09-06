@@ -11,13 +11,22 @@ interface PathPickerProps {
   placeholder?: string;
   /** When true (default), auto-fill with the user's HOME directory on mount. */
   autoHome?: boolean;
+  runtimeHostId?: string | null;
+  sessionToken?: string;
 }
 
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 
-export function PathPicker({ value, onChange, placeholder, autoHome = true }: PathPickerProps) {
+export function PathPicker({
+  value,
+  onChange,
+  placeholder,
+  autoHome = true,
+  runtimeHostId,
+  sessionToken,
+}: PathPickerProps) {
   const {
     suggestions,
     open,
@@ -28,7 +37,10 @@ export function PathPicker({ value, onChange, placeholder, autoHome = true }: Pa
     scheduleFetch,
     close,
     handleNavigationKey,
-  } = usePathSuggestions({ includeParent: true });
+  } = usePathSuggestions({
+    includeParent: true,
+    target: { runtimeHostId, sessionToken },
+  });
   const inputRef = useRef<HTMLInputElement>(null);
   const dropdownRef = useRef<HTMLUListElement>(null);
   // One home lookup at a time; dropped on unmount so a late answer cannot
@@ -39,21 +51,20 @@ export function PathPicker({ value, onChange, placeholder, autoHome = true }: Pa
     homeAbortRef.current?.abort();
     const controller = new AbortController();
     homeAbortRef.current = controller;
-    fetchHomeDirectory(controller.signal)
+    fetchHomeDirectory(controller.signal, { runtimeHostId, sessionToken })
       .then((home) => {
         if (home && !controller.signal.aborted) onHome(home);
       })
       .catch(() => {/* ignore – backend may not be ready */});
-  }, []);
+  }, [runtimeHostId, sessionToken]);
 
-  useEffect(() => () => homeAbortRef.current?.abort(), []);
-
-  // Initialise with the user's home directory when value is empty
+  // A HOME response belongs to the selected device, not the component's mount.
   useEffect(() => {
     if (autoHome && !value) resolveHome(onChange);
-    // Only run once on mount
+    return () => homeAbortRef.current?.abort();
+    // User edits are handled by onChange; do not restart lookup while typing.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [runtimeHostId, sessionToken]);
 
   /** Step into a directory: fill it in and list its children. */
   const enter = useCallback(

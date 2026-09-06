@@ -43,6 +43,10 @@ P0_SPECS = (
 # fixtures) is treated as touching everything.
 RULES: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
     (
+        ("components/online/**",),
+        ("tests/e2e/online.spec.ts",),
+    ),
+    (
         ("components/workspace/git-graph*", "lib/workspace/git-graph-repo-path.ts", "app/api/git-graph/**"),
         ("tests/e2e/git-graph.spec.ts",),
     ),
@@ -105,6 +109,8 @@ RULES: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
             "components/groups/create-group-modal.tsx",
             "components/groups/create-company-modal.tsx",
             "components/agents/driver-model-picker.tsx",
+            "hooks/use-driver-availability.ts",
+            "lib/drivers/**",
             "components/agents/harness-account*",
             "components/agents/agent-*",
             "components/agents/import-workspace-sessions-modal.tsx",
@@ -129,6 +135,7 @@ RULES: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
             "tests/e2e/agent.spec.ts",
             "tests/e2e/company.spec.ts",
             "tests/e2e/workspace-session-import.spec.ts",
+            "tests/e2e/device-provisioning.spec.ts",
         ),
     ),
     (

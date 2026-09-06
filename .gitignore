@@ -4,6 +4,7 @@
 /apps/web/.next/
 /apps/web/tests/screenshots/
 node_modules/
+.wrangler/
 .pnpm-store/
 /releases/
 /target/

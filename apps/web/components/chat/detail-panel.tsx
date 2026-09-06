@@ -35,8 +35,12 @@ export type DetailPanelProps = {
   searchQuery: string;
   searchResults: SearchResultItem[];
   searchLoading: boolean;
+  searchHasMore: boolean;
+  searchError: string | null;
+  onSearchLoadMore: () => void;
+  onSearchRetry: () => void;
   onSearchInput: (value: string) => void;
-  onSearchResultClick: (conversationId: string) => void;
+  onSearchResultClick: (conversationId: string, messageId: string) => void;
   width?: number;
 };
 
@@ -59,6 +63,10 @@ export function DetailPanel({
   width,
   searchResults,
   searchLoading,
+  searchHasMore,
+  searchError,
+  onSearchLoadMore,
+  onSearchRetry,
   onSearchInput,
   onSearchResultClick,
 }: DetailPanelProps) {
@@ -435,7 +443,7 @@ export function DetailPanel({
                   return (
                     <button
                       key={r.message_id}
-                      onClick={() => onSearchResultClick(r.conversation_id)}
+                      onClick={() => onSearchResultClick(r.conversation_id, r.message_id)}
                       className="detail-search-result"
                     >
                       <div className="detail-search-result-head">
@@ -452,7 +460,13 @@ export function DetailPanel({
                 })}
               </div>
             )}
-            {!searchLoading && searchQuery.trim() && searchResults.length === 0 && (
+            {searchError && <div role="alert" className="detail-inline-empty">
+              {searchError} <button type="button" onClick={onSearchRetry}>Retry</button>
+            </div>}
+            {searchHasMore && !searchError && <button type="button" disabled={searchLoading} onClick={onSearchLoadMore}>
+              Load more results
+            </button>}
+            {!searchLoading && !searchError && searchQuery.trim() && searchResults.length === 0 && (
               <EmptyState inline description="No messages match your search." />
             )}
           </div>

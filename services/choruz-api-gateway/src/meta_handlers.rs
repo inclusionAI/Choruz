@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     sync::{LazyLock, Mutex},
     time::Instant,
 };
@@ -37,6 +37,13 @@ static HTTP_REQUEST_DURATION: LazyLock<Histogram> = LazyLock::new(|| {
         "choruz_http_request_duration",
         "Gateway request latency in seconds.",
         vec![0.05, 0.2, 1.0],
+    )
+});
+static HTTP_RESPONSES: LazyLock<metrics::IntCounterVec> = LazyLock::new(|| {
+    metrics::register_counter_vec(
+        "choruz_http_responses_total",
+        "Gateway responses by bounded status class.",
+        &["class"],
     )
 });
 static PRINCIPALS_TOTAL: LazyLock<IntGauge> = LazyLock::new(|| {
@@ -138,6 +145,15 @@ pub(crate) async fn request_logging_middleware(
     }
 
     let status = response.status();
+    HTTP_RESPONSES
+        .with_label_values(&[match status.as_u16() / 100 {
+            1 => "1xx",
+            2 => "2xx",
+            3 => "3xx",
+            4 => "4xx",
+            _ => "5xx",
+        }])
+        .inc();
     let elapsed = start.elapsed();
 
     HTTP_REQUEST_DURATION.observe(elapsed.as_secs_f64());
@@ -368,15 +384,8 @@ pub(crate) async fn bootstrap(
         .iter()
         .map(|entry| entry.conversation.id.clone())
         .collect();
-    let member_principal_ids: Vec<String> = entries
-        .iter()
-        .flat_map(|entry| entry.conversation.members.keys().cloned())
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect();
-
     let (known_principals, agents, companies, unreads, hidden_conversations, runtime_bindings) = tokio::try_join!(
-        state.db.list_principals_by_ids(&member_principal_ids),
+        state.db.list_conversation_principals(&conversation_ids),
         state.db.list_accessible_agents(&principal.id),
         state.db.list_companies(&principal.id),
         state
@@ -385,13 +394,7 @@ pub(crate) async fn bootstrap(
         state.db.list_visible_hidden_conversations(&principal.id),
         bootstrap_runtime_bindings(&state, &principal),
     )?;
-    let principals = console_task_assignee_principals(
-        &entries
-            .iter()
-            .map(|entry| entry.conversation.clone())
-            .collect::<Vec<_>>(),
-        known_principals,
-    );
+    let principals = console_display_principals(known_principals);
     let mut agents: Vec<_> = agents.into_iter().map(redact_console_principal).collect();
     agents.sort_by(|left, right| left.name.cmp(&right.name).then(left.id.cmp(&right.id)));
     let unread_by_conversation: BTreeMap<_, _> = unreads
@@ -444,18 +447,15 @@ pub(crate) async fn console_snapshot(
     let principal = authenticated_principal(&headers, &state).await?;
     let mut conversations = state.db.list_conversations(&principal.id).await?;
     conversations.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
-    let member_principal_ids: Vec<String> = conversations
+    let conversation_ids: Vec<String> = conversations
         .iter()
-        .flat_map(|conversation| conversation.members.keys().cloned())
-        .collect::<BTreeSet<_>>()
-        .into_iter()
+        .map(|conversation| conversation.id.clone())
         .collect();
     let principals = state
         .db
-        .list_principals_by_ids(&member_principal_ids)
-        .await
-        .unwrap_or_default();
-    let principals = console_task_assignee_principals(&conversations, principals);
+        .list_conversation_principals(&conversation_ids)
+        .await?;
+    let principals = console_display_principals(principals);
 
     // Only include the last message per conversation for sidebar preview.
     // Full message history is fetched on-demand via /v1/conversations/{id}/messages.
@@ -534,24 +534,17 @@ pub(crate) async fn console_snapshot(
     }))
 }
 
-fn console_task_assignee_principals(
-    conversations: &[Conversation],
-    principals: Vec<Principal>,
-) -> Vec<ConsolePrincipalResponse> {
+fn console_display_principals(principals: Vec<Principal>) -> Vec<ConsolePrincipalResponse> {
     let mut visible: Vec<_> = principals
         .into_iter()
         .filter(|principal| {
-            let is_visible_member = conversations.iter().any(|conversation| {
-                conversation.workspace_id == principal.workspace_id
-                    && conversation.members.contains_key(&principal.id)
-            });
             let is_valid_type = matches!(
                 principal.principal_type,
                 PrincipalType::Human | PrincipalType::Agent
             );
             let is_visible_agent = principal.principal_type != PrincipalType::Agent
                 || principal.channel_visibility != ChannelVisibility::Internal;
-            is_visible_member && is_valid_type && is_visible_agent
+            is_valid_type && is_visible_agent
         })
         .map(redact_console_principal)
         .collect();

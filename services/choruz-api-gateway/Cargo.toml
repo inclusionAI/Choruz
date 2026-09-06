@@ -15,8 +15,11 @@ choruz-common = { path = "../../crates/choruz-common" }
 deadpool-postgres.workspace = true
 choruz-domain = { path = "../../crates/choruz-domain" }
 choruz-harness-login = { path = "../../crates/choruz-harness-login" }
+choruz-host-runtime = { path = "../../crates/choruz-host-runtime" }
+choruz-relay-client = { path = "../../crates/choruz-relay-client" }
 choruz-ids = { path = "../../crates/choruz-ids" }
 choruz-session = { path = "../../crates/choruz-session" }
+choruz-supervisor = { path = "../../crates/choruz-supervisor" }
 choruz-store = { path = "../../crates/choruz-store" }
 hex.workspace = true
 hmac.workspace = true
@@ -32,7 +35,6 @@ uuid.workspace = true
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 chrono.workspace = true
-portable-pty = "0.8"
 rand.workspace = true
 reqwest.workspace = true
 rustls.workspace = true
@@ -49,7 +51,7 @@ tracing.workspace = true
 futures-util = "0.3.32"
 serde_json.workspace = true
 tempfile = "3"
-tokio.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
 tokio-postgres.workspace = true
 tower.workspace = true
 uuid.workspace = true

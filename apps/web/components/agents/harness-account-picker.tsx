@@ -14,25 +14,13 @@ function apiErrorMessage(body: ApiErrorBody, fallback: string): string {
   return body.error?.detail || fallback;
 }
 
-const loginStarts = new Map<string, Promise<HarnessLogin>>();
-
 function startHarnessLogin(accountId: string, companyId: string): Promise<HarnessLogin> {
-  const key = `${companyId}\0${accountId}`;
-  const pending = loginStarts.get(key);
-  if (pending) return pending;
-  const request = transportFetch(`/api/harness-accounts/${encodeURIComponent(accountId)}/login?company_id=${encodeURIComponent(companyId)}`, { method: "POST" })
+  return transportFetch(`/api/harness-accounts/${encodeURIComponent(accountId)}/login?company_id=${encodeURIComponent(companyId)}`, { method: "POST" })
     .then(async (response) => {
       const body = await response.json() as HarnessLogin & ApiErrorBody;
       if (!response.ok) throw new Error(apiErrorMessage(body, "Unable to start the sign-in"));
       return body;
     });
-  loginStarts.set(key, request);
-  void request.finally(() => {
-    window.setTimeout(() => {
-      if (loginStarts.get(key) === request) loginStarts.delete(key);
-    }, 1_000);
-  }).catch(() => {});
-  return request;
 }
 
 function isDefaultAccount(account: HarnessAccount): boolean {
@@ -249,13 +237,13 @@ export function HarnessAccountPicker({
                 <p className="field-hint">The {harnessLabel} login this {deviceWord} already has.</p>
               ) : null}
               {account.status === "active" ? (
-                <AccountUsage account={account} loading={loading} onRefresh={account.runtimeHostId ? null : () => void probe(account)} />
+                <AccountUsage account={account} loading={loading} onRefresh={() => void probe(account)} />
               ) : null}
               {account.status !== "active" && !(isDefaultAccount(account) && verifyingDefault) ? (
                 <div className="harness-account-repair">
                   {account.lastError ? <p className="field-hint">{account.lastError}</p> : null}
                   <button type="button" className="btn-secondary" disabled={loading} onClick={() => setLoginAccount(account)}>Sign in</button>
-                  {!account.runtimeHostId && isDefaultAccount(account) ? (
+                  {isDefaultAccount(account) ? (
                     <button type="button" className="btn-secondary" disabled={loading} onClick={() => void probe(account)}>Verify again</button>
                   ) : null}
                 </div>
@@ -408,16 +396,12 @@ function HarnessLoginPanel({ account, companyId, onVerified, onClose }: {
           <>
             <p>Open the official Codex browser sign-in page.</p>
             {login.authorization_url ? <a className="btn-secondary" href={login.authorization_url} target="_blank" rel="noreferrer">Open sign-in link</a> : null}
-            {account.runtimeHostId ? (
-              <>
-                <p>After signing in, copy the complete localhost callback URL from the browser and paste it below so Choruz can forward it to this device.</p>
-                <label>
-                  Codex callback URL
-                  <input value={code} onChange={(event) => setCode(event.target.value)} autoComplete="off" />
-                  <button type="button" className="btn-secondary" disabled={!code.trim()} onClick={() => void submitCode()}>Finish sign-in</button>
-                </label>
-              </>
-            ) : <p>This screen verifies the account automatically when the browser sign-in finishes.</p>}
+            <p>This screen verifies the account automatically when the browser sign-in finishes. If you opened the link on another computer, paste its complete localhost callback URL below.</p>
+            <label>
+              Codex callback URL
+              <input value={code} onChange={(event) => setCode(event.target.value)} autoComplete="off" />
+              <button type="button" className="btn-secondary" disabled={!code.trim()} onClick={() => void submitCode()}>Finish sign-in</button>
+            </label>
           </>
         )
       ) : null}
@@ -428,8 +412,8 @@ function HarnessLoginPanel({ account, companyId, onVerified, onClose }: {
   );
 }
 
-/** Exact quota windows; `onRefresh` is null for a remote account, which only its own sign-in can re-probe. */
-function AccountUsage({ account, loading, onRefresh }: { account: HarnessAccount; loading: boolean; onRefresh: (() => void) | null }) {
+/** Exact quota windows with a refresh that re-probes the account on the device that holds its login. */
+function AccountUsage({ account, loading, onRefresh }: { account: HarnessAccount; loading: boolean; onRefresh: () => void }) {
   return (
     <div className="harness-account-usage" aria-label={`Exact usage for ${account.name}`}>
       {displayUsageWindows(account.driverType, account.usage.windows).map((window) => (

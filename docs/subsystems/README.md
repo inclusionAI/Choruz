@@ -5,7 +5,7 @@ One page per subsystem: what it is, what it owns, the data structures and messag
 | Page | Owns |
 |---|---|
 | [choruz-api-gateway](api-gateway.md) | HTTP and WebSocket surface, authentication, request validation, the `/v1` routes |
-| [message-pipeline](message-pipeline.md) | CDC intake, router, executor, writer, fanout, cron and the outbox watcher in `services/choruz-pipeline` |
+| [message-pipeline](message-pipeline.md) | CDC intake, router, executor, writer, cron and the outbox watcher in `services/choruz-pipeline` |
 | [agent-protocol](agent-protocol.md) | The `[choruz-incoming]` envelope, `$CHORUZ_SEND` commands, the maildir outbox, instruction bootstrap and refresh |
 | [choruz-agent-runtime](agent-runtime.md) | Terminal drivers (Claude Code, Codex, Gemini), sessions, bindings, harness accounts, `crates/choruz-agent-runtime` and `crates/choruz-session` |
 | [store](store.md) | `crates/choruz-application` `DbService`, `crates/choruz-store`, workspaces, conversations, messages, `server_seq`, idempotency |

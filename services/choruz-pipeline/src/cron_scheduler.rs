@@ -144,11 +144,22 @@ async fn check_and_dispatch_due_jobs(
         }
 
         // Calculate next_run_at based on schedule type
-        let next_run = compute_next_run(
-            &schedule_type,
-            &schedule_value,
-            schedule_timezone.as_deref(),
-        );
+        let next_run = if schedule_type == "at" {
+            None
+        } else {
+            match choruz_application::schedule::next_run_at(
+                &schedule_type,
+                &schedule_value,
+                schedule_timezone.as_deref(),
+                chrono::Utc::now(),
+            ) {
+                Ok(next) => Some(next),
+                Err(error) => {
+                    tracing::error!(job_id, %error, "cannot calculate next cron occurrence");
+                    None
+                }
+            }
+        };
 
         // Update job state
         if schedule_type == "at" {
@@ -223,6 +234,12 @@ async fn dispatch_cron_occurrence(
         .map_err(|e| format!("begin tx: {e}"))?;
 
     let idempotency_key = format!("{message_id}:{agent_id}");
+    tx.execute(
+        "SELECT pg_advisory_xact_lock(hashtext($1)::bigint)",
+        &[&agent_id],
+    )
+    .await
+    .map_err(|e| format!("lock cron agent commands: {e}"))?;
     tx.execute(
         "SELECT pg_advisory_xact_lock(hashtext($1)::bigint)",
         &[&idempotency_key],
@@ -309,6 +326,9 @@ async fn dispatch_cron_occurrence(
         .await
         .map_err(|e| format!("lookup existing command: {e}"))?;
     if existing.is_none() {
+        let metadata = choruz_session::runtime_host_metadata(&tx, agent_id, &metadata)
+            .await
+            .map_err(|e| format!("resolve runtime host: {e}"))?;
         tx.execute(
             "INSERT INTO agent_commands (
                 command_id, route_id, session_key, agent_id,
@@ -337,62 +357,6 @@ async fn dispatch_cron_occurrence(
     Ok(())
 }
 
-fn compute_next_run(
-    schedule_type: &str,
-    schedule_value: &str,
-    _timezone: Option<&str>,
-) -> Option<chrono::DateTime<chrono::Utc>> {
-    let now = chrono::Utc::now();
-    match schedule_type {
-        "every" => {
-            // Parse interval like "30m", "1h", "24h", "7d"
-            let duration = parse_interval(schedule_value)?;
-            Some(now + duration)
-        }
-        "cron" => {
-            // For cron expressions, use a simple next-match calculation.
-            // TODO: Add croner/cron-parser crate for proper cron expression support.
-            // For now, approximate: daily jobs -> 24h, hourly -> 1h, minute -> 1m
-            let parts: Vec<&str> = schedule_value.split_whitespace().collect();
-            if parts.len() >= 5 {
-                // Heuristic: if minute and hour are specific but day/month/dow are *,
-                // it's a daily job. Otherwise fall back to 1h.
-                let is_daily =
-                    parts[0] != "*" && parts[1] != "*" && parts[2] == "*" && parts[3] == "*";
-                if is_daily {
-                    Some(now + chrono::Duration::hours(24))
-                } else {
-                    Some(now + chrono::Duration::hours(1))
-                }
-            } else {
-                Some(now + chrono::Duration::hours(24))
-            }
-        }
-        "at" => None, // One-shot, no next run
-        _ => None,
-    }
-}
-
-fn parse_interval(s: &str) -> Option<chrono::Duration> {
-    let s = s.trim();
-    if s.is_empty() {
-        return None;
-    }
-    let (num_str, unit) = s.split_at(s.len() - 1);
-    let num: i64 = num_str.parse().ok()?;
-    match unit {
-        "s" => Some(chrono::Duration::seconds(num)),
-        "m" => Some(chrono::Duration::minutes(num)),
-        "h" => Some(chrono::Duration::hours(num)),
-        "d" => Some(chrono::Duration::days(num)),
-        _ => {
-            // Try parsing the whole string as minutes
-            let num: i64 = s.parse().ok()?;
-            Some(chrono::Duration::minutes(num))
-        }
-    }
-}
-
 fn cron_message_id(job_id: &str, occurrence_micros: i64) -> String {
     format!("cron-{job_id}-{occurrence_micros}")
 }
@@ -402,57 +366,22 @@ mod tests {
     use super::*;
     use tokio_postgres::NoTls;
 
-    #[test]
-    fn parse_interval_minutes() {
-        let d = parse_interval("30m").unwrap();
-        assert_eq!(d, chrono::Duration::minutes(30));
-    }
-
-    #[test]
-    fn parse_interval_hours() {
-        let d = parse_interval("2h").unwrap();
-        assert_eq!(d, chrono::Duration::hours(2));
-    }
-
-    #[test]
-    fn parse_interval_days() {
-        let d = parse_interval("7d").unwrap();
-        assert_eq!(d, chrono::Duration::days(7));
-    }
-
-    #[test]
-    fn parse_interval_seconds() {
-        let d = parse_interval("90s").unwrap();
-        assert_eq!(d, chrono::Duration::seconds(90));
-    }
-
-    #[test]
-    fn parse_interval_empty() {
-        assert!(parse_interval("").is_none());
-    }
-
-    #[test]
-    fn compute_next_every() {
-        let next = compute_next_run("every", "1h", None);
-        assert!(next.is_some());
-        let delta = next.unwrap() - chrono::Utc::now();
-        // Should be roughly 1 hour (within a few seconds)
-        assert!(delta.num_minutes() >= 59 && delta.num_minutes() <= 61);
-    }
-
-    #[test]
-    fn compute_next_at() {
-        let next = compute_next_run("at", "2026-01-01T00:00:00Z", None);
-        assert!(next.is_none());
-    }
-
-    #[test]
-    fn compute_next_cron_daily() {
-        let next = compute_next_run("cron", "0 10 * * *", None);
-        assert!(next.is_some());
-        let delta = next.unwrap() - chrono::Utc::now();
-        // Should be ~24h for daily cron
-        assert!(delta.num_hours() >= 23 && delta.num_hours() <= 25);
+    async fn seed_cron_conversation(
+        client: &tokio_postgres::Client,
+        agent: &str,
+        conversation: &str,
+    ) {
+        let workspace = choruz_common::new_id();
+        client.execute(
+            "INSERT INTO principal (id, workspace_id, type, name, disabled, created_at, updated_at)
+             VALUES ($1, $2, 'agent', 'Cron Target', FALSE, NOW(), NOW())",
+            &[&agent, &workspace],
+        ).await.unwrap();
+        client.execute(
+            "INSERT INTO conversation (id, workspace_id, type, name, creator_id, created_at, updated_at)
+             VALUES ($1, $2, 'group', 'Cron Group', $3, NOW(), NOW())",
+            &[&conversation, &workspace, &agent],
+        ).await.unwrap();
     }
 
     #[test]
@@ -475,6 +404,7 @@ mod tests {
         tokio::spawn(async move {
             let _ = connection.await;
         });
+        seed_cron_conversation(&client, &agent_id, &conversation_id).await;
         client
             .execute(
                 "INSERT INTO agent_cron_job
@@ -558,18 +488,41 @@ mod tests {
             .execute(
                 "INSERT INTO agent_cron_job
                     (id, agent_id, conversation_id, name, schedule_type,
-                     schedule_value, message, delivery_mode, next_run_at)
-                 VALUES ($1, $2, $3, 'due-cron', 'every', '1h', $4, 'announce', NOW())",
+                     schedule_value, schedule_timezone, message, delivery_mode, next_run_at)
+                 VALUES ($1, $2, $3, 'due-cron', 'cron', '0 10 * * *', 'Asia/Shanghai', $4, 'announce', NOW())",
                 &[&job_id, &agent_id, &conversation_id, &cron_message],
             )
             .await
             .expect("seed due cron job");
+        let binding_id = choruz_common::new_id();
+        client
+            .execute(
+                "INSERT INTO agent_runtime_bindings
+                    (id, conversation_id, agent_principal_id, driver_type, workspace_path,
+                     state, config_json)
+                 VALUES ($1, $2, $3, 'claude_terminal', '/srv/projects/cron', 'idle',
+                         '{\"runtime_host_id\": \"host-cron-west\"}'::jsonb)",
+                &[&binding_id, &conversation_id, &agent_id],
+            )
+            .await
+            .expect("seed remote runtime binding");
 
         let event_store = EventStore::new(&db_url);
         let session_store = PgSessionStore::new(&db_url);
         check_and_dispatch_due_jobs(&event_store, &session_store)
             .await
             .expect("dispatch due cron job");
+
+        let next: chrono::DateTime<chrono::Utc> = client
+            .query_one(
+                "SELECT next_run_at FROM agent_cron_job WHERE id = $1",
+                &[&job_id],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        use chrono::Timelike;
+        assert_eq!((next.hour(), next.minute(), next.second()), (2, 0, 0));
 
         let event = client
             .query_one(
@@ -599,7 +552,8 @@ mod tests {
 
         let command = client
             .query_one(
-                "SELECT message_id, agent_id, conversation_id, status, prompt
+                "SELECT message_id, agent_id, conversation_id, status, prompt,
+                        metadata->>'runtime_host_id' AS runtime_host_id
                  FROM agent_commands
                  WHERE metadata->>'cron_job_id' = $1",
                 &[&job_id],
@@ -614,6 +568,13 @@ mod tests {
             command
                 .get::<_, String>("prompt")
                 .contains(cron_message.as_str())
+        );
+        assert_eq!(
+            command
+                .get::<_, Option<String>>("runtime_host_id")
+                .as_deref(),
+            Some("host-cron-west"),
+            "a scheduled turn runs on the device the agent lives on"
         );
 
         let count = client
@@ -758,6 +719,7 @@ mod tests {
         tokio::spawn(async move {
             let _ = connection.await;
         });
+        seed_cron_conversation(&client, &agent_id, &conversation_id).await;
         client
             .execute(
                 "INSERT INTO agent_cron_job

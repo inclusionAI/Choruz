@@ -5,6 +5,8 @@ description: Use before pushing, marking ready for review, or claiming checks pa
 
 # Choruz pre-push checks
 
+When loaded from a personal skills directory, resolve repository links from this skill's canonical `.agents/skills/choruz-pre-push-checks/` location in the active Choruz checkout, not from the installed copy.
+
 Run relevant local evidence once before a push. There are no git hooks in this repository; CI owns exhaustive coverage, and it runs only what the changed paths need. A red job that could have been caught locally costs a CI round trip and a reviewer's trust.
 
 ## Inspect the outgoing change
@@ -27,9 +29,11 @@ bash .agents/skills/choruz-pr/pr-plan.sh <base-ref>  # for a stacked branch
 
 Every behaviour change needs the narrowest available test that would fail for its regression; add broader checks only for surfaces the diff reaches. When the change adds or changes a resource-owning, parallel, or asynchronous test, apply [choruz-ci-test-reliability](../choruz-ci-test-reliability/SKILL.md) first.
 
+First map the outgoing scope to the policy's [behaviour acceptance evidence](../../../docs/testing/pr-test-policy.md#behaviour-acceptance-evidence). Inspect the selected assertions against that contract. `pr-plan.sh` and `vitest related` discover candidate checks, not proof of coverage: configuration, dynamic loading, subprocesses, cross-device dispatch and built artifacts can cross boundaries the import graph does not express. Explicitly select their owning scenarios and add missing tests; an empty selection is not passing evidence. Do not widen every change to the full suite or add `--passWithNoTests` to hide a missing owner.
+
 - **Rust crate or service:** `cargo fmt --check`, then `cargo clippy -p <crate> --all-targets -- -D warnings` and `cargo test -p <crate>` for the crate and its dependents (`pr-plan.sh` lists them). Integration tests that need PostgreSQL use `infra/host/setup_test_database.sh`.
 - **Web source under `apps/web`:** `pnpm --dir apps/web exec vitest related --run <changed files>` (the whole suite, `pnpm web:test`, only when the harness or a shared config changed), then `pnpm web:check`. Run `pnpm web:build` when `next.config`, `app/` routing, or a dependency changed.
-- **User-visible flow:** the e2e spec that owns it, through the host stack: `bash infra/host/web_e2e.sh tests/e2e/<feature>.spec.ts`. Use `--repeat-each=3` for a test you just fixed.
+- **User-visible flow crossing server or runtime boundaries:** the e2e spec that owns it, through the host stack: `bash infra/host/web_e2e.sh tests/e2e/<feature>.spec.ts`. A UI-only claim may use the policy's isolated component evidence. Use `--repeat-each=3` when repairing a flake; repetition does not replace a deterministic assertion or negative control.
 - **Migration or `crates/choruz-application` data path:** the DB smoke, `pnpm db:migration:smoke`, and the API smoke, `pnpm api:smoke`. An applied migration is checksum-frozen (`scripts/historical-migrations.sha256`): never edit one, add a successor.
 - **Agent Note, `AGENTS.md`, skill:** `python3 scripts/verify_agent_notes.py` and `python3 -m unittest discover scripts/tests`.
 - **CI workflow or selector script:** `python3 -m unittest discover .github/scripts/tests` and a YAML parse of `ci.yml`; the pull request itself runs the full suite once, by design.
@@ -52,3 +56,5 @@ If a failure looks environment-specific, prove it: record the exact command, the
 4. Verify the remote ref matches local `HEAD`, then watch the pull request checks: `CI (linux) required` is the one that gates the merge.
 
 Report pending checks as pending. Inspect a failure before attributing it to the branch or the environment. If no check ever starts, read `mergeStateStatus` first: GitHub creates no `pull_request` run while a PR is conflicting, and resolving the conflict is the only fix.
+
+At handoff, record the tested revision or dirty scope and the owning scenario's outcome, not just the command's exit status. Keep deterministic fixture results, live Harness results and manual visual observations separate; follow the policy when required evidence is unavailable.

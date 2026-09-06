@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
@@ -43,6 +44,7 @@ describe("provisionAgent", () => {
 
   afterEach(async () => {
     vi.restoreAllMocks();
+    vi.unstubAllEnvs();
     if (originalRuntimeDir === undefined) delete process.env.CHORUZ_RUNTIME_DIR;
     else process.env.CHORUZ_RUNTIME_DIR = originalRuntimeDir;
     if (originalHome === undefined) delete process.env.HOME;
@@ -50,6 +52,36 @@ describe("provisionAgent", () => {
     if (originalClaudeBinary === undefined) delete process.env.CHORUZ_CLAUDE_BINARY;
     else process.env.CHORUZ_CLAUDE_BINARY = originalClaudeBinary;
     await Promise.all(runtimeDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+  });
+
+  it.each([
+    ["claude_terminal", "CLAUDE"],
+    ["codex_terminal", "CODEX"],
+    ["codex_exec", "CODEX"],
+    ["codex_app_server", "CODEX"],
+    ["pi_terminal", "PI"],
+    ["grok_terminal", "GROK"],
+    ["opencode_terminal", "OPENCODE"],
+  ] as const)("leaves executable selection to the device for %s", async (driverType, harness) => {
+    const runtimeDir = await mkdtemp(path.join(tmpdir(), "choruz-agent-binary-"));
+    runtimeDirs.push(runtimeDir);
+    vi.stubEnv("CHORUZ_RUNTIME_DIR", runtimeDir);
+    vi.stubEnv(`CHORUZ_${harness}_BINARY`, "   ");
+    vi.stubEnv(`CHORUZ_${harness}_CLI_PATH`, " /configured/harness ");
+    const deps = fakeDeps({});
+
+    await provisionAgent({
+      sessionToken: "session-token",
+      actorId: "human-1",
+      body: { name: "Binary Helper", driver_type: driverType, instructions: "Help." },
+    }, deps);
+
+    expect(deps.createRuntimeBinding).toHaveBeenCalledWith(
+      "session-token", "human-1", "conversation-default", "agent-default", driverType,
+      expect.any(String),
+      expect.objectContaining({ configJson: expect.objectContaining({ original_driver: driverType }) }),
+    );
+    expect(vi.mocked(deps.createRuntimeBinding).mock.calls[0][6]?.configJson).not.toHaveProperty("binary_path");
   });
 
   it("reuses recorded step outputs when retrying after a mid-provisioning failure", async () => {
@@ -361,6 +393,8 @@ describe("provisionAgent", () => {
     ) => binding("binding-default-account", conversationId, agentId, workspacePath));
     const account = { ...verifiedAccount(), name: "Codex login", profileKind: "default" as const };
     const defaultHarnessAccount = vi.fn(async () => account);
+    // The workspace is provisioned on the runtime host, never on this device.
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ workspace_path: "/srv/agents/helper/workspace" })));
 
     await provisionAgent({
       sessionToken: "session-token",
@@ -373,9 +407,23 @@ describe("provisionAgent", () => {
         runtime_host_id: "host-1",
         instructions: "Help with the implementation.",
       },
-    }, fakeDeps({ createRuntimeBinding: createRuntimeBindingMock, defaultHarnessAccount }));
+    }, fakeDeps({ createRuntimeBinding: createRuntimeBindingMock, defaultHarnessAccount, fetch: fetchMock }));
 
-    expect(defaultHarnessAccount).toHaveBeenCalledWith({
+    const [provisionUrl, provisionInit] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(provisionUrl).toMatch(/\/v1\/runtime-hosts\/host-1\/operations$/);
+    const provisionBody = JSON.parse(String(provisionInit.body)) as { kind: string; request: { name: string; files: Array<{ path: string; content: string }> } };
+    expect(provisionBody.kind).toBe("workspace.provision");
+    expect(provisionBody.request.name).toBe("Default Account Helper");
+    expect(provisionBody.request.files.map((file) => file.path)).toEqual(["AGENTS.md"]);
+    expect(provisionBody.request.files[0].content).toContain("Help with the implementation.");
+    expect(createRuntimeBindingMock).toHaveBeenCalledWith(
+      expect.anything(), expect.anything(), expect.anything(), expect.anything(), expect.anything(),
+      "/srv/agents/helper/workspace",
+      expect.anything(),
+    );
+    expect(existsSync(path.join(runtimeDir, "workspaces"))).toBe(false);
+
+    expect(defaultHarnessAccount).toHaveBeenCalledWith("session-token", {
       companyId: "workspace-1",
       runtimeHostId: "host-1",
       driverType: "codex_terminal",
@@ -390,6 +438,7 @@ describe("provisionAgent", () => {
       expect.any(String),
       expect.objectContaining({
         configJson: expect.objectContaining({
+          runtime_host_id: "host-1",
           harness_account_id: account.id,
           harness_account_name: "Codex login",
           harness_account_profile_kind: "default",
@@ -420,7 +469,7 @@ describe("provisionAgent", () => {
       },
     }, fakeDeps({ createRuntimeBinding: createRuntimeBindingMock, defaultHarnessAccount }));
 
-    expect(defaultHarnessAccount).toHaveBeenCalledWith({
+    expect(defaultHarnessAccount).toHaveBeenCalledWith("session-token", {
       companyId: "workspace-1",
       runtimeHostId: null,
       driverType: "claude_terminal",

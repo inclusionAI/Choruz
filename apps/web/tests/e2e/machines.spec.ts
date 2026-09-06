@@ -3,6 +3,22 @@ import { expect, test } from "@playwright/test";
 import { createCompany, deleteCompany, uniqueName } from "../fixtures/api";
 import { gotoDashboard, login } from "../fixtures/auth";
 
+test("Remote Control explains remote data and distinguishes browser and device access", async ({ page }) => {
+  await login(page);
+  await gotoDashboard(page);
+  await page.getByRole("button", { name: "Actions menu" }).click();
+  await page.getByRole("button", { name: "Remote Control", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Remote Control", exact: true });
+  await expect(dialog.getByText(/terminal and tool output, and files/)).toBeVisible();
+  await expect(dialog.getByText(/Agent processes stay on their computer/)).toBeVisible();
+  await expect(dialog.getByText(/end-to-end encrypted/)).toBeVisible();
+  await expect(dialog.getByText(/stay local/)).toHaveCount(0);
+  await expect(dialog.getByRole("heading", { name: "Pair a Web browser", exact: true })).toBeVisible();
+  await expect(dialog.getByText(/opens this computer's dashboard/)).toBeVisible();
+  await expect(dialog.getByRole("heading", { name: "Control another Choruz", exact: true })).toBeVisible();
+  await expect(dialog.getByText(/becomes a device in the selected Company/)).toBeVisible();
+});
+
 test("Company Machines is separate from Remote Access and supports inline rename", async ({ page }) => {
   const session = await login(page);
   const company = await createCompany(
@@ -110,7 +126,7 @@ test("Add machine reveals an expiring connector code", async ({ page }) => {
   }
 });
 
-test("Remote Control accepts another computer's pairing credential in Choruz", async ({ page }) => {
+test("Remote Control collects the computer name and pairing credential before onboarding", async ({ page }) => {
   await login(page);
   await page.route("**/api/v1/remote-control/settings", (route) => route.fulfill({
     status: 200,
@@ -122,20 +138,14 @@ test("Remote Control accepts another computer's pairing credential in Choruz", a
     contentType: "application/json",
     body: "[]",
   }));
-  await page.route("https://gateway.example/remote**", (route) => route.fulfill({
-    status: 200,
-    contentType: "text/html",
-    body: "<title>Remote Choruz</title>",
-  }));
-
   await gotoDashboard(page);
   await page.getByRole("button", { name: "Actions menu" }).click();
   await page.getByRole("button", { name: "Remote Control" }).click();
   const credential = "v1.AAAAAAAAAAAAAAAAAAAAAA.BBBBBBBBBBBBBBBBBBBBBB";
+  const addDevice = page.getByRole("button", { name: "Add device", exact: true });
+  await expect(addDevice).toBeDisabled();
+  await page.getByRole("textbox", { name: "Computer name" }).fill("GPU server");
   await page.getByRole("textbox", { name: "Other computer pairing credential" }).fill(credential);
-  await page.getByRole("button", { name: "Connect", exact: true }).click();
-
-  await expect(page).toHaveURL(
-    new RegExp(`/remote\\?gateway=https%3A%2F%2Fgateway\\.example&device_name=.+#credential=${credential}$`),
-  );
+  await expect(addDevice).toBeEnabled();
+  await expect(page.getByText(/becomes a device in the selected Company/)).toBeVisible();
 });

@@ -51,7 +51,8 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const workspacePathError = validateCustomWorkspacePath(body.workspace_path);
+  // The selected device validates its own home; controller paths do not apply there.
+  const workspacePathError = body.runtime_host_id ? null : validateCustomWorkspacePath(body.workspace_path);
   if (workspacePathError) {
     return NextResponse.json(
       { error: workspacePathError.error },

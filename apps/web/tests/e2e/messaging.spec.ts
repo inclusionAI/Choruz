@@ -101,12 +101,16 @@ test.describe("Messaging", () => {
     await gotoDashboard(page);
     await page.locator(".conv-item").filter({ hasText: first.name }).first().click();
     const textarea = page.locator("textarea").first();
-    await textarea.fill("first conversation draft");
+    const firstDraft = "first conversation draft\nline two\nline three\nline four";
+    await textarea.fill(firstDraft);
+    const draftHeight = await textarea.evaluate((el) => el.offsetHeight);
     await page.locator(".conv-item").filter({ hasText: second.name }).first().click();
     await expect(textarea).toHaveValue("");
+    await expect.poll(() => textarea.evaluate((el) => el.offsetHeight)).toBeLessThan(draftHeight);
     await textarea.fill("second conversation draft");
     await page.locator(".conv-item").filter({ hasText: first.name }).first().click();
-    await expect(textarea).toHaveValue("first conversation draft");
+    await expect(textarea).toHaveValue(firstDraft);
+    await expect.poll(() => textarea.evaluate((el) => el.offsetHeight)).toBe(draftHeight);
     await page.locator(".conv-item").filter({ hasText: second.name }).first().click();
     await expect(textarea).toHaveValue("second conversation draft");
   });
@@ -122,7 +126,7 @@ test.describe("Messaging", () => {
     expect(found).toBeTruthy();
   });
 
-  test("loads older history when the message list reaches the top", async ({ page }) => {
+  test("retries failed older history without losing loaded messages", async ({ page }) => {
     const { token, principal } = await login(page);
     const group = await createGroup(page, token, principal.id, uniqueName("msg-history"));
     const prefix = `history-${Date.now()}`;
@@ -136,26 +140,93 @@ test.describe("Messaging", () => {
       !response.url().includes("before_seq="),
     );
     await page.locator(".conv-item").filter({ hasText: group.name }).first().click();
-    expect((await initialPage).ok()).toBeTruthy();
+    const loadedPage = await initialPage;
+    expect(loadedPage.ok()).toBeTruthy();
+    // The sidebar preview is visible before the response body sets the history cursor.
+    await loadedPage.finished();
+    await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
     const messageArea = page.locator(".messages-area");
     await expect(messageArea.getByText(`${prefix}-55`, { exact: true })).toBeVisible();
     await expect(messageArea.getByText(`${prefix}-1`, { exact: true })).toHaveCount(0);
 
-    const olderPage = page.waitForResponse((response) =>
-      response.url().includes(`/v1/conversations/${group.id}/message-page`) &&
-      response.url().includes("before_seq="),
-    );
+    await page.route((url) => url.pathname === `/api/v1/conversations/${group.id}/message-page` && url.searchParams.has("before_seq"),
+      (route) => route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "Unavailable" }) }),
+      { times: 1 });
     await messageArea.evaluate((element) => {
       element.scrollTop = 0;
       element.dispatchEvent(new Event("scroll", { bubbles: true }));
     });
+    const error = messageArea.getByRole("alert");
+    await expect(error).toContainText("Could not load older messages.");
+    await expect(messageArea.getByText(`${prefix}-6`, { exact: true })).toBeVisible();
+    const olderPage = page.waitForResponse((response) =>
+      response.url().includes(`/v1/conversations/${group.id}/message-page`) &&
+      response.url().includes("before_seq="),
+    );
+    await error.getByRole("button", { name: "Retry", exact: true }).click();
     expect((await olderPage).ok()).toBeTruthy();
+    await expect(error).toHaveCount(0);
 
     await messageArea.evaluate((element) => {
       element.scrollTop = 0;
       element.dispatchEvent(new Event("scroll", { bubbles: true }));
     });
     await expect(messageArea.getByText(`${prefix}-1`, { exact: true })).toBeVisible();
+  });
+
+  test("history errors do not follow a conversation switch", async ({ page }) => {
+    const { token, principal } = await login(page);
+    const first = await createGroup(page, token, principal.id, uniqueName("history-error"));
+    const second = await createGroup(page, token, principal.id, uniqueName("history-other"));
+    for (let index = 0; index < 55; index += 1) {
+      await sendMessage(page, token, principal.id, first.id, `history entry ${index}`);
+    }
+    await sendMessage(page, token, principal.id, second.id, "other conversation");
+    await gotoDashboard(page);
+    const initialPage = page.waitForResponse((response) => response.url().includes(`/v1/conversations/${first.id}/message-page`) && !response.url().includes("before_seq="));
+    await page.locator(`[data-conversation-id="${first.id}"]`).click();
+    const loadedPage = await initialPage;
+    expect(loadedPage.ok()).toBeTruthy();
+    // Wait for the history response body and its render, not just response headers.
+    await loadedPage.finished();
+    await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+    const area = page.locator(".messages-area");
+    await expect(area.getByText("history entry 54", { exact: true })).toBeVisible();
+    let release!: () => void;
+    let arrived!: () => void;
+    let delivered!: () => void;
+    const held = new Promise<void>((resolve) => { arrived = resolve; });
+    const released = new Promise<void>((resolve) => { release = resolve; });
+    const done = new Promise<void>((resolve) => { delivered = resolve; });
+    let requests = 0;
+    await page.route((url) => url.pathname === `/api/v1/conversations/${first.id}/message-page` && url.searchParams.has("before_seq"), async (route) => {
+      await route.fetch();
+      requests += 1;
+      if (requests === 2) { arrived(); await released; }
+      await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "Unavailable" }) });
+      if (requests === 2) delivered();
+    });
+    try {
+      await area.evaluate((el) => { el.scrollTop = 0; el.dispatchEvent(new Event("scroll", { bubbles: true })); });
+      await expect(area.getByRole("alert")).toContainText("Could not load older messages.");
+      await page.locator(`[data-conversation-id="${second.id}"]`).click();
+      await expect(area.getByText("other conversation", { exact: true })).toBeVisible();
+      await expect(area.getByRole("alert")).toHaveCount(0);
+      await page.locator(`[data-conversation-id="${first.id}"]`).click();
+      await expect(area.getByText("history entry 54", { exact: true })).toBeVisible();
+      await area.evaluate((el) => { el.scrollTop = 0; el.dispatchEvent(new Event("scroll", { bubbles: true })); });
+      await held;
+      await page.locator(`[data-conversation-id="${second.id}"]`).click();
+      release();
+      await done;
+      await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+      await expect(area.getByText("other conversation", { exact: true })).toBeVisible();
+      await expect(area.getByRole("alert")).toHaveCount(0);
+      expect(requests).toBe(2);
+    } finally {
+      release();
+      await page.unrouteAll({ behavior: "wait" });
+    }
   });
 
   /* ---------------------------------------------------------------------- */
@@ -266,27 +337,17 @@ test.describe("Messaging", () => {
     const { token, principal } = await login(page);
     const group = await createGroup(page, token, principal.id, uniqueName("msg-md"));
 
-    // Send a markdown message via API
     const mdContent = "**bold text** and `inline code`";
-    await sendMessage(page, token, principal.id, group.id, mdContent);
+    const message = await sendMessage(page, token, principal.id, group.id, mdContent);
 
     await gotoDashboard(page);
-    await page.waitForSelector(".conv-item", { timeout: 10_000 });
-    // Click the group conversation
-    const items = page.locator(".conv-item");
-    const count = await items.count();
-    for (let i = 0; i < count; i++) {
-      const txt = await items.nth(i).textContent();
-      if (txt?.includes(group.name ?? "")) {
-        await items.nth(i).click();
-        break;
-      }
-    }
+    await page.locator(`[data-conversation-id="${group.id}"]`).click();
+    const bubble = page.locator(`[data-msg-id="${message.id}"]`);
 
-    await expect(page.locator(".messages-area strong")).toContainText("bold text", {
+    await expect(bubble.locator("strong")).toContainText("bold text", {
       timeout: 10_000,
     });
-    await expect(page.locator(".messages-area")).not.toContainText("**bold text**");
+    await expect(bubble).not.toContainText("**bold text**");
   });
 
   test("should render untrusted HTML as inert text", async ({ page }) => {
@@ -327,6 +388,9 @@ test.describe("Messaging", () => {
     await expect(message).toBeVisible({ timeout: 10_000 });
     await message.hover();
     await message.locator('[aria-label="Message actions"]').click();
+    const laterContent = `later-message-${Date.now()}`;
+    await sendMessage(page, token, principal.id, group.id, laterContent);
+    await expect(page.locator(".msg-group").filter({ hasText: laterContent })).toBeVisible();
     // exact: true — the menu also contains "Reply in thread", which a
     // substring match would ambiguously hit (strict-mode violation).
     await page.getByRole("menuitem", { name: "Reply", exact: true }).click();
@@ -512,9 +576,9 @@ test.describe("Messaging", () => {
     const textarea = page.locator("textarea").first();
     const heightBefore = await textarea.evaluate((el) => el.offsetHeight);
     await textarea.fill("line1\nline2\nline3\nline4");
-    await textarea.dispatchEvent("input");
-    await page.waitForTimeout(200);
-    const heightAfter = await textarea.evaluate((el) => el.offsetHeight);
-    expect(heightAfter).toBeGreaterThanOrEqual(heightBefore);
+    await expect.poll(() => textarea.evaluate((el) => el.offsetHeight)).toBeGreaterThan(heightBefore);
+    await textarea.press("Enter");
+    await expect(textarea).toHaveValue("");
+    await expect.poll(() => textarea.evaluate((el) => el.offsetHeight)).toBe(heightBefore);
   });
 });

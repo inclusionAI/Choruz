@@ -20,15 +20,6 @@ use tokio::{
 pub const DEFAULT_LOGIN_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 const POST_AUTH_SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Where the browser opening a Codex authorization URL is running.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CodexLoginLocation {
-    Local,
-    /// The browser runs on the controlling device. Choruz forwards its pasted
-    /// localhost callback to the Codex app-server on the remote device.
-    Remote,
-}
-
 /// One queued sign-in for one harness account.
 #[derive(Debug, Clone)]
 pub struct LoginJob {
@@ -38,7 +29,6 @@ pub struct LoginJob {
     /// `default` reuses the device's own profile; `isolated` selects the
     /// account's private profile directory under the harness account root.
     pub profile_kind: String,
-    pub codex_login_location: CodexLoginLocation,
 }
 
 /// The verified identity of a signed-in account plus any available model and
@@ -121,21 +111,177 @@ pub async fn run_login<S: LoginSink>(
     }
 }
 
+/// Which Harness profile a command runs under.
+#[derive(Debug, Clone)]
+pub struct AccountProfile {
+    pub driver: HeadlessDriver,
+    pub account_id: String,
+    /// `default` reuses the device's own profile; `isolated` selects the
+    /// account's private profile directory under the harness account root.
+    pub profile_kind: String,
+}
+
 fn apply_account_profile(command: &mut Command, job: &LoginJob) -> Result<(), String> {
-    if job.profile_kind == "isolated" {
-        let profile = harness_account_env(
-            job.driver,
+    apply_profile(
+        command,
+        &AccountProfile {
+            driver: job.driver,
+            account_id: job.account_id.clone(),
+            profile_kind: job.profile_kind.clone(),
+        },
+    )
+}
+
+fn apply_profile(command: &mut Command, profile: &AccountProfile) -> Result<(), String> {
+    if profile.profile_kind == "isolated" {
+        let env = harness_account_env(
+            profile.driver,
             &serde_json::json!({
-                "harness_account_id": job.account_id,
-                "harness_account_profile_kind": job.profile_kind,
+                "harness_account_id": profile.account_id,
+                "harness_account_profile_kind": profile.profile_kind,
             }),
         )?
         .ok_or("isolated account did not resolve a profile directory")?;
-        fs::create_dir_all(&profile.1)
+        fs::create_dir_all(&env.1)
             .map_err(|error| format!("create isolated Harness profile: {error}"))?;
-        command.env(profile.0, profile.1);
+        command.env(env.0, env.1);
     }
     Ok(())
+}
+
+/// Read the signed-in identity, models and exact quota of an account the
+/// device already holds a login for, without starting a sign-in. Fails when
+/// the profile is not signed in.
+pub async fn probe_account(profile: &AccountProfile) -> Result<AccountProbe, String> {
+    match profile.driver {
+        HeadlessDriver::Codex => codex_probe(profile).await,
+        HeadlessDriver::Claude => claude_probe(profile).await,
+        _ => Err("Account probing is unsupported for this Harness".into()),
+    }
+}
+
+async fn codex_probe(profile: &AccountProfile) -> Result<AccountProbe, String> {
+    let mut command = Command::new(login_binary(HeadlessDriver::Codex));
+    command
+        .arg("app-server")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true);
+    apply_profile(&mut command, profile)?;
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("start Codex app server: {error}"))?;
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or("Codex app server stdin unavailable")?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or("Codex app server stdout unavailable")?;
+    let mut reader = BufReader::new(stdout).lines();
+    tokio::time::timeout(POST_AUTH_SNAPSHOT_TIMEOUT, async {
+        codex_initialize(&mut stdin, &mut reader).await?;
+        write_json_line(&mut stdin, &serde_json::json!({"jsonrpc":"2.0","id":10,"method":"account/read","params":{"refreshToken":true}})).await?;
+        let account = wait_for_rpc(&mut reader, 10).await?;
+        codex_identity_probe(&account)?;
+        codex_snapshot(&mut stdin, &mut reader, &account).await
+    })
+    .await
+    .map_err(|_| "Codex account probe timed out".to_owned())?
+}
+
+async fn codex_initialize(stdin: &mut ChildStdin, reader: &mut Lines) -> Result<(), String> {
+    write_json_line(stdin, &serde_json::json!({"jsonrpc":"2.0","id":0,"method":"initialize","params":{"clientInfo":{"name":"choruz","title":"Choruz","version":"1"},"capabilities":{"experimentalApi":true}}})).await?;
+    wait_for_rpc(reader, 0).await.map_err(|_| {
+        "Codex app-server is unavailable; update Codex or set CHORUZ_CODEX_BINARY to a current Codex CLI"
+            .to_owned()
+    })?;
+    write_json_line(
+        stdin,
+        &serde_json::json!({"jsonrpc":"2.0","method":"initialized"}),
+    )
+    .await
+}
+
+/// The model and exact quota snapshot of the signed-in Codex account.
+async fn codex_snapshot(
+    stdin: &mut ChildStdin,
+    reader: &mut Lines,
+    account: &serde_json::Value,
+) -> Result<AccountProbe, String> {
+    write_json_line(
+        stdin,
+        &serde_json::json!({"jsonrpc":"2.0","id":11,"method":"account/rateLimits/read"}),
+    )
+    .await?;
+    let limits = wait_for_rpc(reader, 11).await?;
+    write_json_line(stdin, &serde_json::json!({"jsonrpc":"2.0","id":12,"method":"model/list","params":{"limit":100,"includeHidden":false}})).await?;
+    let models = wait_for_rpc(reader, 12).await?;
+    codex_account_probe(account, &limits, &models)
+}
+
+async fn claude_probe(profile: &AccountProfile) -> Result<AccountProbe, String> {
+    let mut command = claude_control_command();
+    apply_profile(&mut command, profile)?;
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("start Claude Code control session: {error}"))?;
+    let mut stdin = child.stdin.take().ok_or("Claude Code stdin unavailable")?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or("Claude Code stdout unavailable")?;
+    let mut reader = BufReader::new(stdout).lines();
+    tokio::time::timeout(POST_AUTH_SNAPSHOT_TIMEOUT, async {
+        write_json_line(
+            &mut stdin,
+            &control_request(
+                "initialize-probe",
+                serde_json::json!({"subtype":"initialize"}),
+            ),
+        )
+        .await?;
+        let initialization = wait_for_control(&mut reader, "initialize-probe").await?;
+        claude_identity_probe(&initialization)?;
+        claude_snapshot(&mut stdin, &mut reader, &initialization).await
+    })
+    .await
+    .map_err(|_| "Claude account probe timed out".to_owned())?
+}
+
+fn claude_control_command() -> Command {
+    let mut command = Command::new(login_binary(HeadlessDriver::Claude));
+    command
+        .args([
+            "--print",
+            "--output-format",
+            "stream-json",
+            "--input-format",
+            "stream-json",
+            "--verbose",
+        ])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true);
+    command
+}
+
+/// The model and exact quota snapshot of the signed-in Claude account.
+async fn claude_snapshot(
+    stdin: &mut ChildStdin,
+    reader: &mut Lines,
+    initialization: &serde_json::Value,
+) -> Result<AccountProbe, String> {
+    write_json_line(
+        stdin,
+        &control_request("usage-snapshot", serde_json::json!({"subtype":"get_usage"})),
+    )
+    .await?;
+    let usage = wait_for_control(reader, "usage-snapshot").await?;
+    claude_account_probe(initialization, &usage)
 }
 
 async fn write_json_line(stdin: &mut ChildStdin, value: &serde_json::Value) -> Result<(), String> {
@@ -202,16 +348,7 @@ async fn codex_login<S: LoginSink>(
         .take()
         .ok_or("Codex app server stdout unavailable")?;
     let mut reader = BufReader::new(stdout).lines();
-    write_json_line(&mut stdin, &serde_json::json!({"jsonrpc":"2.0","id":0,"method":"initialize","params":{"clientInfo":{"name":"choruz","title":"Choruz","version":"1"},"capabilities":{"experimentalApi":true}}})).await?;
-    wait_for_rpc(&mut reader, 0).await.map_err(|_| {
-        "Codex app-server is unavailable; update Codex or set CHORUZ_CODEX_BINARY to a current Codex CLI"
-            .to_owned()
-    })?;
-    write_json_line(
-        &mut stdin,
-        &serde_json::json!({"jsonrpc":"2.0","method":"initialized"}),
-    )
-    .await?;
+    codex_initialize(&mut stdin, &mut reader).await?;
     write_json_line(&mut stdin, &serde_json::json!({"jsonrpc":"2.0","id":1,"method":"account/login/start","params":{"type":"chatgpt","useHostedLoginSuccessPage":true,"appBrand":"codex"}})).await?;
     let start = wait_for_rpc(&mut reader, 1).await?;
     let url = start
@@ -224,14 +361,10 @@ async fn codex_login<S: LoginSink>(
         .ok_or("Codex did not return a login id")?;
     sink.publish(url, None).await?;
 
-    tokio::time::timeout(timeout, async {
-        if job.codex_login_location == CodexLoginLocation::Remote {
-            wait_for_remote_codex_login(&mut reader, sink, url, login_id).await?;
-        } else {
-            wait_for_codex_login(&mut reader, login_id).await?;
-        }
-        Ok::<_, String>(())
-    })
+    tokio::time::timeout(
+        timeout,
+        wait_for_codex_login(&mut reader, sink, url, login_id),
+    )
     .await
     .map_err(|_| "Codex login timed out".to_owned())??;
 
@@ -243,11 +376,7 @@ async fn codex_login<S: LoginSink>(
     sink.complete_authentication(&identity).await?;
 
     let snapshot = tokio::time::timeout(POST_AUTH_SNAPSHOT_TIMEOUT, async {
-        write_json_line(&mut stdin, &serde_json::json!({"jsonrpc":"2.0","id":11,"method":"account/rateLimits/read"})).await?;
-        let limits = wait_for_rpc(&mut reader, 11).await?;
-        write_json_line(&mut stdin, &serde_json::json!({"jsonrpc":"2.0","id":12,"method":"model/list","params":{"limit":100,"includeHidden":false}})).await?;
-        let models = wait_for_rpc(&mut reader, 12).await?;
-        let probe = codex_account_probe(&account, &limits, &models)?;
+        let probe = codex_snapshot(&mut stdin, &mut reader, &account).await?;
         sink.publish_snapshot(&probe).await
     })
     .await;
@@ -259,7 +388,7 @@ async fn codex_login<S: LoginSink>(
     Ok(LoginOutcome { snapshot_error })
 }
 
-async fn wait_for_remote_codex_login<S: LoginSink>(
+async fn wait_for_codex_login<S: LoginSink>(
     reader: &mut Lines,
     sink: &S,
     authorization_url: &str,
@@ -280,15 +409,6 @@ async fn wait_for_remote_codex_login<S: LoginSink>(
                     callback_forwarded = true;
                 }
             }
-        }
-    }
-}
-
-async fn wait_for_codex_login(reader: &mut Lines, login_id: &str) -> Result<(), String> {
-    loop {
-        let message = next_json_line(reader).await?;
-        if let Some(result) = codex_login_completion(&message, login_id) {
-            return result;
         }
     }
 }
@@ -420,20 +540,7 @@ async fn claude_login<S: LoginSink>(
     sink: &S,
     timeout: Duration,
 ) -> Result<LoginOutcome, String> {
-    let mut command = Command::new(login_binary(HeadlessDriver::Claude));
-    command
-        .args([
-            "--print",
-            "--output-format",
-            "stream-json",
-            "--input-format",
-            "stream-json",
-            "--verbose",
-        ])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .kill_on_drop(true);
+    let mut command = claude_control_command();
     apply_account_profile(&mut command, job)?;
     let mut child = command
         .spawn()
@@ -501,16 +608,7 @@ async fn claude_login<S: LoginSink>(
     sink.complete_authentication(&identity).await?;
 
     let snapshot = tokio::time::timeout(POST_AUTH_SNAPSHOT_TIMEOUT, async {
-        write_json_line(
-            &mut stdin,
-            &control_request(
-                "usage-after-login",
-                serde_json::json!({"subtype":"get_usage"}),
-            ),
-        )
-        .await?;
-        let usage = wait_for_control(&mut reader, "usage-after-login").await?;
-        let probe = claude_account_probe(&initialization, &usage)?;
+        let probe = claude_snapshot(&mut stdin, &mut reader, &initialization).await?;
         sink.publish_snapshot(&probe).await
     })
     .await;

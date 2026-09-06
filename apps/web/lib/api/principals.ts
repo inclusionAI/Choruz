@@ -25,7 +25,7 @@ export function conversationDisplayName(
 }
 
 export function isAgent(agents: Principal[], id: string): boolean {
-  return agents.some((a) => a.id === id);
+  return agents.some((a) => a.id === id && a.principal_type === "agent");
 }
 
 /** The other member of a direct conversation, or undefined for solo chats. */

@@ -1,6 +1,6 @@
 # choruz-store
 
-Event store of the durable message pipeline: `EventStore` wraps the PostgreSQL pool and owns the `conversation_events` append-only log and the `event_outbox` rows written in the same transaction, `CdcPoller` claims unpublished outbox rows (woken by LISTEN/NOTIFY, with a fallback poll) and dispatches them to an in-memory channel, and `RedisCache` is an optional cache that falls back to the database on any Redis failure. `crates/choruz-application`, the router, writer and fanout crates, both Rust services and `apps/choruz-replay` depend on it.
+Event store of the durable message pipeline: `EventStore` wraps the PostgreSQL pool and owns the `conversation_events` append-only log and the `event_outbox` rows written in the same transaction. `CdcPoller` claims unpublished outbox rows (woken by LISTEN/NOTIFY, with a fallback poll) and dispatches them to an in-memory channel. `crates/choruz-application`, the router and writer crates, both Rust services and `apps/choruz-replay` depend on it.
 
 ## Entry points
 
@@ -8,7 +8,6 @@ Event store of the durable message pipeline: `EventStore` wraps the PostgreSQL p
 - `src/conversation_events.rs` — `ConversationEvent`, `ConversationEventRow`, `ThreadFlags`
 - `src/event_outbox.rs` — `OutboxEntry`, `OutboxRow`
 - `src/cdc_poller.rs` — `CdcPoller`, `CdcPollerConfig`, `CdcPollerHandle`
-- `src/redis_pool.rs` — `RedisCache`
 
 ## Tests
 

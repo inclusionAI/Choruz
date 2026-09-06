@@ -4,6 +4,8 @@ Cloudflare Worker (`wrangler.toml` name `choruz-remote-control-gateway`) that re
 
 ## Entry points
 
+Verified host pairing tickets register their opaque pairing identifier in `CapabilityStore` before the host socket is accepted. Browser lookup retains the ticket expiry; invalid signatures and expired tickets cannot register identifiers. This applies to signed self-hosted tickets and opaque hosted capabilities.
+
 - `src/index.ts` — the fetch handler and the Durable Object classes
 - `src/tickets.ts` — `verifyGatewayTicket`, `GatewayTicketPayload`
 - `src/capability.ts` — `validCapability`

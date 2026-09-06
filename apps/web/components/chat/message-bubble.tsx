@@ -1,6 +1,8 @@
 "use client";
 
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState, type ImgHTMLAttributes } from "react";
+import { useTransportUrl } from "../../hooks/use-transport-url";
+import type { Components } from "react-markdown";
 import { trace } from "../../lib/api/choruz-trace";
 import type { Principal, ChatMessage } from "../../lib/api/choruz-types";
 import type { QuotedMessage } from "../../lib/messages/quotes";
@@ -70,25 +72,35 @@ export function shouldGroup(prev: ChatMessage | null, curr: ChatMessage): boolea
 // Attachment renderer
 // ---------------------------------------------------------------------------
 
-function AttachmentContent({ metadata, content }: { metadata: Record<string, unknown>; content: string }) {
+function AttachmentContent({ metadata }: { metadata: Record<string, unknown> }) {
   const mime = (metadata.mime_type as string) || "";
   const filename = (metadata.filename as string) || "file";
   const sizeBytes = (metadata.size_bytes as number) || 0;
-  // Prefer `/api/attachments/<id>` — the Next.js proxy route handles the
-  // gateway's required `actor_id` query param from the session cookie. The
-  // old path used `/api/v1${download_path}` which double-prefixed `/v1/v1/`
-  // via the next.config rewrite and also lacked actor_id, so the <img> 404'd.
+  // The proxy supplies the authenticated principal's actor_id.
   const attachmentId = (metadata.attachment_id as string) || "";
   const downloadPath = (metadata.download_path as string) || "";
-  const downloadUrl = attachmentId
+  const path = attachmentId
     ? `/api/attachments/${attachmentId}`
     : (downloadPath ? `/api${downloadPath}` : "");
+  const preview = /^(image|video|audio)\//.test(mime) || mime === "application/pdf";
+  const [requested, setRequested] = useState(false);
+  const { url: downloadUrl, remote, error } = useTransportUrl(path, preview || requested);
+  const downloaded = useRef(false);
+  useEffect(() => {
+    if (!requested || !downloadUrl || downloaded.current) return;
+    downloaded.current = true;
+    const link = document.createElement("a");
+    link.href = downloadUrl;
+    link.download = filename;
+    link.click();
+  }, [requested, downloadUrl, filename]);
+  if (error) return <div className="msg-attachment" role="alert">{filename}: {error}</div>;
 
   // Image: render inline
   if (mime.startsWith("image/")) {
     return (
       <div className="msg-attachment msg-attachment-image">
-        <a href={downloadUrl} target="_blank" rel="noopener noreferrer">
+        <a href={downloadUrl} download={remote ? filename : undefined} target="_blank" rel="noopener noreferrer">
           <img
             src={downloadUrl}
             alt={filename}
@@ -148,7 +160,9 @@ function AttachmentContent({ metadata, content }: { metadata: Record<string, unk
   // Other: generic file card
   return (
     <div className="msg-attachment msg-attachment-file">
-      <a href={downloadUrl} target="_blank" rel="noopener noreferrer" className="msg-attachment-link">
+      <a href={downloadUrl ?? "#"} target="_blank" rel="noopener noreferrer" className="msg-attachment-link"
+        download={remote ? filename : undefined}
+        onClick={(event) => { if (remote && !downloadUrl) { event.preventDefault(); setRequested(true); } }}>
         <span className="msg-attachment-icon">FILE</span>
         <span className="msg-attachment-name">{filename}</span>
         <span className="msg-attachment-size">{formatFileSize(sizeBytes)}</span>
@@ -156,6 +170,16 @@ function AttachmentContent({ metadata, content }: { metadata: Record<string, unk
     </div>
   );
 }
+
+function AttachmentImage({ src, alt, ...props }: ImgHTMLAttributes<HTMLImageElement>) {
+  const path = typeof src === "string" ? src.replace(/^\/v1\/attachments\//, "/api/attachments/") : undefined;
+  const { url, error } = useTransportUrl(path);
+  return error ? <span role="alert">{alt}: {error}</span> : <img {...props} src={url} alt={alt || ""} />;
+}
+
+const MARKDOWN_COMPONENTS: Components = {
+  img: ({ node: _node, ...props }) => <AttachmentImage {...props} className="msg-inline-img" loading="lazy" />,
+};
 
 // ---------------------------------------------------------------------------
 // Props
@@ -172,7 +196,7 @@ export type MessageBubbleProps = {
   idx: number;
   allMsgs: ChatMessage[];
   principal: Principal;
-  agents: Principal[];
+  principals: Principal[];
   isTerminalChat: boolean;
   showRuntimeHost?: boolean;
   runtimeAccountName?: string;
@@ -203,7 +227,7 @@ export function MessageBubble({
   idx,
   allMsgs,
   principal,
-  agents,
+  principals,
   isTerminalChat,
   showRuntimeHost = false,
   runtimeAccountName,
@@ -239,8 +263,8 @@ export function MessageBubble({
   }
 
   const isSelf = msg.sender_id === principal.id;
-  const isAgentMsg = isAgent(agents, msg.sender_id);
-  const senderName = principalName(principal, agents, msg.sender_id);
+  const isAgentMsg = isAgent(principals, msg.sender_id);
+  const senderName = principalName(principal, principals, msg.sender_id);
   const prevMsg = idx > 0 ? allMsgs[idx - 1] : null;
   const isContinuation = shouldGroup(prevMsg, msg);
   const driverLabel = isAgentMsg ? "AI" : null;
@@ -272,7 +296,7 @@ export function MessageBubble({
       const replyMsg = resolved;
       const replySender = principalName(
         principal,
-        agents,
+        principals,
         replyMsg.sender_id,
       );
       const preview =
@@ -359,25 +383,13 @@ export function MessageBubble({
         {quoteBlock}
         <div className="msg-bubble">
           {msg.content_type === "attachment" && msg.metadata?.attachment_id ? (
-            <AttachmentContent metadata={msg.metadata} content={msg.content} />
+            <AttachmentContent metadata={msg.metadata} />
           ) : (
             <div className="msg-markdown">
               <Suspense fallback={<span>{isAgentMsg ? stripChoruzTags(stripTuiChars(msg.content)) : msg.content}</span>}>
                 <ReactMarkdown
                   remarkPlugins={_remarkGfm ? [_remarkGfm] : []}
-                  components={{
-                    img: ({ src, alt, ...props }) => {
-                      // Proxy /v1/attachments/ through Next.js API to handle auth.
-                      // react-markdown 9 widened `src` to `string | Blob` — narrow
-                      // to string before string ops (Blob can't be a URL anyway
-                      // for our attachment-proxy case).
-                      const srcStr = typeof src === "string" ? src : undefined;
-                      const imgSrc = srcStr?.startsWith("/v1/attachments/")
-                        ? srcStr.replace("/v1/attachments/", "/api/attachments/")
-                        : srcStr;
-                      return <img src={imgSrc} alt={alt || ""} className="msg-inline-img" loading="lazy" {...props} />;
-                    },
-                  }}
+                  components={MARKDOWN_COMPONENTS}
                 >
                   {isAgentMsg
                     ? stripChoruzTags(stripTuiChars(msg.content))

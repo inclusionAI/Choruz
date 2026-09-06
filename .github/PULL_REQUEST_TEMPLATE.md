@@ -36,14 +36,14 @@
 
 ## Tests
 
-<!-- Tests added or updated. For a bugfix, name the regression test. If none, say why. -->
+<!-- Follow docs/testing/pr-test-policy.md#behaviour-acceptance-evidence. For each affected contract, name the user action/result and owning test/assertion, the production entry exercised and any substituted boundary. For a bugfix or guard, name the negative control. For prose-only changes, say why no product scenario applies. -->
 
 ## Ran locally
 
-<!-- e.g. cargo test -p choruz-api-gateway, pnpm web:test, pnpm web:e2e -- tests/e2e/git-graph.spec.ts -->
+<!-- Exact commands, tested revision or dirty scope, observed results, and red/green outcomes where required. Separate deterministic fixtures, live Harness checks and manual visual evidence; static smoke checks are not live PASS. -->
 
 ## Risk
 
-<!-- What could break, and how a reader would notice. -->
+<!-- What could break and how a reader would notice; name untested or blocked acceptance paths, why they could not run, and what remains unverified. -->
 
 <!-- If an AI agent wrote part of this PR, say so here; you have read every line and run the tests above. -->

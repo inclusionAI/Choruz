@@ -80,6 +80,43 @@ Core identity table for human accounts and AI agents.
 | created_at | TIMESTAMPTZ | NOT NULL DEFAULT NOW() | |
 | updated_at | TIMESTAMPTZ | NOT NULL DEFAULT NOW() | |
 
+### online_identity
+
+`V047__online_identity.sql` binds one local human to a hosted Online session.
+`principal_id` is the primary key and references `principal` with cascading
+deletion. Required fields are `workspace_id`, `account_id`, unique `device_id`,
+`service_url`, `session_token`, `display_name` and `created_at` (default `NOW()`).
+The credential is server-only; the table is not a browser session cache or a
+runtime-host inventory. An index on `workspace_id` supports scoped access.
+Hosted authentication tables live separately in D1, owned by Better Auth; their
+schema is `services/remote-control-gateway/migrations/0001_online_accounts.sql`.
+
+The separate hosted `online_link` table binds `owner_id` and nullable `peer_id`
+to cloud users. It stores a unique invitation hash, expiry and creation time;
+the invitation is not an encryption key. Each `OnlineMailbox` Durable Object
+stores bounded `message:<id>` ciphertext records until acknowledgement, link
+revocation or seven-day expiry. Neither store carries local workspace or device
+control permissions.
+
+### Online group storage
+
+`online_group_link` binds a local principal, workspace and Online account to a
+cloud channel. Its local id differs from the channel id. A host link references
+the canonical conversation and a guest principal without login credentials;
+a guest link stores the shared conversation identity without Company membership.
+The encryption key remains server-only. Revocation removes the host-side guest
+membership and clears queued delivery, but retains the guest's received history.
+`principal.online_guest` distinguishes these group-only humans from local login
+identities. They cannot hold a login secret and do not reserve local usernames;
+different invited people may have the same display name.
+
+`online_group_outbox` retains plaintext locally until relay acceptance;
+`online_group_inbox` deduplicates delivery before relay acknowledgement and
+tracks application processing separately. `online_group_message` holds the
+guest's text projection, unique by link/event and link/sequence. All four tables
+carry `workspace_id`; reads and mutations require the bound local actor and
+current Online account. The schema is [V048](../migrations/V048__online_groups.sql).
+
 ### conversation
 
 Direct (1:1) and group chats.
@@ -305,13 +342,22 @@ per-card timeline.
 |-------|---------|-----------|
 | **receipt** | Read receipts per user per conversation | (principal_id, conv_id), last_read_seq |
 | **audit_log** | Action audit trail | actor_id, action, target_type, target_id |
+| **telemetry_event** | Client-reported activity, not authoritative audit | workspace_id, principal_id, event_id, schema_version, trace_id, span_id, session_id, occurred_at, created_at, name, duration_ms, data |
 | **outbox_event** | Event delivery outbox | principal_id, event_type, payload, acknowledged_at |
 | **agent_turn_leases** | Distributed turn-taking locks | binding_id, lease_owner, lease_until |
 | **pending_replies** | Reply delivery tracking with dedup | binding_id, content_hash, status |
 
+Activity queries read these stores without copying them. Telemetry event identity is scoped to actor and workspace; server `created_at` determines export ranges and client `occurred_at` remains separate. The authenticated activity API projects only the caller's records in currently accessible workspaces. Explicit retention deletes bounded batches from `telemetry_event` and commits an `activity.pruned` audit marker in the same transaction; `audit_log` and `conversation_events` are excluded. See [activity operations](operations/cli.md#activity-data).
+
 ---
 
 ## Pipeline Schema (V001–V003)
+
+Interaction reads project the canonical message, command and result tables;
+they do not create a second content store. `idx_agent_commands_interaction`
+indexes `(conversation_id, message_id, created_at, command_id)` for those joins.
+`audit_log` stores content-read decisions and terminal transport metadata, never
+raw terminal text. See [message-pipeline](subsystems/message-pipeline.md#entry-points).
 
 ### conversation_events
 
@@ -476,6 +522,9 @@ Idempotent tool call tracking for the Tool Gateway.
 | `V038__remove_app_snapshot.sql` | Remove the obsolete in-memory state snapshot table | Schema |
 | `V039__company_multi_harness_accounts.sql` | `company.multi_harness_accounts`, the per-company multi-account switch (default off) | Alter |
 | `V040__rename_remote_pairing_credential_hash.sql` | Name the Remote Control pairing hash after the opaque credential | Alter |
+| `V041__runtime_host_operations.sql` | Device-scoped native session imports (`native_session_import.runtime_host_id`) | Alter |
+| `V042__drop_runtime_host_operations.sql` | Drop the leased operation queue; devices answer over their host link | Schema |
+| `V044__native_session_account_identity.sql` | Include isolated account identity in native session import deduplication; NULL denotes the default profile | Alter |
 
 ---
 

@@ -1,6 +1,379 @@
 use super::*;
 
 #[tokio::test]
+async fn activity_tools_scope_page_aggregate_and_transactionally_prune() {
+    let database = TestDatabase::create().await;
+    let app = choruz_application::ChatApp::new();
+    let mut actors = Vec::new();
+    for name in ["owner", "other"] {
+        let actor = app
+            .create_principal(CreatePrincipalRequest {
+                workspace_id: "activity-tools".into(),
+                principal_type: PrincipalType::Human,
+                name: name.into(),
+                avatar_url: None,
+            })
+            .unwrap();
+        seed_principal_to_db(&database.database_url, &actor).await;
+        actors.push(actor);
+    }
+    let agent = app
+        .create_agent(CreateAgentRequest {
+            actor_id: actors[0].id.clone(),
+            name: "tools agent".into(),
+            scopes: vec![],
+            workspace_id: None,
+            channel_visibility: None,
+        })
+        .unwrap()
+        .principal;
+    seed_principal_to_db(&database.database_url, &agent).await;
+    let router = router_with_db(app, &database.database_url);
+    let (client, connection) = tokio_postgres::connect(&database.database_url, NoTls)
+        .await
+        .unwrap();
+    tokio::spawn(async move {
+        let _ = connection.await;
+    });
+    for actor in &actors {
+        let events:Vec<_> = (1..=3).map(|n|json!({"eventId":format!("e{n}"),"schemaVersion":1,"traceId":"tools-trace","spanId":"span","sessionId":"session","name":"http_request.finished","ts":"2026-01-02T00:00:00Z","durationMs":n*10,"data":{"outcome":if n==1 {"failed"} else {"succeeded"},"password":"private-secret"}})).collect();
+        let (status, _) = api_json_payload_request(
+            router.clone(),
+            actor,
+            Method::POST,
+            "/v1/telemetry".into(),
+            json!({"events":events}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+    }
+    client
+        .execute(
+            "UPDATE telemetry_event SET created_at='2026-01-02T00:00:00Z'",
+            &[],
+        )
+        .await
+        .unwrap();
+    client.execute("INSERT INTO audit_log(id,workspace_id,actor_id,action,target_type,target_id,metadata,created_at) VALUES('audit-owned','activity-tools',$1,'terminal.submit_finished','binding','binding-id','{\"trace_id\":\"tools-trace\",\"outcome\":\"failed\",\"prompt\":\"private-prompt\"}','2026-01-02T00:00:00Z')",&[&actors[0].id]).await.unwrap();
+    client
+        .execute(
+            "INSERT INTO company(id,name,slug,owner_id) VALUES('tools-company','tools','tools',$1)",
+            &[&actors[0].id],
+        )
+        .await
+        .unwrap();
+    client
+        .execute(
+            "INSERT INTO company_member(company_id,principal_id) VALUES('tools-company',$1)",
+            &[&actors[0].id],
+        )
+        .await
+        .unwrap();
+    client.execute("INSERT INTO audit_log(id,workspace_id,actor_id,action,target_type,target_id,metadata,created_at) VALUES('company-audit','tools-company',$1,'company.updated','company','tools-company','{\"trace_id\":\"tools-trace\"}','2026-01-02T00:00:00Z')",&[&actors[0].id]).await.unwrap();
+    let range = "since=2026-01-01T00:00:00Z&until=2026-01-03T00:00:00Z&trace_id=tools-trace";
+    let (status, page) = api_json_request(
+        router.clone(),
+        &actors[0],
+        Method::GET,
+        format!("/v1/activity?{range}&limit=2"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(page["records"].as_array().unwrap().len(), 2);
+    assert!(!page.to_string().contains("private-secret"));
+    let (_, last) = api_json_request(
+        router.clone(),
+        &actors[0],
+        Method::GET,
+        format!(
+            "/v1/activity?{range}&limit=2&cursor={}",
+            page["next_cursor"].as_str().unwrap()
+        ),
+    )
+    .await;
+    assert_eq!(last["records"].as_array().unwrap().len(), 1);
+    assert!(last["next_cursor"].is_null());
+    assert_ne!(page["records"][0]["id"], last["records"][0]["id"]);
+    let (_, summary) = api_json_request(
+        router.clone(),
+        &actors[0],
+        Method::GET,
+        format!("/v1/activity/summary?{range}"),
+    )
+    .await;
+    assert_eq!(summary["groups"][0]["count"], 3);
+    assert_eq!(summary["groups"][0]["failed"], 1);
+    assert_eq!(summary["groups"][0]["mean_duration_ms"], 20.0);
+    let (_, audit) = api_json_request(
+        router.clone(),
+        &actors[0],
+        Method::GET,
+        format!("/v1/activity?{range}&source=audit"),
+    )
+    .await;
+    assert_eq!(audit["records"].as_array().unwrap().len(), 2);
+    assert!(
+        audit["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["data"]["outcome"] == "failed")
+    );
+    assert!(!audit.to_string().contains("private-prompt"));
+    client
+        .execute(
+            "DELETE FROM company_member WHERE company_id='tools-company'",
+            &[],
+        )
+        .await
+        .unwrap();
+    let (_, without_company) = api_json_request(
+        router.clone(),
+        &actors[0],
+        Method::GET,
+        format!("/v1/activity?{range}&source=audit"),
+    )
+    .await;
+    assert_eq!(without_company["records"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        api_json_request(
+            router.clone(),
+            &agent,
+            Method::GET,
+            format!("/v1/activity?{range}")
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    for path in [
+        format!("/v1/activity?{range}&limit=0"),
+        format!("/v1/activity?{range}&cursor=bad"),
+        format!("/v1/activity?{range}&actor_id=other"),
+        "/v1/activity?since=2026-01-01T00:00:00Z&until=2026-03-01T00:00:00Z".into(),
+    ] {
+        assert_eq!(
+            api_json_request(router.clone(), &actors[0], Method::GET, path)
+                .await
+                .0,
+            StatusCode::BAD_REQUEST
+        );
+    }
+    let body = json!({"before":"2026-01-03T00:00:00Z"});
+    let (_, preview) = api_json_payload_request(
+        router.clone(),
+        &actors[0],
+        Method::POST,
+        "/v1/activity/prune".into(),
+        body,
+    )
+    .await;
+    assert_eq!(preview["count"], 3);
+    assert_eq!(preview["applied"], false);
+    client.batch_execute("ALTER TABLE audit_log ADD CONSTRAINT reject_retention_audit CHECK(action != 'activity.pruned')").await.unwrap();
+    let apply = json!({"before":"2026-01-03T00:00:00Z","apply":true});
+    assert_eq!(
+        api_json_payload_request(
+            router.clone(),
+            &actors[0],
+            Method::POST,
+            "/v1/activity/prune".into(),
+            apply.clone()
+        )
+        .await
+        .0,
+        StatusCode::INTERNAL_SERVER_ERROR
+    );
+    assert_eq!(
+        client
+            .query_one(
+                "SELECT count(*) FROM telemetry_event WHERE principal_id=$1",
+                &[&actors[0].id]
+            )
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+        3,
+        "delete rolls back when audit cannot commit"
+    );
+    client
+        .batch_execute("ALTER TABLE audit_log DROP CONSTRAINT reject_retention_audit")
+        .await
+        .unwrap();
+    let (status, done) = api_json_payload_request(
+        router.clone(),
+        &actors[0],
+        Method::POST,
+        "/v1/activity/prune".into(),
+        apply,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(done["count"], 3);
+    assert_eq!(done["applied"], true);
+    assert_eq!(
+        client
+            .query_one(
+                "SELECT count(*) FROM telemetry_event WHERE principal_id=$1",
+                &[&actors[1].id]
+            )
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+        3
+    );
+    assert_eq!(
+        client
+            .query_one("SELECT count(*) FROM audit_log WHERE id='audit-owned'", &[])
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+        1
+    );
+    assert_eq!(
+        client
+            .query_one(
+                "SELECT count(*) FROM audit_log WHERE actor_id=$1 AND action='activity.pruned'",
+                &[&actors[0].id]
+            )
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+        1
+    );
+    client.execute("INSERT INTO telemetry_event(workspace_id,principal_id,event_id,schema_version,trace_id,span_id,session_id,name,occurred_at,created_at) SELECT 'activity-tools',$1,'batch-'||n,1,'batch','span','session','click','2026-01-02T00:00:00Z','2026-01-02T00:00:00Z' FROM generate_series(1,1002) AS n",&[&actors[0].id]).await.unwrap();
+    let batch = json!({"before":"2026-01-03T00:00:00Z","apply":true});
+    let (_, first) = api_json_payload_request(
+        router.clone(),
+        &actors[0],
+        Method::POST,
+        "/v1/activity/prune".into(),
+        batch.clone(),
+    )
+    .await;
+    assert_eq!(first["count"], 1000);
+    assert_eq!(first["has_more"], true);
+    let (_, second) = api_json_payload_request(
+        router.clone(),
+        &actors[0],
+        Method::POST,
+        "/v1/activity/prune".into(),
+        batch,
+    )
+    .await;
+    assert_eq!(second["count"], 2);
+    assert_eq!(second["has_more"], false);
+    assert_eq!(
+        api_json_payload_request(
+            router.clone(),
+            &agent,
+            Method::POST,
+            "/v1/activity/prune".into(),
+            json!({"before":"2026-01-03T00:00:00Z"})
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        api_json_payload_request(
+            router.clone(),
+            &actors[0],
+            Method::POST,
+            "/v1/activity/prune".into(),
+            json!({"before":chrono::Utc::now()})
+        )
+        .await
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+    let metrics = choruz_common::metrics::text();
+    assert!(metrics.contains("choruz_activity_batches_total{outcome=\"committed\"}"));
+    assert!(metrics.contains("choruz_http_responses_total{class=\"4xx\"}"));
+}
+
+#[tokio::test]
+async fn telemetry_batches_are_atomic_idempotent_and_actor_scoped() {
+    let database = TestDatabase::create().await;
+    let app = choruz_application::ChatApp::new();
+    let mut actors = Vec::new();
+    for workspace in ["activity-a", "activity-b"] {
+        let actor = app
+            .create_principal(CreatePrincipalRequest {
+                workspace_id: workspace.into(),
+                principal_type: PrincipalType::Human,
+                name: workspace.into(),
+                avatar_url: None,
+            })
+            .unwrap();
+        seed_principal_to_db(&database.database_url, &actor).await;
+        actors.push(actor);
+    }
+    let router = router_with_db(app, &database.database_url);
+    let event = json!({"eventId":"same-id", "schemaVersion":1, "traceId":"trace", "spanId":"span", "sessionId":"session", "name":"ui_click", "ts":"2026-01-01T00:00:00Z"});
+    let (client, connection) = tokio_postgres::connect(&database.database_url, NoTls)
+        .await
+        .unwrap();
+    tokio::spawn(async move {
+        let _ = connection.await;
+    });
+
+    // Force the second insert to fail in this test's private database.
+    client.batch_execute("ALTER TABLE telemetry_event ADD CONSTRAINT activity_test_failure CHECK (event_id != 'fail')").await.unwrap();
+    let mut failing = event.clone();
+    failing["eventId"] = json!("fail");
+    let (status, _) = api_json_payload_request(
+        router.clone(),
+        &actors[0],
+        Method::POST,
+        "/v1/telemetry".into(),
+        json!({"events":[event, failing]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    let count: i64 = client
+        .query_one("SELECT count(*) FROM telemetry_event", &[])
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(count, 0, "the first insert must roll back too");
+
+    let mut invalid = event.clone();
+    invalid["schemaVersion"] = json!(99);
+    let (status, _) = api_json_payload_request(
+        router.clone(),
+        &actors[0],
+        Method::POST,
+        "/v1/telemetry".into(),
+        json!({"events":[event, invalid]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    for actor in &actors {
+        for _ in 0..2 {
+            let (status, _) = api_json_payload_request(
+                router.clone(),
+                actor,
+                Method::POST,
+                "/v1/telemetry".into(),
+                json!({"events":[event]}),
+            )
+            .await;
+            assert_eq!(status, StatusCode::NO_CONTENT);
+        }
+        let row = client
+            .query_one(
+                "SELECT count(*), min(workspace_id) FROM telemetry_event WHERE principal_id=$1",
+                &[&actor.id],
+            )
+            .await
+            .unwrap();
+        assert_eq!(row.get::<_, i64>(0), 1);
+        assert_eq!(row.get::<_, String>(1), actor.workspace_id);
+    }
+}
+
+#[tokio::test]
 async fn metrics_endpoint_reports_prometheus_text() {
     let app = choruz_application::ChatApp::new();
     app.create_principal(CreatePrincipalRequest {
@@ -277,11 +650,18 @@ async fn telemetry_ingest_redacts_sensitive_payloads_before_persisting() {
         json!({
             "events": [{
                 "name": "telem002_sensitive_payload",
+                "eventId": choruz_common::new_id(),
+                "schemaVersion": 1,
+                "spanId": "span",
+                "sessionId": "session",
+                "ts": chrono::Utc::now(),
                 "traceId": "trace-telem002",
                 "durationMs": 7,
                 "data": {
                     "conversation_id": "conv-safe-correlation",
                     "content_len": 27,
+                    "authenticationCode": "sensitive-auth-code",
+                    "pairing_credential": "sensitive-pairing-credential",
                     "session_token": "session-token-test-value",
                     "agent_secret": "agent-secret-test-value",
                     "authorization": "Bearer bearer-token-test-value",
@@ -326,6 +706,8 @@ async fn telemetry_ingest_redacts_sensitive_payloads_before_persisting() {
     let serialized = data.to_string();
 
     for sensitive in [
+        "sensitive-auth-code",
+        "sensitive-pairing-credential",
         "session-token-test-value",
         "agent-secret-test-value",
         "bearer-token-test-value",

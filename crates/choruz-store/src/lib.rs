@@ -9,10 +9,8 @@ pub mod cdc_poller;
 pub mod conversation_events;
 pub mod event_outbox;
 mod pool;
-pub mod redis_pool;
 
 pub use cdc_poller::{CdcPoller, CdcPollerConfig, CdcPollerHandle};
 pub use conversation_events::{ConversationEvent, ConversationEventRow, ThreadFlags};
 pub use event_outbox::{OutboxEntry, OutboxRow};
 pub use pool::EventStore;
-pub use redis_pool::RedisCache;

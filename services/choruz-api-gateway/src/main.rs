@@ -13,6 +13,15 @@ use choruz_session::PgSessionStore;
 async fn main() -> Result<(), std::io::Error> {
     init_tracing("choruz-api-gateway").map_err(std::io::Error::other)?;
 
+    let _connector_supervisor =
+        match choruz_supervisor::connectors::ConnectorSupervisor::start_default() {
+            Ok(supervisor) => Some(supervisor),
+            Err(error) => {
+                tracing::warn!(%error, "connector supervision is unavailable");
+                None
+            }
+        };
+
     let cfg = Config::from_env().map_err(std::io::Error::other)?;
     cfg.validate_production();
 
