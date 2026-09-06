@@ -1,6 +1,479 @@
 use super::*;
 
 #[tokio::test]
+async fn headless_progress_tracks_leases_in_binding_snapshots_and_sync() {
+    use choruz_session::{CommandStatus, CommandStatusUpdate, InsertCommand, PgSessionStore};
+
+    let database = TestDatabase::create_without_migrations().await;
+    database
+        .apply_migrations_through("V048__online_groups.sql")
+        .await;
+    let runtime = RuntimeStore::new(database.database_url.clone());
+    let store = PgSessionStore::new(&database.database_url);
+    let app = choruz_application::ChatApp::new();
+    let operator = LocalAuthConfig::from_env()
+        .ensure_operator_sync(&app)
+        .unwrap();
+    let agent = app
+        .create_agent(CreateAgentRequest {
+            actor_id: operator.id.clone(),
+            name: "Headless progress".into(),
+            scopes: vec!["messages:read".into(), "messages:write".into()],
+            workspace_id: None,
+            channel_visibility: None,
+        })
+        .unwrap();
+    let conversation = app
+        .create_direct_conversation(CreateDirectConversationRequest {
+            actor_id: operator.id.clone(),
+            peer_principal_id: agent.principal.id.clone(),
+            workspace_id: None,
+        })
+        .unwrap();
+    seed_principal_to_db(&database.database_url, &operator).await;
+    seed_principal_to_db(&database.database_url, &agent.principal).await;
+    seed_conversation_to_db(&database.database_url, &conversation).await;
+    let binding = runtime
+        .create_binding(CreateBindingInput {
+            conversation_id: conversation.id.clone(),
+            agent_principal_id: agent.principal.id.clone(),
+            driver_type: DriverType::ClaudeTerminal,
+            workspace_path: "/worktrees/progress".into(),
+            git_worktree_path: None,
+            config_json: json!({}),
+            audit_actor: Some(audit_actor(&operator)),
+        })
+        .await
+        .unwrap();
+    let router = runtime_router_with_db(app, runtime.clone(), &database.database_url);
+    let client = store.connect().await.unwrap();
+    let session = Uuid::now_v7().to_string();
+    store
+        .upsert_session(&session, &agent.principal.id, &conversation.id)
+        .await
+        .unwrap();
+    let input = || InsertCommand {
+        command_id: Uuid::now_v7().to_string(),
+        route_id: Uuid::now_v7().to_string(),
+        session_key: session.clone(),
+        agent_id: agent.principal.id.clone(),
+        conversation_id: conversation.id.clone(),
+        message_id: Uuid::now_v7().to_string(),
+        turn_id: Uuid::now_v7().to_string(),
+        prompt: "Work until released".into(),
+        max_attempts: 3,
+        metadata: json!({}),
+    };
+    let first = store.insert_command(&input()).await.unwrap();
+    let second = store.insert_command(&input()).await.unwrap();
+    let (_, before) = api_json_request(
+        router.clone(),
+        &operator,
+        Method::GET,
+        "/v1/bootstrap?limit=10".into(),
+    )
+    .await;
+    let cursor = before["sync_cursor"].as_u64().unwrap();
+    let leases = store
+        .assign_batch_leases(
+            &[first.command_id.clone(), second.command_id.clone()],
+            "test-executor",
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        runtime.get_binding(&binding.id).await.unwrap().state,
+        BindingState::Idle,
+        "the pre-migration database reproduces the reported idle binding"
+    );
+    let backoff_session = Uuid::now_v7().to_string();
+    store
+        .upsert_session(&backoff_session, &agent.principal.id, &conversation.id)
+        .await
+        .unwrap();
+    client
+        .execute(
+            "UPDATE session_registry SET status = 'active' WHERE session_key = $1",
+            &[&backoff_session],
+        )
+        .await
+        .unwrap();
+    apply_migration_files(&client, |name| name.starts_with("V049__")).await;
+    assert_eq!(
+        store
+            .get_session(&backoff_session)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        choruz_session::SessionStatus::Idle,
+        "upgrade clears a stranded pre-fix session with no active command"
+    );
+
+    let row = client
+        .query_one(
+            "SELECT state, in_flight_turn_id FROM agent_runtime_bindings WHERE id = $1",
+            &[&binding.id],
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        row.get::<_, String>("state"),
+        "running",
+        "a real batch lease must persist binding progress"
+    );
+    for path in [
+        "/v1/runtime/bindings".to_string(),
+        format!("/v1/runtime/bindings/{}", binding.id),
+        "/v1/bootstrap?limit=10".to_string(),
+    ] {
+        let (status, body) =
+            api_json_request(router.clone(), &operator, Method::GET, path.clone()).await;
+        assert_eq!(status, StatusCode::OK);
+        let view = if path.contains("bootstrap") {
+            &body["runtime_bindings"][0]
+        } else if body.is_array() {
+            &body[0]
+        } else {
+            &body
+        };
+        assert_eq!(view["id"], binding.id);
+        assert_eq!(
+            view["state"], "running",
+            "refresh/list/detail must agree: {path}"
+        );
+    }
+    let (_, sync) = api_json_request(
+        router.clone(),
+        &operator,
+        Method::GET,
+        format!("/v1/sync?cursor={cursor}&limit=100"),
+    )
+    .await;
+    assert!(
+        sync["changes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|change| change["event_type"] == "runtime_binding.updated"
+                && change["entity_id"] == binding.id)
+    );
+
+    let updated_at: String = client
+        .query_one(
+            "SELECT updated_at::text FROM agent_runtime_bindings WHERE id = $1",
+            &[&binding.id],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    let (_, snapshot) = api_json_request(
+        router.clone(),
+        &operator,
+        Method::GET,
+        "/v1/bootstrap?limit=10".into(),
+    )
+    .await;
+    let unchanged_cursor = snapshot["sync_cursor"].as_u64().unwrap();
+    client
+        .execute(
+            "UPDATE session_registry SET epoch = epoch WHERE session_key = $1",
+            &[&session],
+        )
+        .await
+        .unwrap();
+    let after_update: String = client
+        .query_one(
+            "SELECT updated_at::text FROM agent_runtime_bindings WHERE id = $1",
+            &[&binding.id],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(
+        updated_at, after_update,
+        "unchanged progress must not rewrite the binding"
+    );
+    let (_, unchanged_sync) = api_json_request(
+        router.clone(),
+        &operator,
+        Method::GET,
+        format!("/v1/sync?cursor={unchanged_cursor}&limit=100"),
+    )
+    .await;
+    assert!(
+        !unchanged_sync["changes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|change| change["event_type"] == "runtime_binding.updated"
+                && change["entity_id"] == binding.id),
+        "unchanged progress must not emit another binding update"
+    );
+
+    store
+        .mark_command_committed_for_attempt(
+            &first.command_id,
+            &leases[&first.command_id].attempt_id,
+        )
+        .await
+        .unwrap();
+    let row = client
+        .query_one(
+            "SELECT state, in_flight_turn_id FROM agent_runtime_bindings WHERE id = $1",
+            &[&binding.id],
+        )
+        .await
+        .unwrap();
+    assert_eq!(row.get::<_, String>("state"), "running");
+    store
+        .mark_command_committed_for_attempt(
+            &second.command_id,
+            &leases[&second.command_id].attempt_id,
+        )
+        .await
+        .unwrap();
+    let row = client
+        .query_one(
+            "SELECT state, in_flight_turn_id FROM agent_runtime_bindings WHERE id = $1",
+            &[&binding.id],
+        )
+        .await
+        .unwrap();
+    assert_eq!(row.get::<_, String>("state"), "idle");
+    assert_eq!(row.get::<_, Option<String>>("in_flight_turn_id"), None);
+
+    let retry = store.insert_command(&input()).await.unwrap();
+    let old_lease = store
+        .assign_lease(&retry.command_id, "test-executor")
+        .await
+        .unwrap();
+    let expired = store
+        .check_expired_leases(chrono::Utc::now() + chrono::TimeDelta::seconds(121), 120)
+        .await
+        .unwrap();
+    store
+        .handle_lease_expiry(
+            expired
+                .iter()
+                .find(|e| e.command_id == retry.command_id)
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        runtime.get_binding(&binding.id).await.unwrap().state,
+        BindingState::Idle
+    );
+    store
+        .update_command_status(&CommandStatusUpdate {
+            command_id: retry.command_id.clone(),
+            status: CommandStatus::Pending,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let fresh_lease = store
+        .assign_lease(&retry.command_id, "replacement-executor")
+        .await
+        .unwrap();
+    assert!(
+        store
+            .mark_command_committed_for_attempt(&retry.command_id, &old_lease.attempt_id)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        runtime.get_binding(&binding.id).await.unwrap().state,
+        BindingState::Running
+    );
+    store
+        .dead_letter_command_for_attempt(
+            &choruz_session::InsertDeadLetter {
+                source_type: "command".into(),
+                source_id: retry.command_id.clone(),
+                payload: json!({}),
+                error: "test execution failed".into(),
+                attempt_count: 2,
+            },
+            &fresh_lease.attempt_id,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        runtime.get_binding(&binding.id).await.unwrap().state,
+        BindingState::Idle
+    );
+
+    let retry = store.insert_command(&input()).await.unwrap();
+    let lease = store
+        .assign_lease(&retry.command_id, "test-executor")
+        .await
+        .unwrap();
+    store
+        .update_command_status_for_attempt(
+            &CommandStatusUpdate {
+                command_id: retry.command_id.clone(),
+                status: CommandStatus::RetryScheduled,
+                next_retry_at: Some(Some(chrono::Utc::now() + chrono::TimeDelta::minutes(5))),
+                ..Default::default()
+            },
+            &lease.attempt_id,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        runtime.get_binding(&binding.id).await.unwrap().state,
+        BindingState::Idle,
+        "backoff is not active execution even before the retry becomes due"
+    );
+
+    let host = Uuid::now_v7().to_string();
+    client.execute("UPDATE agent_runtime_bindings SET config_json = jsonb_build_object('runtime_host_id', $2::text) WHERE id = $1", &[&binding.id, &host]).await.unwrap();
+    for success in [true, false] {
+        let remote = store.insert_command(&input()).await.unwrap();
+        let (claimed, lease) = store
+            .claim_runtime_host_command(&host)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(claimed.command_id, remote.command_id);
+        assert_eq!(
+            runtime.get_binding(&binding.id).await.unwrap().state,
+            BindingState::Running
+        );
+        store
+            .complete_runtime_host_command(
+                &host,
+                "Test device",
+                &remote.command_id,
+                &lease.attempt_id,
+                success,
+                &[],
+                if success { None } else { Some("test failure") },
+                0,
+                1,
+                None,
+                false,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            runtime.get_binding(&binding.id).await.unwrap().state,
+            BindingState::Idle
+        );
+    }
+    client
+        .execute(
+            "UPDATE agent_runtime_bindings SET config_json = '{}' WHERE id = $1",
+            &[&binding.id],
+        )
+        .await
+        .unwrap();
+
+    // Two conversations can contend on the shared binding. Hold its row lock
+    // until both production transitions are waiting, then verify the aggregate.
+    let other_session = Uuid::now_v7().to_string();
+    store
+        .upsert_session(&other_session, &agent.principal.id, &conversation.id)
+        .await
+        .unwrap();
+    let finishing = store.insert_command(&input()).await.unwrap();
+    let finishing_lease = store
+        .assign_lease(&finishing.command_id, "test-executor")
+        .await
+        .unwrap();
+    let mut other_input = input();
+    other_input.session_key = other_session;
+    let starting = store.insert_command(&other_input).await.unwrap();
+    let mut guard_client = store.connect().await.unwrap();
+    let guard = guard_client.transaction().await.unwrap();
+    guard
+        .query_one(
+            "SELECT id FROM agent_runtime_bindings WHERE id = $1 FOR UPDATE",
+            &[&binding.id],
+        )
+        .await
+        .unwrap();
+    let finish_name = format!("progress-finish-{}", Uuid::now_v7());
+    let start_name = format!("progress-start-{}", Uuid::now_v7());
+    let finish_store = PgSessionStore::new(&format!(
+        "{} application_name={finish_name}",
+        database.database_url
+    ));
+    let start_store = PgSessionStore::new(&format!(
+        "{} application_name={start_name}",
+        database.database_url
+    ));
+    let finish = tokio::spawn(async move {
+        finish_store
+            .mark_command_committed_for_attempt(&finishing.command_id, &finishing_lease.attempt_id)
+            .await
+    });
+    let starting_id = starting.command_id.clone();
+    let start = tokio::spawn(async move {
+        start_store
+            .assign_lease(&starting_id, "test-executor")
+            .await
+    });
+    let blocked = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let count: i64 = client.query_one("SELECT COUNT(*) FROM pg_stat_activity WHERE application_name = ANY($1) AND wait_event_type = 'Lock'", &[&vec![finish_name.clone(), start_name.clone()]]).await.unwrap().get(0);
+            if count == 2 { break; }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }).await;
+    guard.commit().await.unwrap();
+    finish.await.unwrap().unwrap();
+    let starting_lease = start.await.unwrap().unwrap();
+    assert!(
+        blocked.is_ok(),
+        "both transitions must overlap at the binding row lock"
+    );
+    assert_eq!(
+        runtime.get_binding(&binding.id).await.unwrap().state,
+        BindingState::Running
+    );
+    store
+        .mark_command_committed_for_attempt(&starting.command_id, &starting_lease.attempt_id)
+        .await
+        .unwrap();
+    assert_eq!(
+        runtime.get_binding(&binding.id).await.unwrap().state,
+        BindingState::Idle
+    );
+
+    // Administrative states are not overridden by execution progress.
+    for state in ["paused", "error", "disabled"] {
+        let command = store.insert_command(&input()).await.unwrap();
+        client
+            .execute(
+                "UPDATE agent_runtime_bindings SET state = $2 WHERE id = $1",
+                &[&binding.id, &state],
+            )
+            .await
+            .unwrap();
+        let lease = store
+            .assign_lease(&command.command_id, "test-executor")
+            .await
+            .unwrap();
+        store
+            .mark_command_committed_for_attempt(&command.command_id, &lease.attempt_id)
+            .await
+            .unwrap();
+        let row = client
+            .query_one(
+                "SELECT state FROM agent_runtime_bindings WHERE id = $1",
+                &[&binding.id],
+            )
+            .await
+            .unwrap();
+        assert_eq!(row.get::<_, String>(0), state);
+    }
+}
+
+#[tokio::test]
 async fn runtime_bindings_list_detail_and_redact_errors() {
     let database = TestDatabase::create().await;
     let runtime = RuntimeStore::new(database.database_url.clone());

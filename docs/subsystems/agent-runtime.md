@@ -89,12 +89,14 @@ Headless path: the pipeline's `spawn_headless_session` resolves the active bindi
 
 ## Invariants
 
+Headless binding progress follows active session leases across the agent's conversations. Local and remote execution project `running`; final batch completion, retry backoff and lease expiry project `idle`. Paused, disabled and error bindings are not overwritten. Bootstrap and binding sync updates expose the same stored state. `in_flight_turn_id` does not represent a multi-turn batch. See the [progress ownership decision](../../.agents/notes/implemented/bug-fix/2026-09-06-headless-progress-follows-session-leases.md).
+
 | Invariant | Pinned by |
 |---|---|
 | One non-disabled binding per agent (`agent_runtime_bindings_one_per_agent` partial unique index); a second create returns the existing one | `binding_defaults_and_uniqueness_are_enforced`, `binding_creation_waits_for_disable_and_rejects_the_disabled_agent` in [`crates/choruz-agent-runtime/tests/runtime_store.rs`](../../crates/choruz-agent-runtime/tests/runtime_store.rs) |
 | Disabling an agent's bindings is atomic and idempotent | `disabling_agent_bindings_is_atomic_and_idempotent` |
 | `workspace_path` is normalised and guarded; state transitions follow `can_transition_to` | `workspace_paths_are_normalized_and_guarded`, `state_transitions_are_guarded` |
-| Binding state changes and rebinds write `audit_log` entries | `state_changes_and_rebind_write_audit_entries` |
+| Administrative binding state changes and rebinds write `audit_log` entries; automatic headless progress uses the sync feed | `state_changes_and_rebind_write_audit_entries`, `headless_progress_tracks_leases_in_binding_snapshots_and_sync` |
 | A terminal session anchor is accepted only for the binding generation that captured it and only for the same workspace | `terminal_session_anchor_preserves_unrelated_config_and_validates_binding`, `terminal_session_anchor_rejects_delayed_capture_after_reset_touch`, `codex_terminal_anchor_rejects_same_native_session_for_same_workspace_binding` |
 | Terminal routes never write `conversation_events`; terminal bytes bypass the pipeline | `terminal_routes_do_not_write_conversation_events` in [`services/choruz-api-gateway/src/tests/runtime.rs`](../../services/choruz-api-gateway/src/tests/runtime.rs) |
 | A binding may reference only an `active` harness account of the same company, driver and host, and only a model listed in `models_json`; the trigger stamps `harness_account_name` and `harness_account_profile_kind` | `validate_runtime_binding_harness_account` (V035); `harness_account_binding_trigger_rejects_unverified_models` |

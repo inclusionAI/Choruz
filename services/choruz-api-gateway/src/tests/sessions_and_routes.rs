@@ -330,7 +330,7 @@ async fn native_session_import_runs_end_to_end_and_is_idempotent() {
         StatusCode::CONFLICT,
         "queued commands keep the old claim"
     );
-    commands
+    let lease = commands
         .assign_lease(&command.command_id, "owned-test-executor")
         .await
         .unwrap();
@@ -346,11 +346,8 @@ async fn native_session_import_runs_end_to_end_and_is_idempotent() {
         .unwrap()
         .get(0);
     assert_eq!(claimed, old_binding);
-    client
-        .execute(
-            "UPDATE agent_commands SET status = 'committed' WHERE command_id = $1",
-            &[&command.command_id],
-        )
+    commands
+        .mark_command_committed_for_attempt(&command.command_id, &lease.attempt_id)
         .await
         .unwrap();
     client
