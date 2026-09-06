@@ -2,9 +2,59 @@
 //!
 //! Bridges `choruz-writer::ResultStore` to the real `conversation_events` table.
 
-use choruz_session::{PgSessionStore, SessionStatus, SessionUpdate};
+use choruz_session::PgSessionStore;
 use choruz_store::{ConversationEvent, EventStore};
 use choruz_writer::{ResultStore, WriterError, WriterResult};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn writer_commit_keeps_the_fenced_session_release() {
+        let url = std::env::var("CHORUZ_TEST_DATABASE_URL")
+            .expect("source infra/host/setup_test_database.sh before database tests");
+        let sessions = PgSessionStore::new(&url);
+        let writer = PgResultStore::new(EventStore::new(&url), sessions.clone());
+        let session = choruz_common::new_id();
+        let agent = choruz_common::new_id();
+        let conversation = choruz_common::new_id();
+        sessions
+            .upsert_session(&session, &agent, &conversation)
+            .await
+            .unwrap();
+        let command = sessions
+            .insert_command(&choruz_session::InsertCommand {
+                command_id: choruz_common::new_id(),
+                route_id: choruz_common::new_id(),
+                session_key: session.clone(),
+                agent_id: agent,
+                conversation_id: conversation,
+                message_id: choruz_common::new_id(),
+                turn_id: choruz_common::new_id(),
+                prompt: "Owned writer lifecycle fixture".into(),
+                max_attempts: 3,
+                metadata: serde_json::json!({}),
+            })
+            .await
+            .unwrap();
+        let lease = sessions
+            .assign_lease(&command.command_id, "writer-test")
+            .await
+            .unwrap();
+        writer
+            .mark_committed(&command.command_id, &lease.attempt_id)
+            .await
+            .unwrap();
+        let final_session = sessions.get_session(&session).await.unwrap().unwrap();
+        assert_eq!(
+            final_session.status,
+            choruz_session::SessionStatus::Idle,
+            "the writer must not overwrite the atomic release with draining"
+        );
+        assert_eq!(final_session.epoch, lease.epoch);
+    }
+}
 
 /// Provides turn dedup and event insertion backed by PostgreSQL.
 #[derive(Clone)]
@@ -126,16 +176,8 @@ impl ResultStore for PgResultStore {
     }
 
     async fn mark_committed(&self, command_id: &str, attempt_id: &str) -> WriterResult<()> {
-        // 1. Get command to find session key
-        let cmd = self
-            .session_store
-            .get_command(command_id)
-            .await
-            .map_err(|e| WriterError::Internal(format!("failed to get command: {e}")))?
-            .ok_or_else(|| WriterError::Internal(format!("command not found: {command_id}")))?;
-        let session_key = cmd.session_key;
-
-        // 2. Mark command as committed and release lease
+        // The fenced transaction owns session release. A later draining write
+        // could overwrite a new lease acquired after this commit.
         self.session_store
             .mark_command_committed_for_attempt(command_id, attempt_id)
             .await
@@ -148,26 +190,6 @@ impl ResultStore for PgResultStore {
                     WriterError::Internal(format!("failed to mark command committed: {other}"))
                 }
             })?;
-
-        // 3. Check for more active commands; if none, transition to draining
-        match self
-            .session_store
-            .find_active_command_for_session(&session_key)
-            .await
-        {
-            Ok(None) => {
-                let update = SessionUpdate {
-                    session_key,
-                    status: Some(SessionStatus::Draining),
-                    executor_node_id: None,
-                    last_heartbeat_at: None,
-                };
-                if let Err(e) = self.session_store.update_session(&update).await {
-                    tracing::warn!(error = %e, "session draining update failed");
-                }
-            }
-            _ => {}
-        }
 
         Ok(())
     }

@@ -493,13 +493,14 @@ impl PgSessionStore {
         update: &CommandStatusUpdate,
         expected_attempt_id: Option<&str>,
     ) -> SessionResult<()> {
-        let client = self.connect().await?;
+        let mut client = self.connect().await?;
+        let tx = client.transaction().await?;
         let now = Utc::now();
         let status_str = update.status.as_str().to_string();
         let expected_attempt_id = expected_attempt_id.map(str::to_owned);
 
-        let affected = client
-            .execute(
+        let row = tx
+            .query_opt(
                 "UPDATE agent_commands
                  SET status = $2,
                      current_attempt_id = COALESCE($3, current_attempt_id),
@@ -517,7 +518,7 @@ impl PgSessionStore {
                                WHERE session_key = agent_commands.session_key
                            )
                        )
-                   )",
+                   ) RETURNING session_key, current_epoch",
                 &[
                     &update.command_id,
                     &status_str,
@@ -532,7 +533,7 @@ impl PgSessionStore {
                 ],
             )
             .await?;
-        if affected == 0 {
+        let Some(row) = row else {
             return match expected_attempt_id {
                 Some(attempt_id) => Err(SessionError::StaleAttempt {
                     command_id: update.command_id.clone(),
@@ -540,7 +541,16 @@ impl PgSessionStore {
                 }),
                 None => Err(SessionError::CommandNotFound(update.command_id.clone())),
             };
+        };
+        if matches!(
+            update.status,
+            CommandStatus::RetryScheduled | CommandStatus::DeadLetter | CommandStatus::Committed
+        ) {
+            let session_key: String = row.get("session_key");
+            let epoch: Option<i32> = row.get("current_epoch");
+            release_session_if_no_active_commands(&tx, &session_key, epoch, now).await?;
         }
+        tx.commit().await?;
         Ok(())
     }
 

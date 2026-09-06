@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { mkdir, writeFile, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
+import { postgresQueryClient } from "../../lib/groups/group-provisioning-db";
 import { API_BASE, login, signup, gotoDashboard } from "../fixtures/auth";
 import {
   getConsoleSnapshot,
@@ -11,6 +12,41 @@ import {
   createCompany,
   deleteCompany,
 } from "../fixtures/api";
+
+test("headless binding progress reaches the group details and survives reload", async ({ page }) => {
+  const { token, principal } = await signup(page, uniqueName("progress-user"), "progress-test-password");
+  const company = await createCompany(page, token, principal.id, uniqueName("progress-company"));
+  const db = await postgresQueryClient();
+  const sessionKey = uniqueName("progress-session");
+  try {
+    const agent = await provisionAgent(page, token, uniqueName("progress-agent"), { workspaceId: company.id });
+    const group = await createGroup(page, token, principal.id, uniqueName("progress-group"), [agent.agentId], company.id);
+    // Replace only the executor lease for deterministic timing. The DB projection,
+    // sync feed, authenticated binding reads and browser rendering stay real;
+    // gateway integration tests exercise the production lease methods themselves.
+    await db.query("INSERT INTO session_registry (session_key, agent_id, conversation_id) VALUES ($1, $2, $3)", [sessionKey, agent.agentId, group.id]);
+    const openDetails = async () => {
+      await gotoDashboard(page);
+      await page.locator(".company-selector-btn").click();
+      await page.locator(".company-dropdown-item-name").filter({ hasText: company.name }).click();
+      await page.locator(`[data-conversation-id="${group.id}"]`).click();
+      await page.getByTitle("Toggle details", { exact: true }).click();
+      await page.locator(".member-row-main").filter({ hasText: agent.agentName }).click();
+    };
+    await openDetails();
+    await expect(page.locator(".member-row-state")).toHaveText("idle");
+    await db.query("UPDATE session_registry SET status = 'active', epoch = epoch + 1 WHERE session_key = $1", [sessionKey]);
+    await expect(page.locator(".member-row-state")).toHaveText("running");
+    await page.reload();
+    await openDetails();
+    await expect(page.locator(".member-row-state")).toHaveText("running");
+    await db.query("UPDATE session_registry SET status = 'idle' WHERE session_key = $1", [sessionKey]);
+    await expect(page.locator(".member-row-state")).toHaveText("idle");
+  } finally {
+    await db.query("DELETE FROM session_registry WHERE session_key = $1", [sessionKey]);
+    await deleteCompany(page, token, company.id);
+  }
+});
 
 for (const scenario of ["reports load and delete failures", "keeps skill content with its selected title", "keeps loading until the selected skill returns", "browses and imports a Markdown file"] as const) {
   test(`Skills ${scenario}`, async ({ page }, testInfo) => {
