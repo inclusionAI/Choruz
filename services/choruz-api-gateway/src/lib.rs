@@ -2,6 +2,7 @@ mod attachments;
 mod auth;
 pub mod config;
 mod db_projection;
+mod handlers_activity;
 mod handlers_channel_tasks;
 mod handlers_companies;
 mod handlers_conversations;
@@ -10,9 +11,13 @@ mod handlers_events;
 mod handlers_filesystem;
 mod handlers_harness_logins;
 mod handlers_messages;
+mod handlers_online;
+mod handlers_online_groups;
 mod handlers_principals;
 mod handlers_remote_control;
 mod handlers_runtime;
+mod handlers_runtime_host_onboarding;
+mod handlers_runtime_host_operations;
 mod handlers_runtime_hosts;
 mod handlers_runtime_status;
 mod handlers_ssh;
@@ -21,12 +26,14 @@ mod handlers_tasks;
 mod handlers_terminals;
 mod handlers_threads;
 mod handlers_workspace_sessions;
+mod host_link;
+mod host_runtime;
 pub mod ingress;
 mod keepalive;
 mod local_auth;
 mod meta_handlers;
+mod online_groups;
 mod plugins;
-pub(crate) mod pty_manager;
 mod remote_control_bridge;
 mod remote_control_executor;
 mod remote_control_pairing_host;
@@ -44,7 +51,6 @@ pub(crate) use auth::{
     require_human_operator, require_self,
 };
 pub(crate) use db_projection::{db_persist, persist_principal_to_db};
-pub(crate) use state::{EnsureResult, PtyPool, PtySession, evict_stale_pty_sessions};
 pub(crate) use webhook::{WebhookFlushResponse, flush_webhooks, flush_webhooks_all};
 
 #[cfg(test)]
@@ -57,11 +63,7 @@ pub(crate) mod test_support {
     }
 }
 
-use std::{
-    collections::HashMap,
-    path::PathBuf,
-    sync::{Arc, Mutex as StdMutex},
-};
+use std::path::PathBuf;
 
 use attachments::AttachmentStore;
 use axum::{
@@ -107,12 +109,15 @@ pub fn router_with_runtime(
     session: PgSessionStore,
     event_store: choruz_store::EventStore,
 ) -> Router {
-    // Create the PTY pool before the router so it can be shared with the
-    // keepalive task.
-    let pty_pool: PtyPool = Arc::new(StdMutex::new(HashMap::new()));
+    // Restore-time bridges can use TLS before any pairing request arrives.
+    // An existing provider wins if another entry point already installed it.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    // The local device is created before the router so the keepalive task
+    // can watch its terminals.
+    let local_host = host_runtime::LocalHost::new();
 
     // Spawn the agent keepalive background task (60s interval).
-    keepalive::spawn_keepalive_task(event_store.clone(), pty_pool.clone());
+    keepalive::spawn_keepalive_task(event_store.clone(), local_host.terminals.clone());
 
     Router::new()
         .route("/healthz", get(meta_handlers::liveness))
@@ -218,6 +223,10 @@ pub fn router_with_runtime(
                 .delete(handlers_conversations::restore_hidden_agent_session),
         )
         .route(
+            "/v1/conversations/{conversation_id}/interactions",
+            get(handlers_messages::list_interactions),
+        )
+        .route(
             "/v1/conversations/{conversation_id}/messages",
             get(handlers_messages::list_messages),
         )
@@ -228,6 +237,10 @@ pub fn router_with_runtime(
         .route(
             "/v1/conversations/{conversation_id}/messages/{message_id}",
             get(handlers_messages::get_message),
+        )
+        .route(
+            "/v1/companies/{company_id}/harness-accounts/{account_id}/probe",
+            post(handlers_harness_logins::probe_harness_account),
         )
         .route(
             "/v1/companies/{company_id}/harness-accounts/{account_id}/logins",
@@ -312,12 +325,34 @@ pub fn router_with_runtime(
             "/v1/webhooks/flush",
             post(handlers_events::flush_webhook_deliveries),
         )
-        // Old /v1/ws/events polling WS removed — use fanout WS (/ws/fanout on pipeline port) instead.
         .route(
             "/v1/ws/terminals/{binding_id}",
             get(handlers_terminals::websocket_terminal),
         )
         .route("/v1/telemetry", post(handlers_events::ingest_telemetry))
+        .route("/v1/activity", get(handlers_activity::list))
+        .route("/v1/activity/summary", get(handlers_activity::summary))
+        .route("/v1/activity/prune", post(handlers_activity::prune))
+        .route(
+            "/v1/online/session",
+            get(handlers_online::session).delete(handlers_online::sign_out),
+        )
+        .route("/v1/online/sign-in", post(handlers_online::sign_in))
+        .route("/v1/online/sign-up", post(handlers_online::sign_up))
+        .route("/v1/online/groups", get(handlers_online_groups::list))
+        .route(
+            "/v1/online/groups/invite",
+            post(handlers_online_groups::invite),
+        )
+        .route("/v1/online/groups/join", post(handlers_online_groups::join))
+        .route(
+            "/v1/online/groups/{link_id}",
+            delete(handlers_online_groups::leave),
+        )
+        .route(
+            "/v1/online/groups/{link_id}/messages",
+            get(handlers_online_groups::messages).post(handlers_online_groups::send),
+        )
         .route(
             "/v1/terminals/{binding_id}/ensure",
             post(handlers_terminals::ensure_terminal),
@@ -390,6 +425,7 @@ pub fn router_with_runtime(
 
             let (remote_control_bridges, bridge_refreshes) =
                 remote_control_bridge::RemoteControlBridgeHub::new();
+            let online = online_groups::OnlineHub::spawn(app.clone(), db.clone());
             let state = ApiState {
                 app,
                 db,
@@ -400,7 +436,9 @@ pub fn router_with_runtime(
                 auth,
                 sync_wakeups,
                 remote_control_bridges,
-                pty_pool,
+                local_host,
+                host_links: host_link::HostLinkHub::default(),
+                online,
             };
             remote_control_bridge::spawn(state.clone(), bridge_refreshes);
             state

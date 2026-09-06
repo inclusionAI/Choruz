@@ -6,8 +6,7 @@
 //! - [`topics`] — strongly-typed payload structs for each Kafka topic
 //!
 //! These types are shared between producers (Ingress API, Router, Executor,
-//! Tool Gateway) and consumers (Router, Session Manager, Conversation Writer,
-//! Fanout Gateway).
+//! Tool Gateway) and consumers (Router, Session Manager, Conversation Writer).
 
 pub mod envelope;
 pub mod topics;

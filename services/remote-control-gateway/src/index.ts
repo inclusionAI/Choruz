@@ -1,4 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
+import { onlineAuthResponse, type OnlineAuthEnv } from "./online-auth";
+import { onlineTransportResponse, type OnlineTransportEnv } from "./online-transport";
+export { OnlineMailbox } from "./online-transport";
 
 import { verifyGatewayTicket, type GatewayTicketPayload } from "./tickets";
 import { validCapability } from "./capability";
@@ -11,7 +14,7 @@ import {
   targetDeviceIdFromSessionFrame,
 } from "./control";
 
-export interface Env {
+export interface Env extends OnlineAuthEnv, OnlineTransportEnv {
   ROOMS: DurableObjectNamespace<GatewayRoom>;
   RATE_LIMITERS: DurableObjectNamespace<PairingRateLimiter>;
   CAPABILITIES: DurableObjectNamespace<CapabilityStore>;
@@ -59,6 +62,8 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     if (url.pathname === "/healthz") return Response.json({ ok: true });
+    if (url.pathname.startsWith("/v1/online/auth/")) return onlineAuthResponse(request, env);
+    if (url.pathname.startsWith("/v1/online/")) return onlineTransportResponse(request, env);
     if (url.pathname === "/v1/capabilities" && request.method === "POST") {
       return capabilityStore(env).fetch(request);
     }
@@ -105,6 +110,12 @@ export default {
         )
         : null;
       if (!payload) return new Response("Invalid or expired gateway ticket", { status: 401 });
+      if (payload.role === "host" && payload.scope === "pair") {
+        const registered = await capabilityStore(env).fetch("https://capability.internal/register-pair", {
+          method: "POST", body: JSON.stringify(payload),
+        });
+        if (!registered.ok) return registered;
+      }
       attachment = payload;
     }
 
@@ -126,6 +137,17 @@ export default {
 export class CapabilityStore extends DurableObject<Env> {
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
+    if (request.method === "POST" && url.pathname === "/register-pair") {
+      const payload = await request.json<GatewayTicketPayload>();
+      if (!validCapability(payload) || payload.role !== "host" || payload.scope !== "pair"
+        || !payload.pairing_id || !/^[A-Za-z0-9_-]{22}$/u.test(payload.pairing_id)) {
+        return new Response("Invalid pairing host", { status: 400 });
+      }
+      await this.ctx.storage.put(`pair:${payload.pairing_id}`, {
+        room: payload.room, exp: payload.exp, pairing_id: payload.pairing_id,
+      });
+      return new Response(null, { status: 204 });
+    }
     if (request.method === "POST" && url.pathname === "/v1/capabilities") {
       const body = await request.json<{ issuer?: string; payload?: GatewayTicketPayload; pairing_id?: string }>().catch(() => null);
       const issuer = body?.issuer;
@@ -366,6 +388,6 @@ export class GatewayRoom extends DurableObject<Env> {
         if (peer !== socket) peer.close(4004, "Host transport rotated");
       }
     }
-    socket.close(code, reason);
+    socket.close(code === 1005 ? 1000 : code === 1006 ? 1011 : code, reason);
   }
 }

@@ -2,9 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { FakeWebSocket } from "./fake-web-socket";
 import {
+  clearManagedRemoteCredentials,
   clearRemoteCredentials,
+  loadManagedRemoteCredentials,
   loadRemoteCredentials,
   pairWithHost,
+  storeManagedRemoteCredentials,
   storeRemoteCredentials,
 } from "./relay-pairing";
 import {
@@ -215,5 +218,16 @@ describe("remote credential storage", () => {
     storeRemoteCredentials("https://gateway.example", credentials);
     clearRemoteCredentials("https://gateway.example");
     expect(loadRemoteCredentials("https://gateway.example")).toBeNull();
+  });
+
+  it("keeps the optional remote-dashboard shortcut with its runtime host", () => {
+    const credentials = {
+      device_id: "d", gateway_url: "https://gateway.example", gateway_ticket: "t", session_key: "k",
+    };
+    storeManagedRemoteCredentials("host-1", credentials);
+    expect(loadManagedRemoteCredentials("host-1")).toEqual(credentials);
+    expect(loadManagedRemoteCredentials("host-2")).toBeNull();
+    clearManagedRemoteCredentials("host-1");
+    expect(loadManagedRemoteCredentials("host-1")).toBeNull();
   });
 });

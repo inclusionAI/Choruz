@@ -45,6 +45,10 @@ impl HarnessKind {
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct NativeSessionSummary {
     pub harness: HarnessKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness_account_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness_account_name: Option<String>,
     pub native_session_id: String,
     pub title: String,
     pub workspace_path: String,
@@ -62,9 +66,17 @@ pub struct SessionScanResult {
     pub warnings: Vec<String>,
 }
 
+/// An isolated profile authorized by the controller for this device's scan.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionAccount {
+    pub harness: HarnessKind,
+    pub account_id: String,
+    pub name: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct SessionCatalogScanner {
-    home: PathBuf,
+    claude_home: PathBuf,
     codex_home: PathBuf,
     pi_sessions_root: PathBuf,
     grok_sessions_root: PathBuf,
@@ -89,7 +101,9 @@ impl SessionCatalogScanner {
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("opencode"));
         Ok(Self {
-            home,
+            claude_home: std::env::var_os("CLAUDE_CONFIG_DIR")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| home.join(".claude")),
             codex_home,
             pi_sessions_root,
             grok_sessions_root: grok_home.join("sessions"),
@@ -104,8 +118,51 @@ impl SessionCatalogScanner {
             pi_sessions_root: home.join(".pi/agent/sessions"),
             grok_sessions_root: home.join(".grok/sessions"),
             opencode_binary: home.join("missing-opencode"),
-            home,
+            claude_home: home.join(".claude"),
         }
+    }
+
+    /// Scan default stores and authorized isolated profiles without starting a
+    /// Harness. Profile locations are resolved only on the executing device.
+    pub async fn scan_profiles(
+        &self,
+        workspace: &Path,
+        harnesses: &BTreeSet<HarnessKind>,
+        accounts: &[SessionAccount],
+    ) -> Result<SessionScanResult, String> {
+        use crate::headless::{HeadlessDriver, harness_account_env};
+        let mut result = self.scan(workspace, harnesses).await?;
+        for account in accounts
+            .iter()
+            .filter(|account| harnesses.contains(&account.harness))
+        {
+            let mut scanner = self.clone();
+            let (driver, profile_root) = match account.harness {
+                HarnessKind::Claude => (HeadlessDriver::Claude, &mut scanner.claude_home),
+                HarnessKind::Codex => (HeadlessDriver::Codex, &mut scanner.codex_home),
+                _ => return Err("isolated profiles require Claude Code or Codex".into()),
+            };
+            let (_, root) = harness_account_env(
+                driver,
+                &serde_json::json!({
+                    "harness_account_id": account.account_id,
+                    "harness_account_profile_kind": "isolated",
+                }),
+            )?
+            .ok_or("isolated profile did not resolve a directory")?;
+            *profile_root = root;
+            let mut found = scanner
+                .scan(workspace, &BTreeSet::from([account.harness]))
+                .await?;
+            for session in &mut found.sessions {
+                session.harness_account_id = Some(account.account_id.clone());
+                session.harness_account_name = Some(account.name.clone());
+            }
+            result.sessions.extend(found.sessions);
+            result.warnings.extend(found.warnings);
+        }
+        sort_sessions_newest_first(&mut result.sessions);
+        Ok(result)
     }
 
     pub async fn scan(
@@ -162,7 +219,7 @@ impl SessionCatalogScanner {
     }
 
     fn scan_claude(&self, workspace: &Path) -> Result<Vec<NativeSessionSummary>, String> {
-        let projects_root = self.home.join(".claude/projects");
+        let projects_root = self.claude_home.join("projects");
         let Ok(projects) = fs::read_dir(&projects_root) else {
             return Ok(Vec::new());
         };
@@ -194,6 +251,8 @@ impl SessionCatalogScanner {
                 };
                 sessions.push(NativeSessionSummary {
                     harness: HarnessKind::Claude,
+                    harness_account_id: None,
+                    harness_account_name: None,
                     native_session_id: id.clone(),
                     title: metadata
                         .get("customTitle")
@@ -233,7 +292,7 @@ impl SessionCatalogScanner {
             .map_err(|error| format!("cannot read Codex session index: {error}"))?;
             let mut statement = connection
                 .prepare(
-                    "SELECT id, title, cwd, updated_at, model_provider, git_branch, archived, model
+                    "SELECT id, title, cwd, updated_at, git_branch, archived, model
                      FROM threads
                      ORDER BY updated_at DESC, id DESC",
                 )
@@ -241,17 +300,18 @@ impl SessionCatalogScanner {
             let rows = statement
                 .query_map([], |row| {
                     let updated_at: i64 = row.get(3)?;
-                    let provider: String = row.get(4)?;
-                    let model: Option<String> = row.get(7)?;
+                    let model: Option<String> = row.get(6)?;
                     Ok(NativeSessionSummary {
                         harness: HarnessKind::Codex,
+                        harness_account_id: None,
+                        harness_account_name: None,
                         native_session_id: row.get(0)?,
                         title: row.get(1)?,
                         workspace_path: row.get(2)?,
                         updated_at: unix_time(updated_at),
-                        model: model.or_else(|| (!provider.is_empty()).then_some(provider)),
-                        branch: row.get(5)?,
-                        archived: row.get::<_, i64>(6)? != 0,
+                        model,
+                        branch: row.get(4)?,
+                        archived: row.get::<_, i64>(5)? != 0,
                     })
                 })
                 .map_err(|error| format!("cannot query Codex sessions: {error}"))?;
@@ -315,6 +375,8 @@ impl SessionCatalogScanner {
                 };
                 sessions.push(NativeSessionSummary {
                     harness: HarnessKind::Pi,
+                    harness_account_id: None,
+                    harness_account_name: None,
                     native_session_id: id.to_owned(),
                     title: header
                         .get("name")
@@ -366,6 +428,8 @@ impl SessionCatalogScanner {
                 };
                 sessions.push(NativeSessionSummary {
                     harness: HarnessKind::Grok,
+                    harness_account_id: None,
+                    harness_account_name: None,
                     native_session_id: id.to_owned(),
                     title: info
                         .get("title")
@@ -423,6 +487,8 @@ impl SessionCatalogScanner {
                 .unwrap_or_default();
             sessions.push(NativeSessionSummary {
                 harness: HarnessKind::OpenCode,
+                harness_account_id: None,
+                harness_account_name: None,
                 native_session_id: id.to_owned(),
                 title: value
                     .get("title")
@@ -539,6 +605,8 @@ mod tests {
     fn sessions_are_globally_sorted_newest_first_across_harnesses() {
         let session = |harness, id: &str, timestamp| NativeSessionSummary {
             harness,
+            harness_account_id: None,
+            harness_account_name: None,
             native_session_id: id.to_owned(),
             title: id.to_owned(),
             workspace_path: format!("/projects/{id}"),
@@ -786,6 +854,7 @@ mod tests {
         );
         assert_eq!(result.sessions[0].native_session_id, "thread-current");
         assert!(result.sessions[1].archived);
+        assert_eq!(result.sessions[1].model, None);
         assert_eq!(result.sessions[2].model.as_deref(), Some("gpt-5"));
         fs::remove_dir_all(home).ok();
     }

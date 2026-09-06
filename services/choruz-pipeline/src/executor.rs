@@ -20,7 +20,10 @@ use choruz_tools::registry::default_registry;
 use choruz_writer::{AgentResult, AgentResultStatus};
 
 use crate::config::PipelineConfig;
-use crate::instructions::ensure_claude_md;
+use choruz_host_runtime::inbox::{
+    IncomingAttachment, incoming_attachments, stage_incoming_attachments as stage_into_inbox,
+};
+use choruz_host_runtime::instructions::ensure_claude_md;
 
 // ---------------------------------------------------------------------------
 // Tool Gateway integration (audit #2)
@@ -1420,15 +1423,13 @@ async fn stage_incoming_attachments_from_tokens_file(
     gateway_base_url: &str,
     tokens_path: &std::path::Path,
 ) -> String {
-    let Some(attachments) = cmd.metadata.get("attachments").and_then(|v| v.as_array()) else {
-        return cmd.prompt.clone();
-    };
+    let attachments = incoming_attachments(&cmd.metadata);
     if attachments.is_empty() {
         return cmd.prompt.clone();
     }
 
-    // Read agent's own bearer token (same path the outbox upload uses).
-    // require_actor on /v1/attachments enforces caller == actor_id.
+    // The agent's own bearer token (the same file the outbox upload uses);
+    // `require_actor` on /v1/attachments enforces caller == actor_id.
     let agent_token = match tokio::fs::read_to_string(&tokens_path).await {
         Ok(raw) => serde_json::from_str::<serde_json::Value>(&raw)
             .ok()
@@ -1438,110 +1439,33 @@ async fn stage_incoming_attachments_from_tokens_file(
             None
         }
     };
-
-    let inbox_root = work_dir.join(".choruz-inbox");
-    let mut staged_lines: Vec<String> = Vec::new();
-
-    for att in attachments {
-        let att_id = match att.get("attachment_id").and_then(|v| v.as_str()) {
-            Some(s) => s,
-            None => continue,
-        };
-        let filename = att
-            .get("filename")
-            .and_then(|v| v.as_str())
-            .unwrap_or("attachment.bin");
-        let mime = att
-            .get("mime_type")
-            .and_then(|v| v.as_str())
-            .unwrap_or("application/octet-stream");
-        // Defence in depth: the filename comes from untrusted metadata, so
-        // strip anything that could escape the per-attachment directory.
-        let safe_name: String = filename
-            .chars()
-            .filter(|c| !matches!(c, '/' | '\\' | '\0'))
-            .collect();
-        let safe_name = if safe_name.is_empty() {
-            "attachment.bin".into()
-        } else {
-            safe_name
-        };
-
-        let dest_dir = inbox_root.join(att_id);
-        let dest_path = dest_dir.join(&safe_name);
-
-        // Skip re-download if already staged (message retries, multiple triggers).
-        let already = tokio::fs::metadata(&dest_path).await.is_ok();
-        if !already {
-            let Some(ref token) = agent_token else {
-                tracing::warn!(
-                    agent_id = %cmd.agent_id,
-                    attachment_id = att_id,
-                    "stage_incoming_attachments: no agent token available, skipping download"
-                );
-                continue;
-            };
-            let url = format!(
-                "{}/v1/attachments/{}?actor_id={}",
-                gateway_base_url.trim_end_matches('/'),
-                att_id,
-                cmd.agent_id,
-            );
-            let resp = reqwest::Client::new()
-                .get(&url)
-                .bearer_auth(token)
+    let client = reqwest::Client::new();
+    let base = gateway_base_url.trim_end_matches('/');
+    let fetch = |attachment: &IncomingAttachment| {
+        let url = format!(
+            "{base}/v1/attachments/{}?actor_id={}",
+            attachment.attachment_id, cmd.agent_id
+        );
+        let request = agent_token
+            .as_ref()
+            .map(|token| client.get(&url).bearer_auth(token));
+        async move {
+            let request = request.ok_or_else(|| "no agent token available".to_owned())?;
+            let response = request
                 .send()
-                .await;
-            let bytes = match resp {
-                Ok(r) if r.status().is_success() => match r.bytes().await {
-                    Ok(b) => b.to_vec(),
-                    Err(e) => {
-                        tracing::warn!(attachment_id = att_id, error = %e, "stage_incoming_attachments: body read failed");
-                        continue;
-                    }
-                },
-                Ok(r) => {
-                    tracing::warn!(attachment_id = att_id, status = %r.status(), "stage_incoming_attachments: download non-success");
-                    continue;
-                }
-                Err(e) => {
-                    tracing::warn!(attachment_id = att_id, error = %e, "stage_incoming_attachments: download HTTP error");
-                    continue;
-                }
-            };
-            if let Err(e) = tokio::fs::create_dir_all(&dest_dir).await {
-                tracing::warn!(attachment_id = att_id, error = %e, "stage_incoming_attachments: mkdir failed");
-                continue;
+                .await
+                .map_err(|error| format!("download HTTP error: {error}"))?;
+            if !response.status().is_success() {
+                return Err(format!("download returned HTTP {}", response.status()));
             }
-            if let Err(e) = tokio::fs::write(&dest_path, &bytes).await {
-                tracing::warn!(attachment_id = att_id, error = %e, "stage_incoming_attachments: write failed");
-                continue;
-            }
-            tracing::info!(
-                attachment_id = att_id,
-                path = %dest_path.display(),
-                size = bytes.len(),
-                mime,
-                "staged incoming attachment"
-            );
+            response
+                .bytes()
+                .await
+                .map(|bytes| bytes.to_vec())
+                .map_err(|error| format!("body read failed: {error}"))
         }
-
-        staged_lines.push(format!(
-            "- {} ({}): {}",
-            safe_name,
-            mime,
-            dest_path.display()
-        ));
-    }
-
-    if staged_lines.is_empty() {
-        return cmd.prompt.clone();
-    }
-    format!(
-        "{}\n\n[attached files available locally — read them as needed]\n{}",
-        cmd.prompt,
-        staged_lines.join("\n"),
-    )
+    };
+    stage_into_inbox(&cmd.prompt, work_dir, &attachments, fetch).await
 }
 
 /// Extract content from `{{CHORUZ_REPLY}}...{{/CHORUZ_REPLY}}` tags.

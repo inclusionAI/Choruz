@@ -29,4 +29,4 @@ Available entrypoints:
 - `smoke/`: real-driver smokes that need a Claude or Codex binary (`pnpm smoke:real-harness`)
 - `chaos/`: fault-injection scripts and their recovery checks (see `chaos/README.md`)
 - `perf/`: the k6 WebSocket baseline and its installer, driven by `perf_ws_smoke.sh`
-- `tests/`: shell tests for these scripts (`process_lifecycle.test.sh`, `web_e2e_env.test.sh`); CI runs them as the host lifecycle policy tests
+- `tests/`: shell tests for these scripts; `process_lifecycle.test.sh` includes HTTP readiness checks and runs in CI as the host lifecycle policy test

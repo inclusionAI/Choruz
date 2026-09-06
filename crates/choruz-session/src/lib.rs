@@ -33,4 +33,4 @@ pub use models::*;
 pub use retry::{
     DEFAULT_MAX_ATTEMPTS, MAX_BACKOFF_SECS, exponential_backoff_secs, is_exhausted, next_retry_at,
 };
-pub use store::PgSessionStore;
+pub use store::{PgSessionStore, runtime_host_metadata};

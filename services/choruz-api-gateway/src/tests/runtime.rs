@@ -342,6 +342,7 @@ async fn terminal_routes_do_not_write_conversation_events() {
     assert_eq!(ensure.status(), StatusCode::OK);
 
     let input = router
+        .clone()
         .oneshot(
             Request::builder()
                 .method(Method::POST)
@@ -358,7 +359,7 @@ async fn terminal_routes_do_not_write_conversation_events() {
     assert_eq!(input.status(), StatusCode::OK);
 
     for _ in 0..20 {
-        if codex_home_seen.exists() {
+        if fs::read_to_string(&codex_home_seen).is_ok_and(|value| value.contains("/codex-homes/")) {
             break;
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
@@ -467,6 +468,7 @@ async fn codex_disconnect_cleanup_captures_binding_local_jsonl_before_drop() {
     .expect("write session jsonl");
 
     let captured = crate::handlers_terminals::capture_codex_terminal_before_cleanup(
+        &crate::host_runtime::RuntimeHost::Local(crate::host_runtime::LocalHost::new()),
         &runtime,
         &binding.id,
         prepared,
@@ -991,6 +993,37 @@ async fn runtime_status_api_allows_workspace_humans_and_redacts_errors() {
 }
 
 #[tokio::test]
+async fn gateway_restores_tls_without_a_pairing_request() {
+    const CHILD: &str = "CHORUZ_TEST_FRESH_TLS_PROCESS";
+    if std::env::var_os(CHILD).is_some() {
+        assert!(rustls::crypto::CryptoProvider::get_default().is_none());
+        let _router = crate::router(choruz_application::ChatApp::new());
+        assert!(rustls::crypto::CryptoProvider::get_default().is_some());
+        let _config = rustls::ClientConfig::builder();
+        return;
+    }
+    // TLS selection is process-global; a subprocess proves cold-start behavior
+    // without borrowing another parallel test's pairing initialization.
+    let output = tokio::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "tests::runtime::gateway_restores_tls_without_a_pairing_request",
+            "--nocapture",
+        ])
+        .env(CHILD, "1")
+        .kill_on_drop(true)
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "cold-start TLS regression: {} {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
+#[tokio::test]
 async fn remote_control_pairing_redeem_and_revoke_round_trip() {
     let (gateway_url, mut gateway_events) = spawn_pairing_gateway().await;
     let _env = ChannelTaskEnvGuard::remote_control_with_gateway(&gateway_url);
@@ -1261,6 +1294,140 @@ async fn runtime_host_pairing_is_single_use_and_host_token_is_revocable() {
     assert_eq!(list_status, StatusCode::OK);
     assert_eq!(hosts[0]["name"], "Build Server West");
     assert_eq!(hosts[0]["status"], "online");
+
+    // A device answers the dashboard's requests over its host link, which
+    // it dials as a WebSocket carrying the host token in its first frame.
+    let base_url = serve_router(router.clone()).await;
+    let rejected = connect_host_link(&base_url, &host_id, "not-the-token").await;
+    assert!(
+        rejected.is_err(),
+        "a wrong host token must not open a link: {rejected:?}"
+    );
+    let mut device = connect_host_link(&base_url, &host_id, &host_token)
+        .await
+        .expect("open the host link");
+    let device_answers = tokio::spawn(async move {
+        while let Some(Ok(frame)) = device.next().await {
+            let Message::Text(text) = frame else { continue };
+            let call: Value = serde_json::from_str(&text).unwrap();
+            if call["kind"] != "call" {
+                continue;
+            }
+            let reply = match (
+                call["request"]["call"].as_str(),
+                call["request"]["request"]["op"].as_str(),
+            ) {
+                (Some("host"), Some("filesystem_list")) => json!({
+                    "kind": "result",
+                    "id": call["id"],
+                    "ok": {
+                        "path": call["request"]["request"]["path"],
+                        "parent": "/srv",
+                        "entries": [{"name": "app", "type": "directory", "path": "/srv/projects/app"}]
+                    }
+                }),
+                (Some("host"), Some("scan_sessions")) => json!({
+                    "kind": "result",
+                    "id": call["id"],
+                    "ok": {
+                        "workspace_path": "/srv/projects",
+                        "sessions": [{
+                            "harness": "claude",
+                            "native_session_id": "remote-claude-session",
+                            "title": "Remote Claude work",
+                            "workspace_path": "/srv/projects/app",
+                            "updated_at": "2026-09-03T12:00:00Z",
+                            "model": "claude-sonnet-4-5",
+                            "branch": "main",
+                            "archived": false
+                        }],
+                        "warnings": []
+                    }
+                }),
+                (Some("host"), Some("ensure_outbox_helper")) => json!({
+                    "kind": "result",
+                    "id": call["id"],
+                }),
+                other => json!({
+                    "kind": "result",
+                    "id": call["id"],
+                    "error": {"kind": "validation", "message": format!("unexpected call {other:?}")}
+                }),
+            };
+            device
+                .send(Message::Text(reply.to_string().into()))
+                .await
+                .unwrap();
+        }
+    });
+
+    let (operation_status, operation_result) = api_json_payload_request(
+        router.clone(),
+        &operator,
+        Method::POST,
+        format!("/v1/runtime-hosts/{host_id}/operations"),
+        json!({
+            "kind": "filesystem.list",
+            "request": { "path": "/srv/projects", "include_files": false }
+        }),
+    )
+    .await;
+    assert_eq!(operation_status, StatusCode::OK, "{operation_result}");
+    assert_eq!(operation_result["path"], "/srv/projects");
+    assert_eq!(operation_result["entries"][0]["name"], "app");
+
+    let (import_status, imported) = api_json_payload_request(
+        router.clone(),
+        &operator,
+        Method::POST,
+        "/v1/workspace-sessions/import".into(),
+        json!({
+            "company_id": operator.workspace_id,
+            "runtime_host_id": host_id,
+            "workspace_path": "/srv/projects",
+            "sessions": [{
+                "harness": "claude",
+                "native_session_id": "remote-claude-session",
+                "workspace_path": "/srv/projects/app"
+            }]
+        }),
+    )
+    .await;
+    assert_eq!(
+        import_status,
+        StatusCode::OK,
+        "remote import failed: {imported}"
+    );
+    let imported_binding_id = imported["imported"][0]["binding_id"].as_str().unwrap();
+    let row = client
+        .query_one(
+            "SELECT config_json, runtime_host_id FROM agent_runtime_bindings b
+             JOIN native_session_import n ON n.binding_id = b.id
+             WHERE b.id = $1",
+            &[&imported_binding_id],
+        )
+        .await
+        .unwrap();
+    let config: Value = row.get("config_json");
+    assert_eq!(config["runtime_host_id"], host_id);
+    assert_eq!(
+        config["interaction_mode"], "terminal",
+        "an imported session on a remote device is a terminal DM like a local one"
+    );
+    device_answers.abort();
+    let (offline_status, offline) = api_json_payload_request(
+        router.clone(),
+        &operator,
+        Method::POST,
+        format!("/v1/runtime-hosts/{host_id}/operations"),
+        json!({ "kind": "filesystem.home", "request": {} }),
+    )
+    .await;
+    assert_eq!(offline_status, StatusCode::CONFLICT, "{offline}");
+    assert_eq!(
+        row.get::<_, Option<String>>("runtime_host_id").as_deref(),
+        Some(host_id.as_str())
+    );
 
     let (invalid_binding_status, _) = api_json_payload_request(
         router.clone(),
@@ -1662,6 +1829,227 @@ async fn runtime_host_pairing_is_single_use_and_host_token_is_revocable() {
             .any(|candidate| candidate.command_id == queued_for_remote.command_id)
     );
 
+    let runtime_dir = isolated_test_dir("runtime-host-outbox-mirror");
+    let _runtime_env = EnvVarGuard::set_path("CHORUZ_RUNTIME_DIR", &runtime_dir);
+    let ship = |binding_id: &str, token: &str, commands: Value| {
+        Request::builder()
+            .method(Method::POST)
+            .uri(format!(
+                "/v1/runtime-hosts/{host_id}/bindings/{binding_id}/outbox"
+            ))
+            .header("x-choruz-host-token", token)
+            .header(CONTENT_TYPE, "application/json")
+            .body(Body::from(json!({ "commands": commands }).to_string()))
+            .unwrap()
+    };
+    let shipped_command = json!([{
+        "name": "cmd-00000000000000000001-a.json",
+        "command": { "type": "share_file", "group": "cross-host-build", "path": "out/report.md" },
+        "files": [{ "path": "out/report.md", "content": "IyBSZXBvcnQK" }]
+    }]);
+    let wrong_token = router
+        .clone()
+        .oneshot(ship(
+            imported_binding_id,
+            "not-a-host-token",
+            shipped_command.clone(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(wrong_token.status(), StatusCode::UNAUTHORIZED);
+    let local_binding = router
+        .clone()
+        .oneshot(ship(
+            binding["id"].as_str().unwrap(),
+            &host_token,
+            shipped_command.clone(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        local_binding.status(),
+        StatusCode::FORBIDDEN,
+        "a host ships only for bindings placed on it"
+    );
+    let shipped = router
+        .clone()
+        .oneshot(ship(
+            imported_binding_id,
+            &host_token,
+            shipped_command.clone(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(shipped.status(), StatusCode::NO_CONTENT);
+    let mirror = choruz_host_runtime::outbox::remote_outbox_dir(imported_binding_id, &host_id);
+    assert_eq!(
+        mirror,
+        runtime_dir
+            .join("remote-outbox")
+            .join(imported_binding_id)
+            .join(&host_id),
+        "the mirror is keyed by binding and by the device that shipped"
+    );
+    let mirrored_command: Value = serde_json::from_slice(
+        &fs::read(
+            mirror
+                .join(".choruz-outbox")
+                .join("new")
+                .join("cmd-00000000000000000001-a.json"),
+        )
+        .expect("the shipped command lands in the mirror"),
+    )
+    .unwrap();
+    assert_eq!(mirrored_command["type"], "share_file");
+    assert_eq!(
+        fs::read_to_string(mirror.join("out").join("report.md")).unwrap(),
+        "# Report\n",
+        "the shared file travels with its command, base64 on the wire"
+    );
+    let mirrored_command_path = mirror
+        .join(".choruz-outbox/new")
+        .join("cmd-00000000000000000001-a.json");
+    fs::remove_file(&mirrored_command_path).expect("simulate the pipeline draining the command");
+    let retried = router
+        .clone()
+        .oneshot(ship(imported_binding_id, &host_token, shipped_command))
+        .await
+        .unwrap();
+    assert_eq!(retried.status(), StatusCode::NO_CONTENT);
+    assert!(
+        !mirrored_command_path.exists(),
+        "a lost acknowledgement must not republish an accepted command"
+    );
+
+    // A file attached to a turn on the device is fetched by the host with
+    // its token, but only for a command placed on it and only a file that
+    // command names; the agent's own attachment access still applies.
+    let (upload_status, uploaded) = api_json_payload_request(
+        router.clone(),
+        &operator,
+        Method::POST,
+        "/v1/attachments".into(),
+        json!({
+            "actor_id": operator.id,
+            "filename": "brief.txt",
+            "content_type": "text/plain",
+            "data_base64": "YXR0YWNoZWQtZGF0YQ=="
+        }),
+    )
+    .await;
+    assert_eq!(upload_status, StatusCode::CREATED, "{uploaded}");
+    let attachment_id = uploaded["id"].as_str().unwrap().to_owned();
+    client
+        .execute(
+            "INSERT INTO conversation_events
+               (conversation_id, seq, event_id, event_type, sender_id, content, content_type,
+                metadata, client_msg_id, created_at)
+             VALUES ($1, 9001, 'attached-message', 'message', $2, 'see attached', 'text/plain',
+                     $3, 'attached-message-client', NOW())",
+            &[
+                &conversation.id,
+                &operator.id,
+                &json!({ "attachment_id": attachment_id }),
+            ],
+        )
+        .await
+        .unwrap();
+    let attachment_metadata = json!({
+        "attachments": [{
+            "attachment_id": attachment_id,
+            "filename": "brief.txt",
+            "mime_type": "text/plain"
+        }]
+    });
+    let mut on_device = attachment_metadata.clone();
+    on_device["runtime_host_id"] = json!(host_id);
+    let remote_with_attachment = sessions
+        .insert_command(&InsertCommand {
+            command_id: Uuid::now_v7().to_string(),
+            route_id: Uuid::now_v7().to_string(),
+            session_key: format!("{}:{}", agent.id, conversation.id),
+            agent_id: agent.id.clone(),
+            conversation_id: conversation.id.clone(),
+            message_id: Uuid::now_v7().to_string(),
+            turn_id: Uuid::now_v7().to_string(),
+            prompt: "Read the attached brief".into(),
+            max_attempts: 3,
+            metadata: on_device,
+        })
+        .await
+        .unwrap();
+    let local_with_attachment = sessions
+        .insert_command(&InsertCommand {
+            command_id: Uuid::now_v7().to_string(),
+            route_id: Uuid::now_v7().to_string(),
+            session_key: format!("{}:{}", agent.id, conversation.id),
+            agent_id: agent.id.clone(),
+            conversation_id: conversation.id.clone(),
+            message_id: Uuid::now_v7().to_string(),
+            turn_id: Uuid::now_v7().to_string(),
+            prompt: "Read the attached brief locally".into(),
+            max_attempts: 3,
+            metadata: attachment_metadata,
+        })
+        .await
+        .unwrap();
+    let fetch_attachment = |command_id: &str, attachment: &str| {
+        Request::builder()
+            .method(Method::GET)
+            .uri(format!(
+                "/v1/runtime-hosts/{host_id}/commands/{command_id}/attachments/{attachment}"
+            ))
+            .header("x-choruz-host-token", &host_token)
+            .body(Body::empty())
+            .unwrap()
+    };
+    let local_command = router
+        .clone()
+        .oneshot(fetch_attachment(
+            &local_with_attachment.command_id,
+            &attachment_id,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        local_command.status(),
+        StatusCode::FORBIDDEN,
+        "a host fetches only for turns placed on it"
+    );
+    let unnamed = router
+        .clone()
+        .oneshot(fetch_attachment(
+            &remote_with_attachment.command_id,
+            "att-not-on-this-message",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        unnamed.status(),
+        StatusCode::FORBIDDEN,
+        "a host fetches only the files the turn names"
+    );
+    let fetched = router
+        .clone()
+        .oneshot(fetch_attachment(
+            &remote_with_attachment.command_id,
+            &attachment_id,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(fetched.status(), StatusCode::OK);
+    assert_eq!(
+        fetched
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok()),
+        Some("text/plain")
+    );
+    assert_eq!(
+        to_bytes(fetched.into_body(), usize::MAX).await.unwrap(),
+        "attached-data".as_bytes()
+    );
+
     let (revoke_status, _) = api_json_payload_request(
         router.clone(),
         &operator,
@@ -1908,12 +2296,6 @@ async fn harness_account_binding_trigger_rejects_unverified_models() {
     );
 }
 
-// NOTE: websocket_stream_receives_message_events was removed along with the
-// `/v1/ws/events/{principal_id}` polling endpoint (see lib.rs comment above
-// the `/v1/ws/terminals/...` route). Real-time message push now lives on the
-// pipeline's fanout server (crate choruz-fanout, port :3020, path /ws/fanout)
-// and is exercised by that crate's own tests rather than by choruz-api-gateway here.
-
 #[tokio::test]
 async fn bootstrap_carries_runtime_bindings_and_the_feed_names_new_ones() {
     let database = TestDatabase::create().await;
@@ -2068,4 +2450,305 @@ async fn bootstrap_carries_runtime_bindings_and_the_feed_names_new_ones() {
     .await;
     assert_eq!(detail_status, StatusCode::OK);
     assert_eq!(detail["interaction_mode"], "message");
+}
+
+/// Serve a router on a loopback port for the WebSocket routes a `oneshot`
+/// request cannot exercise; the state, including the host link hub, stays
+/// shared with every clone of the router.
+async fn serve_router(router: axum::Router) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+        .unwrap()
+    });
+    format!("http://{address}")
+}
+
+type DeviceSocket =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+/// Dial the host link as a device and complete the hello/welcome exchange.
+async fn connect_host_link(
+    base_url: &str,
+    host_id: &str,
+    host_token: &str,
+) -> Result<DeviceSocket, String> {
+    let url = format!(
+        "{}{}",
+        base_url.replacen("http://", "ws://", 1),
+        choruz_host_runtime::link::LINK_PATH
+    );
+    let (mut socket, _) = tokio_tungstenite::connect_async(&url)
+        .await
+        .map_err(|error| error.to_string())?;
+    socket
+        .send(Message::Text(
+            json!({
+                "kind": "hello",
+                "host_id": host_id,
+                "host_token": host_token,
+                "protocol": choruz_host_runtime::link::LINK_PROTOCOL,
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .map_err(|error| error.to_string())?;
+    match tokio::time::timeout(Duration::from_secs(5), socket.next()).await {
+        Ok(Some(Ok(Message::Text(text)))) => {
+            let frame: Value = serde_json::from_str(&text).map_err(|error| error.to_string())?;
+            if frame["kind"] == "welcome" {
+                Ok(socket)
+            } else {
+                Err(format!("unexpected first frame {frame}"))
+            }
+        }
+        other => Err(format!("link was not welcomed: {other:?}")),
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn remote_terminal_binding_streams_through_the_host_link() {
+    let _env = ChannelTaskEnvGuard::remote_control();
+    let _guard = api_test_env_lock().lock().await;
+    let root = isolated_test_dir("remote-terminal-link");
+    let workspace = root.join("workspace");
+    fs::create_dir_all(&workspace).expect("create workspace");
+    let fake_cli = root.join("fake-claude");
+    write_executable_script(
+        &fake_cli,
+        "#!/bin/sh\nprintf 'READY\\r\\n'\nIFS= read -r line\nprintf 'ECHO:%s\\r\\n' \"$line\"\nsleep 30\n",
+    );
+
+    let database = TestDatabase::create().await;
+    let runtime = RuntimeStore::new(database.database_url.clone());
+    let app = choruz_application::ChatApp::new();
+    let auth = LocalAuthConfig::from_env();
+    let operator = auth.ensure_operator_sync(&app).unwrap();
+    let agent = app
+        .create_agent(CreateAgentRequest {
+            actor_id: operator.id.clone(),
+            name: "Remote Claude".into(),
+            scopes: vec!["messages:read".into(), "messages:write".into()],
+            workspace_id: None,
+            channel_visibility: None,
+        })
+        .unwrap();
+    let conversation = app
+        .create_direct_conversation(CreateDirectConversationRequest {
+            actor_id: operator.id.clone(),
+            peer_principal_id: agent.principal.id.clone(),
+            workspace_id: None,
+        })
+        .unwrap();
+    seed_principal_to_db(&database.database_url, &operator).await;
+    seed_principal_to_db(&database.database_url, &agent.principal).await;
+    seed_conversation_to_db(&database.database_url, &conversation).await;
+    let (client, connection) = tokio_postgres::connect(&database.database_url, NoTls)
+        .await
+        .unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    client
+        .execute(
+            "INSERT INTO company (id, name, slug, owner_id) VALUES ($1, 'Remote Terminals', $1, $2)",
+            &[&operator.workspace_id, &operator.id],
+        )
+        .await
+        .unwrap();
+    client
+        .execute(
+            "INSERT INTO company_member (company_id, principal_id) VALUES ($1, $2)",
+            &[&operator.workspace_id, &operator.id],
+        )
+        .await
+        .unwrap();
+    let router = runtime_router_with_db(app, runtime.clone(), &database.database_url);
+
+    let (_, pairing) = api_json_payload_request(
+        router.clone(),
+        &operator,
+        Method::POST,
+        format!(
+            "/v1/companies/{}/runtime-host-pairings",
+            operator.workspace_id
+        ),
+        Value::Null,
+    )
+    .await;
+    let mut redeem = Request::builder()
+        .method(Method::POST)
+        .uri("/v1/runtime-host-pairings/redeem")
+        .header(CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            json!({ "code": pairing["code"], "name": "Laptop" }).to_string(),
+        ))
+        .unwrap();
+    redeem.extensions_mut().insert(axum::extract::ConnectInfo(
+        "127.0.0.1:41001".parse::<std::net::SocketAddr>().unwrap(),
+    ));
+    let response = router.clone().oneshot(redeem).await.unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let paired: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    let host_id = paired["host"]["id"].as_str().unwrap().to_owned();
+    let host_token = paired["host_token"].as_str().unwrap().to_owned();
+
+    let binding = runtime
+        .create_binding(CreateBindingInput {
+            conversation_id: conversation.id.clone(),
+            agent_principal_id: agent.principal.id.clone(),
+            driver_type: DriverType::ClaudeTerminal,
+            workspace_path: workspace.to_string_lossy().to_string(),
+            git_worktree_path: None,
+            config_json: json!({
+                "binary_path": fake_cli.to_string_lossy(),
+                "runtime_host_id": host_id,
+            }),
+            audit_actor: Some(audit_actor(&operator)),
+        })
+        .await
+        .expect("create remote terminal binding");
+    let base_url = serve_router(router.clone()).await;
+
+    // Without a connected device the terminal cannot open.
+    let unreachable = tokio_tungstenite::connect_async(format!(
+        "{}/v1/ws/terminals/{}?token={}",
+        base_url.replacen("http://", "ws://", 1),
+        binding.id,
+        session_token(&operator)
+    ))
+    .await;
+    assert!(
+        unreachable.is_err(),
+        "terminal opened without a device link"
+    );
+
+    // The device: the same code the connector runs, on this machine.
+    let device_socket = connect_host_link_raw(&base_url).await;
+    let (mut device_sink, mut device_source) = device_socket.split();
+    let (outbound_tx, mut outbound_rx) = tokio::sync::mpsc::channel::<String>(64);
+    let (inbound_tx, inbound_rx) = tokio::sync::mpsc::channel::<String>(64);
+    tokio::spawn(async move {
+        while let Some(text) = outbound_rx.recv().await {
+            if device_sink.send(Message::Text(text.into())).await.is_err() {
+                break;
+            }
+        }
+    });
+    tokio::spawn(async move {
+        while let Some(Ok(message)) = device_source.next().await {
+            if let Message::Text(text) = message
+                && inbound_tx.send(text.to_string()).await.is_err()
+            {
+                break;
+            }
+        }
+    });
+    let pool = choruz_host_runtime::new_terminal_pool();
+    let device = tokio::spawn(choruz_host_runtime::link::run_device_link(
+        outbound_tx,
+        inbound_rx,
+        choruz_host_runtime::link::DeviceIdentity {
+            host_id: host_id.clone(),
+            host_token,
+        },
+        pool.clone(),
+    ));
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !router_state_has_link(&base_url, &operator, &host_id).await {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("device link registers");
+
+    let (mut terminal, _) = tokio_tungstenite::connect_async(format!(
+        "{}/v1/ws/terminals/{}?token={}&cols=80&rows=24",
+        base_url.replacen("http://", "ws://", 1),
+        binding.id,
+        session_token(&operator)
+    ))
+    .await
+    .expect("open the remote terminal");
+    let mut transcript = Vec::new();
+    read_terminal_until(&mut terminal, &mut transcript, "READY").await;
+    terminal
+        .send(Message::Text("hello over the link\n".into()))
+        .await
+        .unwrap();
+    let seen =
+        read_terminal_until(&mut terminal, &mut transcript, "ECHO:hello over the link").await;
+    assert!(seen.contains("READY"), "{seen}");
+    assert!(
+        choruz_host_runtime::live_terminal_exists(&pool, &binding.id),
+        "the terminal runs on the device, not on the gateway"
+    );
+
+    terminal.close(None).await.unwrap();
+    drop(terminal);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while choruz_host_runtime::live_terminal_exists(&pool, &binding.id) {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("closing the browser socket closes the device terminal");
+    device.abort();
+}
+
+async fn read_terminal_until(
+    terminal: &mut DeviceSocket,
+    transcript: &mut Vec<u8>,
+    needle: &str,
+) -> String {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if String::from_utf8_lossy(transcript).contains(needle) {
+                break;
+            }
+            match terminal.next().await {
+                Some(Ok(Message::Binary(bytes))) => transcript.extend_from_slice(&bytes),
+                Some(Ok(_)) => {}
+                other => panic!("terminal closed before {needle}: {other:?}"),
+            }
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("timed out waiting for {needle}"));
+    String::from_utf8_lossy(transcript).into_owned()
+}
+
+async fn connect_host_link_raw(base_url: &str) -> DeviceSocket {
+    let url = format!(
+        "{}{}",
+        base_url.replacen("http://", "ws://", 1),
+        choruz_host_runtime::link::LINK_PATH
+    );
+    tokio_tungstenite::connect_async(&url)
+        .await
+        .expect("dial the host link")
+        .0
+}
+
+/// Whether the host link hub knows the device: the host list reports the
+/// device online once its hello was accepted.
+async fn router_state_has_link(
+    base_url: &str,
+    operator: &choruz_domain::Principal,
+    host_id: &str,
+) -> bool {
+    let client = reqwest::Client::new();
+    let response = client
+        .post(format!("{base_url}/v1/runtime-hosts/{host_id}/operations"))
+        .bearer_auth(session_token(operator))
+        .json(&json!({ "kind": "filesystem.home", "request": {} }))
+        .send()
+        .await;
+    matches!(response, Ok(response) if response.status() == reqwest::StatusCode::OK)
 }

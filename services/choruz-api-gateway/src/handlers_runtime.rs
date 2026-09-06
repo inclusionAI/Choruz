@@ -166,7 +166,7 @@ async fn validate_runtime_host(
     Ok(Some(runtime_host_id.to_owned()))
 }
 
-async fn validate_harness_account(
+pub(crate) async fn validate_harness_account(
     state: &ApiState,
     workspace_id: &str,
     driver_type: DriverType,
@@ -314,7 +314,7 @@ pub(crate) fn effective_interaction_mode(driver_type: &DriverType, config_json: 
         .filter(|mode| !mode.trim().is_empty())
     {
         Some(mode) => mode.to_owned(),
-        None if crate::handlers_terminals::is_terminal_driver(driver_type) => "terminal".to_owned(),
+        None if choruz_host_runtime::is_terminal_driver(driver_type) => "terminal".to_owned(),
         None => "message".to_owned(),
     }
 }

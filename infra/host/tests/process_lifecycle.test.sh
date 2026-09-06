@@ -5,6 +5,23 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 # shellcheck disable=SC1091
 source "${ROOT_DIR}/infra/host/common.sh"
+bash "${SCRIPT_DIR}/http_readiness.test.sh"
+python3 "${SCRIPT_DIR}/web_dev_env.test.py"
+
+runtime_path="$(host_service_runtime_dir)"
+if [[ "${runtime_path}" != "$(host_service_runtime_dir)" ]]; then
+  echo "services resolved different runtime roots" >&2
+  exit 1
+fi
+if [[ "$(CHORUZ_CODEX_RUNTIME_DIR=/tmp/explicit-runtime host_service_runtime_dir)" != /tmp/explicit-runtime ]]; then
+  echo "service runtime override was ignored" >&2
+  exit 1
+fi
+if [[ "$(grep -c 'CHORUZ_RUNTIME_DIR="${SERVICE_RUNTIME_DIR}"' "${ROOT_DIR}/infra/host/dev.sh")" -ne 2 ]] \
+  || ! grep -q 'CHORUZ_RUNTIME_DIR="$(host_service_runtime_dir)"' "${ROOT_DIR}/infra/host/pipeline_watchdog.sh"; then
+  echo "API, pipeline, and watchdog must share the outbox runtime root" >&2
+  exit 1
+fi
 
 if ! printf 'cchoruz-api-gateway\n' | grep -Eq "${CHORUZ_API_GATEWAY_PROCESS_REGEX}"; then
   echo "API gateway process record does not match its executable" >&2

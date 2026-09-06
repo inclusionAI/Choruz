@@ -9,10 +9,15 @@
     "deploy": "wrangler deploy",
     "dev": "wrangler dev"
   },
+  "dependencies": {
+    "better-auth": "1.7.3"
+  },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260825.1",
+    "@types/ws": "8.18.1",
     "typescript": "^5.9.2",
-    "vitest": "^3.2.4",
-    "wrangler": "^4.32.0"
+    "vitest": "^3.2.7",
+    "wrangler": "^4.32.0",
+    "ws": "8.21.0"
   }
 }

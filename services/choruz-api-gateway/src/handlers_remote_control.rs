@@ -298,8 +298,12 @@ async fn gateway_ticket(
                 .json(&body)
                 .send()
                 .await
+                .map_err(|error| {
+                    tracing::warn!(%scope, %role, error = %error.without_url(), "gateway capability request failed");
+                })
                 .ok()?;
             if !response.status().is_success() {
+                tracing::warn!(%scope, %role, status = %response.status(), "gateway capability request rejected");
                 return None;
             }
             response
@@ -408,7 +412,9 @@ pub(crate) async fn load_bridge_material(
             (gateway_url, session_key, session_id, ticket)
         })
     else {
-        return Ok(None);
+        return Err(ApiError(AppError::Internal(
+            "remote-control transport capability unavailable; retrying bridge setup".into(),
+        )));
     };
     Ok(Some(BridgeMaterial {
         gateway_url,

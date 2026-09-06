@@ -15,6 +15,8 @@ choruz-store = { path = "../choruz-store" }
 # transitively via choruz-store.
 deadpool-postgres.workspace = true
 chrono.workspace = true
+chrono-tz.workspace = true
+croner.workspace = true
 hex.workspace = true
 rand.workspace = true
 serde.workspace = true

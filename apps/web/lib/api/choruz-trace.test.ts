@@ -108,10 +108,15 @@ describe("trace.start + span.end", () => {
   it("returns a span whose end() pushes a complete entry to the ring with durationMs", () => {
     const before = traceRing().length;
     const span = trace.start("op_x", { initial: true });
+    const started = traceRing().at(-1)!;
     span.end({ extra: 42 });
     const ring = traceRing();
-    expect(ring.length).toBe(before + 1);
+    expect(ring.length).toBe(before + 2);
     const entry = ring[ring.length - 1];
+    expect(started.data?.phase).toBe("started");
+    expect(entry.data).toMatchObject({ phase: "finished", outcome: "succeeded" });
+    expect(entry.eventId).not.toBe(started.eventId);
+    expect(entry.spanId).toBe(started.spanId);
     expect(entry.name).toBe("op_x");
     expect(typeof entry.durationMs).toBe("number");
     expect(entry.durationMs).toBeGreaterThanOrEqual(0);
@@ -160,11 +165,11 @@ describe("trace.start + span.end", () => {
     });
   });
 
-  it("sets data to undefined when both start data and end extras are empty", () => {
+  it("records the lifecycle even without custom properties", () => {
     const span = trace.start("op_z");
     span.end();
     const entry = traceRing()[traceRing().length - 1];
-    expect(entry.data).toBeUndefined();
+    expect(entry.data).toEqual({ phase: "finished", outcome: "succeeded" });
   });
 
   it("returned span carries the active traceId", () => {

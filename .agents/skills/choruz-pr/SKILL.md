@@ -5,6 +5,8 @@ description: Use before opening or completing a pull request in this repository 
 
 # Opening a pull request
 
+When loaded from a personal skills directory, resolve repository links from this skill's canonical `.agents/skills/choruz-pr/` location in the active Choruz checkout, not from the installed copy.
+
 The rule of this repository (docs/testing/pr-test-policy.md): **CI runs what the
 changed paths need; the type you declare tells reviewers what tests to expect and
 labels can only add gates.** This skill walks a change from "done on a branch" to
@@ -34,24 +36,53 @@ tests, and fill the template's "Seams touched" section from that walk. A seam
 left unchecked carries a one-line reason ("no new table", "core route, no
 plugin gate"); the reviewer reads the section against the diff.
 
-## 2. Add the minimum tests the row requires
+## 2. Prove the affected behaviour
 
 Do this before anything else. A `bugfix` without a failing-then-passing
 regression test is not ready. Put e2e coverage next to the feature's spec so
 `select_e2e_specs.py` picks it up (add a rule there when you add a spec for a
 new feature area).
 
+Apply the policy's [behaviour acceptance evidence](../../../docs/testing/pr-test-policy.md#behaviour-acceptance-evidence) before selecting tests: name the observable contract, trace its production entry to the owner of the result, and select only the ordinary scenarios affected by the change. Read the assertions, not just test names. Record the scenario, boundary replacements and observed red/green evidence in the PR; document unavailable evidence without calling it passed. An existing test that stays green when the claimed behaviour is absent does not satisfy the type's requirement.
+
 ## Naming new packages and files
 
 Rust packages are `choruz-<role>`: directory equals the package name, the crate ident is `choruz_<role>`. npm packages are `@choruz/<role>`. Libraries live in `crates/`, long-running processes in `services/`, human entry points (`choruz-cli`, `choruz-replay`, `web`) in `apps/`. Files: Rust `snake_case.rs`, web `kebab-case.ts(x)`, tests beside the module (`foo.test.ts`, `tests/<topic>.rs`), migrations `V0NN__name.sql`. A name states a role, never a layer or a generic word.
 
-## 3. Simplify the diff
+## 3. Independently audit the change
+
+Before simplify, delegate a read-only audit to one independent GPT-5.6 Terra
+agent (`gpt-5.6-terra`) that did not implement the change. Explicitly select
+this model for the first audit and every re-audit; never inherit the author's
+model. Have it read and use
+[choruz-pre-simplify-audit](../choruz-pre-simplify-audit/SKILL.md), which owns
+the criteria for skill execution evidence, code structure and test effectiveness.
+
+Supply the user request and constraints, base/head revisions, current diff
+including relevant uncommitted and untracked files, actual command results or
+artifact paths, and prior findings. Never send credentials. The auditor
+independently determines applicable requirements; reading skills alone is not
+proof they were executed.
+
+If the verdict is FAIL or UNVERIFIED, the implementer resolves the due-now gaps
+and supplies updated code and evidence. Repeat audit → remediation → re-audit
+until the auditor explicitly returns PASS before entering simplify. Prefer the
+same auditor; a replacement must also use `gpt-5.6-terra` and receive prior
+findings. The implementer cannot self-certify closure.
+
+Missing access, unavailable delegation or an unavailable Terra model leaves
+the gate unverified: report the blocker, do not silently substitute self-review
+or another model. The auditor does not edit, push, merge or recursively
+delegate. Keep the verdict and reviewed diff identity in the PR's existing
+evidence section. This gate does not replace simplify, tests or final CI.
+
+## 4. Simplify the diff
 
 Run `/simplify` on the branch (or review the diff yourself if the skill is not
 available): remove dead code, extra abstractions and stray debug output the
 work left behind. Commit the result.
 
-## 4. See what CI will run, and run it locally
+## 5. See what CI will run, and run it locally
 
 [choruz-pre-push-checks](../choruz-pre-push-checks/SKILL.md) owns the selection rules; the short version:
 
@@ -67,11 +98,17 @@ locally costs a CI round trip and a reviewer's trust.
 Local e2e needs the host stack (`infra/host/web_e2e.sh` starts PostgreSQL,
 the API, the pipeline and the web app itself); see `docs/testing/pr-test-policy.md`.
 
-## 5. Open the PR
+If simplify or a later fix changes the reviewed scope or invalidates evidence,
+have the independent agent recheck the affected requirements and rerun the
+affected checks. An earlier verdict does not certify a different diff.
+
+## 6. Open the PR
 
 - Fill `.github/PULL_REQUEST_TEMPLATE.md` honestly: the type from step 1, the
-  tests added (or why none), what you ran in step 4, the risk. If an AI agent
+  tests added (or why none), what you ran in step 5, the risk. Include the
+  independent audit verdict, evidence references and closure of any gaps. If an AI agent
   wrote part of it, say so.
+- Complete the acceptance evidence before declaring the PR ready. Do not use a green CI run to override a known broken contract or conceal missing required evidence; the policy owns how to report limitations.
 - Labels are how the type becomes a gate:
   - type `api`/`database` → add label `database`
   - type `security`/`auth` → add label `security`
@@ -87,7 +124,7 @@ the API, the pipeline and the web app itself); see `docs/testing/pr-test-policy.
 - Commit messages: Conventional Commits, and no model names or session URLs in
   titles or bodies beyond the trailers this repository already uses.
 
-## 6. Merge only on green, then clean up the branch
+## 7. Merge only on green, then clean up the branch
 
 - The required check is **`CI (linux) required`**. Wait for it; do not merge
   on partial results and do not ask for a bypass.
@@ -131,8 +168,10 @@ leaving stale remote refs behind:
 ## Checklist
 
 - [ ] Type picked from the policy table; stricter row when in doubt
-- [ ] Tests the row requires are in the diff
+- [ ] Affected contracts map to meaningful assertions through the required entry paths; negative-control results and limitations are recorded
+- [ ] GPT-5.6 Terra used choruz-pre-simplify-audit for the first audit and every required re-audit of workflow evidence, structure and tests; its explicit PASS closes all due-now gaps before simplify
 - [ ] `/simplify` (or a manual pass) applied
+- [ ] Later changes received a scoped recheck where they invalidated the audit verdict or test evidence
 - [ ] `.agents/skills/choruz-pr/pr-plan.sh` run, and every listed local command passed
 - [ ] Template filled; `database` / `security` / `ci-full` label added when the type calls for it
 - [ ] For `feature`, `api` / `database`, `security` / `auth`: "Seams touched" filled from `docs/adding-a-feature.md`, every unchecked seam with its reason

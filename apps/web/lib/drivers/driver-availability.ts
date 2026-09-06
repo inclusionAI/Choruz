@@ -3,16 +3,9 @@ import { execFile } from "node:child_process";
 import path from "node:path";
 import { promisify } from "node:util";
 
-import type { DriverId } from "../groups/team-templates";
+import { DRIVER_BINARIES, resolveDriverBinary, type DriverBinaryEnvVar, type DriverId } from "./driver-registry";
 
 export type DriverAvailabilityStatus = "available" | "unavailable";
-export type DriverBinaryEnvVar =
-  | "CHORUZ_CLAUDE_BINARY"
-  | "CHORUZ_CODEX_BINARY"
-  | "CHORUZ_PI_BINARY"
-  | "CHORUZ_GROK_BINARY"
-  | "CHORUZ_OPENCODE_BINARY"
-  | "CHORUZ_MATHCODE_BINARY";
 
 export type DriverAvailabilityItem = {
   label: string;
@@ -41,9 +34,6 @@ const execFileAsync = promisify(execFile);
 type DriverDefinition = {
   label: string;
   driverId: DriverId;
-  envVar?: DriverBinaryEnvVar;
-  runtimeEnvVar?: string;
-  defaultBinary?: string;
   setupHint: string;
 };
 
@@ -51,56 +41,36 @@ const DRIVER_DEFINITIONS: DriverDefinition[] = [
   {
     label: "Claude",
     driverId: "claude_terminal",
-    envVar: "CHORUZ_CLAUDE_BINARY",
-    runtimeEnvVar: "CHORUZ_CLAUDE_CLI_PATH",
-    defaultBinary: "claude",
     setupHint: "Install the Claude CLI or set CHORUZ_CLAUDE_BINARY to an executable path.",
   },
   {
     label: "Codex Terminal",
     driverId: "codex_terminal",
-    envVar: "CHORUZ_CODEX_BINARY",
-    runtimeEnvVar: "CHORUZ_CODEX_CLI_PATH",
-    defaultBinary: "codex",
     setupHint: "Install the Codex CLI or set CHORUZ_CODEX_BINARY to an executable path.",
   },
   {
     label: "Codex (headless)",
     driverId: "codex_exec",
-    envVar: "CHORUZ_CODEX_BINARY",
-    runtimeEnvVar: "CHORUZ_CODEX_CLI_PATH",
-    defaultBinary: "codex",
     setupHint: "Install the Codex CLI or set CHORUZ_CODEX_BINARY to an executable path.",
   },
   {
     label: "Pi Agent",
     driverId: "pi_terminal",
-    envVar: "CHORUZ_PI_BINARY",
-    runtimeEnvVar: "CHORUZ_PI_CLI_PATH",
-    defaultBinary: "pi",
     setupHint: "Install Pi Agent or set CHORUZ_PI_BINARY to an executable path.",
   },
   {
     label: "Grok Build",
     driverId: "grok_terminal",
-    envVar: "CHORUZ_GROK_BINARY",
-    runtimeEnvVar: "CHORUZ_GROK_CLI_PATH",
-    defaultBinary: "grok",
     setupHint: "Install Grok Build or set CHORUZ_GROK_BINARY to an executable path.",
   },
   {
     label: "OpenCode",
     driverId: "opencode_terminal",
-    envVar: "CHORUZ_OPENCODE_BINARY",
-    runtimeEnvVar: "CHORUZ_OPENCODE_CLI_PATH",
-    defaultBinary: "opencode",
     setupHint: "Install OpenCode or set CHORUZ_OPENCODE_BINARY to an executable path.",
   },
   {
     label: "MathCode",
     driverId: "mathcode_terminal",
-    envVar: "CHORUZ_MATHCODE_BINARY",
-    defaultBinary: "mathcode",
     setupHint: "Install MathCode or set CHORUZ_MATHCODE_BINARY to an executable path.",
   },
   {
@@ -109,14 +79,6 @@ const DRIVER_DEFINITIONS: DriverDefinition[] = [
     setupHint: "Provide an HTTPS webhook endpoint when creating the agent.",
   },
 ];
-
-export function resolveDriverBinary(driverId: DriverId, env: DriverAvailabilityEnv = process.env): string | undefined {
-  const definition = DRIVER_DEFINITIONS.find((item) => item.driverId === driverId);
-  if (!definition?.envVar) return undefined;
-  return env[definition.envVar]?.trim()
-    || (definition.runtimeEnvVar ? env[definition.runtimeEnvVar]?.trim() : undefined)
-    || definition.defaultBinary;
-}
 
 export async function getDriverAvailability(options: {
   env?: DriverAvailabilityEnv;
@@ -141,7 +103,7 @@ export async function getDriverAvailability(options: {
         } satisfies DriverAvailabilityItem;
       }
 
-      const binaryPath = resolveDriverBinary(definition.driverId, env) ?? definition.defaultBinary ?? "";
+      const binaryPath = resolveDriverBinary(definition.driverId, env) ?? "";
       let available = binaryPath ? await checkBinary(binaryPath) : false;
       let runtimeReason: string | undefined;
       let runtimeSetupHint: string | undefined;
@@ -160,7 +122,7 @@ export async function getDriverAvailability(options: {
           ? `${definition.label} CLI is available.`
           : `${definition.label} CLI was not found.`),
         setupHint: runtimeSetupHint ?? definition.setupHint,
-        envVar: definition.envVar,
+        envVar: DRIVER_BINARIES[definition.driverId]?.envVar,
       } satisfies DriverAvailabilityItem;
     }),
   );

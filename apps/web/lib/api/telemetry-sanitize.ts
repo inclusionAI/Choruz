@@ -23,6 +23,11 @@ function telemetryKeyIsSensitive(key: string): boolean {
       "attachmentname",
       "path",
       "paths",
+      "authenticationcode",
+      "authorizationcode",
+      "devicecode",
+      "pairingcredential",
+      "credential",
     ].includes(compact) ||
     compact.endsWith("filename") ||
     compact.includes("secret") ||

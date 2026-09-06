@@ -5,6 +5,8 @@ description: Use when reviewing a pull request in this repository; orients the r
 
 # Reviewing a Choruz PR
 
+When loaded from a personal skills directory, resolve repository links from this skill's canonical `.agents/skills/choruz-code-review/` location in the active Choruz checkout, not from the installed copy.
+
 **This skill is guidance, not a complete checklist.** Fetch the PR's live base and exact head, run `bash .agents/skills/choruz-pr/pr-plan.sh <base>` on the head to see which surfaces the diff reaches, then read the diff and enough surrounding code to understand the design. Prioritise correctness, data isolation, lifecycle, security and broken required behaviour over style; a short review with one substantiated blocker is better than a list of nits.
 
 ## Sources of truth
@@ -35,7 +37,7 @@ description: Use when reviewing a pull request in this repository; orients the r
 - **Enforcement:** follow every permission denial and workspace check to the operation that executes it; exercise direct and alternate callers (API, connector, CLI, bridge) that could bypass the UI.
 - **Scope and necessity:** map each abstraction, option, compatibility path and defensive copy to a current consumer. Challenge speculative generality and unrelated features.
 - **Real entry path:** e2e tests exercise the shipped web app against the real API and pipeline through `infra/host/web_e2e.sh`, not a mocked route where the behaviour under test lives server-side.
-- **Test strength:** assertions fail on the intended regression and verify external state (rows, events, files, exits) rather than restating the implementation. A test that owns no data is a future flake (apply [choruz-ci-test-reliability](../choruz-ci-test-reliability/SKILL.md)).
+- **Test strength:** apply the policy's [behaviour acceptance evidence](../../../docs/testing/pr-test-policy.md#behaviour-acceptance-evidence) to the actual assertions and fixtures. Ask whether the test remains green with the claimed behaviour removed; inspect the negative-control outcome for a bugfix or guard. Verify the real entry and result owner, affected device/account differences and ordinary state transitions. Flag missing evidence even when CI is green, without treating every theoretical scenario as required. Apply [choruz-ci-test-reliability](../choruz-ci-test-reliability/SKILL.md) to owned-resource risks.
 - **Selector rules:** a new e2e spec for a new feature area gets a rule in `.github/scripts/select_e2e_specs.py`, or CI will never select it.
 - **Seams touched match the diff:** for a `feature`, `api` / `database` or `security` / `auth` PR, read the template's "Seams touched" section against [docs/adding-a-feature.md](../../../docs/adding-a-feature.md). A new route without a `require_*` helper, a new table without `workspace_id`, a new spec without a selector rule, or a ticked seam the diff does not contain is a finding.
 - **Implemented notes match shipped reality:** paths, names and mechanisms in the note agree with the implementation.

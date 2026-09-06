@@ -11,6 +11,7 @@ import {
 import { persistAgentToken as defaultPersistAgentToken } from "./agent-tokens";
 import {
   createAgent,
+  apiBaseUrl,
   createDirectConversation,
   createRuntimeBinding,
   rotateAgentSecret,
@@ -447,7 +448,7 @@ export async function provisionAgent(
   const body = input.body;
   const agentName = body.name.trim();
   const isWebhookDriver = body.driver_type === "webhook_agent";
-  const harnessAccount = await resolveHarnessAccount(body, deps);
+  const harnessAccount = await resolveHarnessAccount(input.sessionToken, body, deps);
   const roleTemplateProvenance =
     input.roleTemplateProvenance ?? roleTemplateProvenanceFromRequestBody(body);
 
@@ -519,14 +520,17 @@ export async function provisionAgent(
     });
   }
 
+  const remoteHostId = body.runtime_host_id?.trim() || null;
   const workspace = await step("create_workspace", async () => {
     const result = isWebhookDriver
       ? await createWebhookWorkspace(agent.id)
-      : await createLocalWorkspace(body, agentName, input.jobContext);
+      : remoteHostId
+        ? await createRemoteWorkspace(input.sessionToken, remoteHostId, body, agentName, deps)
+        : await createLocalWorkspace(body, agentName, input.jobContext);
     return { value: result as unknown as JsonValue };
   }) as unknown as WorkspaceResult;
 
-  if (!isWebhookDriver) {
+  if (!isWebhookDriver && !remoteHostId) {
     await step("write_instructions", async () => {
       const instructionsFile = instructionFileForDriver(body.driver_type);
       const fullInstructions = await buildInstructionsFromTemplate(
@@ -550,7 +554,7 @@ export async function provisionAgent(
     });
   }
 
-  await step("install_outbox_helper", async () => {
+  if (!remoteHostId) await step("install_outbox_helper", async () => {
     await installOutboxHelper(workspace.workspacePath);
     return {
       value: {
@@ -757,6 +761,88 @@ async function createLocalWorkspace(
   };
 }
 
+/**
+ * Provision the workspace on the runtime host that runs the agent: the
+ * device creates the directory (a generated one under its own
+ * `~/.choruz/workspaces` unless a path was given), writes the rendered
+ * instruction file and the selected skills, and installs the outbox helper.
+ */
+async function createRemoteWorkspace(
+  sessionToken: string,
+  runtimeHostId: string,
+  body: ProvisionRequestBody,
+  agentName: string,
+  deps: Pick<AgentProvisioningDeps, "fetch">,
+): Promise<WorkspaceResult> {
+  const instructionsFile = instructionFileForDriver(body.driver_type);
+  const files: Array<{ path: string; content: string }> = [{
+    path: instructionsFile,
+    content: await buildInstructionsFromTemplate(agentName, body.instructions ?? "", body.driver_type),
+  }];
+  for (const skill of await readSelectedSkills(body.skill_paths)) files.push(skill);
+  const response = await deps.fetch(
+    `${apiBaseUrl()}/v1/runtime-hosts/${encodeURIComponent(runtimeHostId)}/operations`,
+    {
+      method: "POST",
+      headers: { Authorization: `Bearer ${sessionToken}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        kind: "workspace.provision",
+        request: {
+          ...(body.workspace_path?.trim() ? { workspace_path: body.workspace_path.trim() } : {}),
+          name: agentName,
+          files,
+        },
+      }),
+    },
+  );
+  if (!response.ok) {
+    let message = `The runtime host could not create the workspace (HTTP ${response.status})`;
+    try {
+      const failure = (await response.json()) as { error?: string };
+      if (typeof failure.error === "string" && failure.error.trim()) message = failure.error;
+    } catch {
+      // Keep the status-based message.
+    }
+    throw new Error(message);
+  }
+  const provisioned = (await response.json()) as { workspace_path?: string };
+  if (!provisioned.workspace_path) throw new Error("The runtime host did not report the workspace path");
+  return {
+    workspacePath: provisioned.workspace_path,
+    gitWorktreePath: null,
+    mode: body.workspace_path?.trim() ? "custom" : "generated",
+    generatedByChoruz: !body.workspace_path?.trim(),
+  };
+}
+
+/** The selected skills as files under `.claude/skills/`, read from this device. */
+async function readSelectedSkills(skillPaths: string[] | undefined): Promise<Array<{ path: string; content: string }>> {
+  if (!Array.isArray(skillPaths) || skillPaths.length === 0) return [];
+  const files: Array<{ path: string; content: string }> = [];
+  const home = process.env.HOME;
+  const readTree = async (root: string, prefix: string) => {
+    for (const entry of await fs.readdir(root, { withFileTypes: true })) {
+      const source = path.join(root, entry.name);
+      const target = path.posix.join(prefix, entry.name);
+      if (entry.isDirectory()) await readTree(source, target);
+      else if (entry.isFile()) files.push({ path: target, content: await fs.readFile(source, "utf-8") });
+    }
+  };
+  for (const sp of skillPaths) {
+    const resolved = path.resolve(sp);
+    if (!home || (resolved !== home && !resolved.startsWith(home + "/"))) continue;
+    try {
+      const stat = await fs.stat(resolved);
+      const basename = path.basename(resolved);
+      if (stat.isDirectory()) await readTree(resolved, path.posix.join(".claude", "skills", basename));
+      else if (stat.isFile()) files.push({ path: path.posix.join(".claude", "skills", basename), content: await fs.readFile(resolved, "utf-8") });
+    } catch {
+      // Unreadable skill entries are skipped, as they are for a local workspace.
+    }
+  }
+  return files;
+}
+
 export function instructionFileForDriver(driverType: string): "CLAUDE.md" | "AGENTS.md" {
   // Imported Claude sessions use the non-provisionable `claude_print`
   // driver, but retain Claude Code's native instruction-file convention.
@@ -832,25 +918,12 @@ function runtimeBindingConfig(
     };
   }
 
-  const binaryPath = {
-    claude_terminal: process.env.CHORUZ_CLAUDE_BINARY || "claude",
-    codex_exec: process.env.CHORUZ_CODEX_BINARY || "codex",
-    codex_app_server: process.env.CHORUZ_CODEX_BINARY || "codex",
-    codex_terminal: process.env.CHORUZ_CODEX_BINARY || "codex",
-    pi_terminal: process.env.CHORUZ_PI_BINARY || "pi",
-    grok_terminal: process.env.CHORUZ_GROK_BINARY || "grok",
-    opencode_terminal: process.env.CHORUZ_OPENCODE_BINARY || "opencode",
-    mathcode_terminal: process.env.CHORUZ_MATHCODE_BINARY || "mathcode",
-  }[body.driver_type];
   return {
     is_primary: true,
-    binary_path: binaryPath,
     original_driver: body.driver_type,
     mention_aliases: [agentName],
     ...(body.model?.trim() ? { model: body.model.trim() } : {}),
-    ...(body.runtime_host_id?.trim()
-      ? { runtime_host_id: body.runtime_host_id.trim() }
-      : {}),
+    ...(body.runtime_host_id?.trim() ? { runtime_host_id: body.runtime_host_id.trim() } : {}),
     ...(harnessAccount
       ? {
           harness_account_id: harnessAccount.id,
@@ -866,13 +939,14 @@ function runtimeBindingConfig(
  * was chosen for a Claude Code or Codex agent.
  */
 async function resolveHarnessAccount(
+  sessionToken: string,
   body: ProvisionRequestBody,
   deps: Pick<AgentProvisioningDeps, "getHarnessAccount" | "defaultHarnessAccount">,
 ): Promise<HarnessAccount | null> {
   if (!body.harness_account_id) {
     if (body.driver_type !== "claude_terminal" && body.driver_type !== "codex_terminal") return null;
     if (!body.workspace_id) return null;
-    return deps.defaultHarnessAccount({
+    return deps.defaultHarnessAccount(sessionToken, {
       companyId: body.workspace_id,
       runtimeHostId: body.runtime_host_id?.trim() || null,
       driverType: body.driver_type,

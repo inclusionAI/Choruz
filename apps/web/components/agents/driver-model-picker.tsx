@@ -13,6 +13,7 @@ export function DriverModelPicker({
   label = "Model",
   disabled = false,
   accountModels,
+  runtimeHostId = "",
 }: {
   driver: DriverId;
   model: string;
@@ -20,6 +21,7 @@ export function DriverModelPicker({
   label?: string;
   disabled?: boolean;
   accountModels?: DriverModel[];
+  runtimeHostId?: string;
 }) {
   const id = useId().replaceAll(":", "");
   const [result, setResult] = useState<DriverModelDiscovery | null>(null);
@@ -34,7 +36,8 @@ export function DriverModelPicker({
     const controller = new AbortController();
     setLoading(true);
     setResult(null);
-    void transportFetch(`/api/drivers/models?driver_type=${encodeURIComponent(driver)}`, {
+    const hostQuery = runtimeHostId ? `&runtime_host_id=${encodeURIComponent(runtimeHostId)}` : "";
+    void transportFetch(`/api/drivers/models?driver_type=${encodeURIComponent(driver)}${hostQuery}`, {
       signal: controller.signal,
     })
       .then(async (response) => {
@@ -60,7 +63,7 @@ export function DriverModelPicker({
         if (!controller.signal.aborted) setLoading(false);
       });
     return () => controller.abort();
-  }, [accountModels, driver]);
+  }, [accountModels, driver, runtimeHostId]);
 
   if (driver === "webhook_agent") return null;
 

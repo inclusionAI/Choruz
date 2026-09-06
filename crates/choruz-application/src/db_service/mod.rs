@@ -4,15 +4,25 @@
 //! with direct PostgreSQL queries. During the migration, both ChatApp
 //! (in-memory) and DbService (DB-backed) coexist in ApiState.
 
+mod activity;
 mod audit;
+pub use activity::{ActivityCursor, ActivityFilter, ActivitySource};
 mod companies;
 mod conversations;
 mod events;
 mod group_workflow_tasks;
+mod interactions;
+pub use interactions::{InteractionPage, InteractionRecord};
 pub(crate) mod helpers;
 mod messages;
+mod online;
+pub use online::OnlineIdentity;
+mod online_groups;
+pub use online_groups::OnlineGroupLink;
 mod principals;
 mod sync;
+mod telemetry;
+pub use telemetry::TelemetryEvent;
 
 use std::collections::HashMap;
 use std::sync::Mutex;

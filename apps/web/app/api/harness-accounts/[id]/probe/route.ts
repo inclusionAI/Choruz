@@ -14,7 +14,7 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
   const account = await getHarnessAccount(id, companyId);
   if (!account) return NextResponse.json({ error: "Harness account not found" }, { status: 404 });
   try {
-    return NextResponse.json(await probeHarnessAccount(account));
+    return NextResponse.json(await probeHarnessAccount(auth.token, account));
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "Account probe failed" }, { status: 409 });
   }

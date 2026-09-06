@@ -14,15 +14,19 @@ A device is paired with one single-use credential, `v1.<128-bit id>.<128-bit sec
 
 The remote dashboard is the `/remote` page of any Choruz web app (`apps/web/app/remote`). It needs no session cookie: it takes the Cloud Gateway URL, pairing credential and device name from the link or form, removes the secret-bearing URL fragment from browser history, runs the device side of the pairing handshake, keeps the resulting credentials in `localStorage` per gateway origin, and then installs the relay transport and renders the dashboard. Reopening the page reconnects without pairing again; **Disconnect** forgets the pairing, and a device revoked on the host is told so and returned to the form.
 
-To control another Choruz computer from an existing Choruz Dashboard, open **Actions → Remote Control**, paste the credential printed by the other computer, and choose **Connect**: the dashboard opens its own `/remote` page with the credential in the fragment. A browser with no Choruz installed uses a hosted dashboard's `/remote` page; the Cloud Gateway redirects `GET /` and `/remote` there when its `REMOTE_DASHBOARD_URL` variable is set, and otherwise answers with the address to open.
+To add another Choruz computer from an existing Choruz Dashboard, select the destination Company, open **Actions → Remote Control**, name the computer, paste the credential printed by that computer, and choose **Add device**. The first encrypted connection installs a persistent reverse connector on the other computer; after that it appears in **Machines**, **Harness Accounts**, **Create Agent**, and **Import Sessions**. **Machines → Open remote dashboard** still opens the complete dashboard of that computer in a new tab when direct remote operation is useful. A browser with no Choruz installed uses a hosted dashboard's `/remote` page; the Cloud Gateway redirects `GET /` and `/remote` there when its `REMOTE_DASHBOARD_URL` variable is set, and otherwise answers with the address to open.
+
+The controlling computer needs no inbound port on the controlled computer. It creates a second one-time Remote Control credential and a Company runtime-host code, sends both inside the first encrypted session, and the controlled computer redeems them through a reverse encrypted relay. Saved connector credentials stay on the controlled computer in `CHORUZ_CONNECTOR_CONFIG_DIR`, defaulting to `~/.choruz/connectors/`. The controlled API Gateway discovers new configs while running, supervises one connector per config, and restarts a crashed connector with bounded backoff. Revoking the Machine invalidates its host token and prevents further commands or filesystem operations.
 
 ## Network transport
 
 Remote Control uses the Cloud Gateway so paired browsers can reconnect from any network. A future direct-LAN transport should only be exposed after its discovery, authentication, fallback, and browser compatibility paths have end-to-end coverage.
 
-## Import Sessions and Create Agent from a paired browser
+## Device-scoped accounts, imports and Agents
 
-The paired browser's dashboard is the host's dashboard, so **Import Sessions** and **Create Agent** behave exactly as they do locally: the scan, the import and the provisioning run on the host through the same `/api/*` routes, relayed inside encrypted frames. The Cloud Gateway never sees a workspace path, session metadata or selected IDs in plaintext. Scanning is read-only and never launches a Harness; imported sessions resume only when messaged; provisioning secrets never reach the browser.
+Every device selector uses the same Company `runtime_host` identity. **This computer** executes locally; every named online Machine executes through its connector. Harness Accounts stores the account binding on the selected device. Create Agent selects device, account, model and workspace in that order. Import Sessions browses and scans the selected device's filesystem, then re-scans before importing so a browser cannot invent a native session or move it outside the chosen root. Imported remote Agents are message-driven and resume their native session on that same connector when messaged.
+
+All device operations are encrypted Remote Control frames. The Cloud Gateway never sees a workspace path, session metadata, account data, selected IDs, prompts, or results in plaintext.
 
 ## Dashboard relay
 

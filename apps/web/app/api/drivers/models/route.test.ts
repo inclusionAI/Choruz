@@ -6,12 +6,31 @@ import { discoverDriverModels } from "../../../../lib/drivers/driver-models";
 import { GET } from "./route";
 
 vi.mock("../../../../lib/api/api-auth", () => ({ requireAuth: vi.fn() }));
-vi.mock("../../../../lib/drivers/driver-models", () => ({ discoverDriverModels: vi.fn() }));
+vi.mock("../../../../lib/drivers/driver-models", async (importOriginal) => ({ ...await importOriginal<typeof import("../../../../lib/drivers/driver-models")>(), discoverDriverModels: vi.fn() }));
 
 describe("/api/drivers/models", () => {
   afterEach(() => {
     vi.clearAllMocks();
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it("parses the target's CLI catalog without scanning controller models", async () => {
+    vi.mocked(requireAuth).mockResolvedValue({ token: "session-token", claims: { principal_id: "user-a", workspace_id: "ws-a", display_name: "Alice", expires_at_epoch_s: 1 } });
+    const request = vi.fn(async () => Response.json({ stdout: "fixture/device-b-model\n" }));
+    vi.stubGlobal("fetch", request);
+    const response = await GET(new NextRequest("http://localhost/api/drivers/models?driver_type=opencode_terminal&runtime_host_id=device-b"));
+    expect(await response.json()).toMatchObject({ models: [{ id: "fixture/device-b-model" }], status: "available" });
+    expect(discoverDriverModels).not.toHaveBeenCalled();
+    expect(request).toHaveBeenCalledWith(expect.stringContaining("/runtime-hosts/device-b/operations"), expect.objectContaining({ body: JSON.stringify({ kind: "drivers.inspect", request: { driver_type: "opencode_terminal" } }) }));
+  });
+
+  it("does not replace an offline device with controller models", async () => {
+    vi.mocked(requireAuth).mockResolvedValue({ token: "session-token", claims: { principal_id: "user-a", workspace_id: "ws-a", display_name: "Alice", expires_at_epoch_s: 1 } });
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ error: "device disconnected" }, { status: 409 })));
+    const response = await GET(new NextRequest("http://localhost/api/drivers/models?driver_type=opencode_terminal&runtime_host_id=device-b"));
+    expect(response.status).toBe(409);
+    expect(discoverDriverModels).not.toHaveBeenCalled();
   });
 
   it("returns account-specific models for a supported driver", async () => {

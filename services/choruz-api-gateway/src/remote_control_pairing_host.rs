@@ -38,7 +38,6 @@ pub(crate) struct PairingHost {
 }
 
 pub(crate) async fn connect_and_spawn(state: ApiState, host: PairingHost) -> Result<(), String> {
-    install_tls_provider()?;
     let endpoint = socket_url(&host.gateway_url, &host.gateway_ticket)?;
     let (socket, _) = connect_async(endpoint)
         .await
@@ -97,21 +96,6 @@ async fn maintain_pairing(
 
 fn reconnect_delay(attempt: u32) -> Duration {
     Duration::from_secs(2u64.saturating_pow(attempt.min(3)).min(5))
-}
-
-fn install_tls_provider() -> Result<(), String> {
-    if rustls::crypto::CryptoProvider::get_default().is_some() {
-        return Ok(());
-    }
-    if rustls::crypto::ring::default_provider()
-        .install_default()
-        .is_ok()
-        || rustls::crypto::CryptoProvider::get_default().is_some()
-    {
-        Ok(())
-    } else {
-        Err("initialize TLS cryptography provider".into())
-    }
 }
 
 async fn serve_pairing(

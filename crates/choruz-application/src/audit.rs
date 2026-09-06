@@ -1,6 +1,3 @@
-use choruz_common::AppResult;
-use serde_json::json;
-
 use crate::{ChatApp, MetricsSnapshot, PhaseStatus};
 
 impl ChatApp {
@@ -21,24 +18,5 @@ impl ChatApp {
             audit_logs_total: state.audit_logs.len(),
             event_backlog_total: state.events.values().map(Vec::len).sum(),
         }
-    }
-
-    pub fn audit_attachment_upload(
-        &self,
-        actor_id: &str,
-        attachment_id: &str,
-        filename: &str,
-    ) -> AppResult<()> {
-        let mut state = self.inner.write().expect("lock poisoned");
-        let actor = self.require_active_principal(&state, actor_id)?;
-        self.record_audit(
-            &mut state,
-            &actor,
-            "attachment.uploaded",
-            "attachment",
-            attachment_id,
-            json!({ "filename": filename }),
-        );
-        Ok(())
     }
 }

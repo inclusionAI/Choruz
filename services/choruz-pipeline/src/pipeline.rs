@@ -20,16 +20,12 @@
 //! Retry scheduler (choruz-session)
 //!   polls retry_scheduled commands -> re-dispatch
 //!
-//! Fanout loop (choruz-fanout + PgEventSource)
-//!   polls conversation_events -> pushes to subscribed clients
-//!
-//! WebSocket fanout HTTP server (choruz-fanout)
+//! Health, readiness and metrics HTTP server
 //! ```
 
 use std::sync::Arc;
 
 use axum::routing::get;
-use choruz_fanout::{FanoutGateway, InMemoryCursorStore};
 use choruz_router::{RouterConfig, run_router_loop};
 use choruz_session::PgSessionStore;
 use choruz_store::{CdcPoller, CdcPollerConfig, EventStore};
@@ -38,7 +34,6 @@ use tokio::sync::mpsc;
 
 use crate::config::PipelineConfig;
 use crate::executor::ExecutorContext;
-use crate::pg_event_source::PgEventSource;
 use crate::pg_member_provider::{PgDecisionSink, PgMemberProvider};
 use crate::pg_result_store::PgResultStore;
 
@@ -238,31 +233,14 @@ pub async fn run_pipeline(config: PipelineConfig) {
     });
 
     // -----------------------------------------------------------------------
-    // 7. Fanout loop: real PgEventSource backed by conversation_events table
+    // 7. Health, readiness and metrics HTTP server
     // -----------------------------------------------------------------------
-    let fanout_source = PgEventSource::new(event_store.clone());
-    let fanout_cursors = InMemoryCursorStore::new();
-    let fanout_gateway = Arc::new(FanoutGateway::new(fanout_source, fanout_cursors));
+    let http_host = config.metrics_host.clone();
+    let http_port = config.metrics_port;
 
-    let fanout_gw_loop = Arc::clone(&fanout_gateway);
-    let fanout_task = tokio::spawn(async move {
-        fanout_gw_loop
-            .run_fanout_loop(std::time::Duration::from_secs(2))
-            .await;
-    });
-
-    // -----------------------------------------------------------------------
-    // 8. WebSocket fanout HTTP server
-    // -----------------------------------------------------------------------
-    let ws_host = config.metrics_host.clone();
-    let ws_port = config.metrics_port;
-
-    let ws_state = choruz_fanout::WsFanoutState {
-        gateway: Arc::clone(&fanout_gateway),
-    };
     let readiness_event_store = event_store.clone();
     let readiness_session_store = session_store.clone();
-    let ws_routes = choruz_fanout::ws_fanout_routes(ws_state)
+    let http_routes = axum::Router::new()
         .route("/healthz", get(crate::meta::liveness))
         .route("/metrics", get(crate::meta::metrics))
         .route(
@@ -275,28 +253,28 @@ pub async fn run_pipeline(config: PipelineConfig) {
             }),
         );
 
-    let ws_task = tokio::spawn(async move {
-        let addr = format!("{ws_host}:{ws_port}");
-        tracing::info!(%addr, "ws fanout server starting");
+    let http_task = tokio::spawn(async move {
+        let addr = format!("{http_host}:{http_port}");
+        tracing::info!(%addr, "pipeline HTTP server starting");
 
         let listener = match tokio::net::TcpListener::bind(&addr).await {
             Ok(l) => l,
             Err(e) => {
-                tracing::error!(error = %e, %addr, "failed to bind ws server");
+                tracing::error!(error = %e, %addr, "failed to bind pipeline HTTP server");
                 return;
             }
         };
 
-        if let Err(e) = axum::serve(listener, ws_routes.into_make_service()).await {
-            tracing::error!(error = %e, "ws server error");
+        if let Err(e) = axum::serve(listener, http_routes.into_make_service()).await {
+            tracing::error!(error = %e, "pipeline HTTP server error");
         }
     });
 
     // -----------------------------------------------------------------------
-    // 9. Wait for any task to exit (fatal)
+    // 8. Wait for any task to exit (fatal)
     // -----------------------------------------------------------------------
     tracing::info!(
-        "choruz-pipeline running: cdc_poller + router + dispatch + writer + lease_monitor + retry + cron + outbox_watcher + fanout(pg) + ws"
+        "choruz-pipeline running: cdc_poller + router + dispatch + writer + lease_monitor + retry + cron + outbox_watcher + http"
     );
 
     tokio::select! {
@@ -321,11 +299,8 @@ pub async fn run_pipeline(config: PipelineConfig) {
         r = outbox_watcher_task => {
             tracing::error!(?r, "outbox watcher task exited");
         }
-        r = fanout_task => {
-            tracing::error!(?r, "fanout task exited");
-        }
-        r = ws_task => {
-            tracing::error!(?r, "ws server task exited");
+        r = http_task => {
+            tracing::error!(?r, "pipeline HTTP server task exited");
         }
     }
 

@@ -30,6 +30,28 @@ vi.mock("../../../../lib/agents/agent-provisioning-idempotency", async (importOr
 });
 
 describe("/api/agents/provision", () => {
+  it("leaves a remote workspace path to the selected device's validator", async () => {
+    vi.stubEnv("HOME", "/controller-home");
+    vi.mocked(requireAuth).mockResolvedValue({ token: "session-token", claims: {
+      principal_id: "human-1", workspace_id: "workspace-1", display_name: "Alice", expires_at_epoch_s: 1,
+    } });
+    vi.mocked(provisionAgent).mockResolvedValue({} as Awaited<ReturnType<typeof provisionAgent>>);
+    const body = { name: "Remote helper", instructions: "Help with tasks.", driver_type: "claude_terminal", runtime_host_id: "host-b", workspace_path: "/target-home/project" };
+    const response = await POST(new NextRequest("http://localhost/api/agents/provision", { method: "POST", body: JSON.stringify(body) }));
+    expect(response.status).toBe(201);
+    expect(provisionAgent).toHaveBeenCalledWith(expect.objectContaining({ body }));
+  });
+
+  it("still rejects a local workspace outside the controller home", async () => {
+    vi.stubEnv("HOME", "/controller-home");
+    vi.mocked(requireAuth).mockResolvedValue({ token: "session-token", claims: {
+      principal_id: "human-1", workspace_id: "workspace-1", display_name: "Alice", expires_at_epoch_s: 1,
+    } });
+    const response = await POST(new NextRequest("http://localhost/api/agents/provision", { method: "POST", body: JSON.stringify({ name: "Local helper", instructions: "Help with tasks.", driver_type: "claude_terminal", workspace_path: "/target-home/project" }) }));
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: "Workspace path must be under /controller-home" });
+  });
+
   afterEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllEnvs();

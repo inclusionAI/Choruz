@@ -241,7 +241,7 @@ function MeasuredMessageRow({
 export type MessageListProps = {
   messages: ChatMessage[];
   principal: Principal;
-  agents: Principal[];
+  principals: Principal[];
   activeConv: Conversation | null;
   isTerminalChat: boolean;
   thinkingAgents: Set<string>;
@@ -259,6 +259,8 @@ export type MessageListProps = {
   hasOlderMessages?: boolean;
   loadingOlderMessages?: boolean;
   onLoadOlderMessages?: () => Promise<void>;
+  navigationTarget?: string | null;
+  onNavigationComplete?: () => void;
 };
 
 // ---------------------------------------------------------------------------
@@ -268,7 +270,7 @@ export type MessageListProps = {
 export function MessageList({
   messages: rawMessages,
   principal,
-  agents,
+  principals,
   activeConv,
   isTerminalChat,
   thinkingAgents,
@@ -283,6 +285,8 @@ export function MessageList({
   hasOlderMessages = false,
   loadingOlderMessages = false,
   onLoadOlderMessages,
+  navigationTarget = null,
+  onNavigationComplete,
 }: MessageListProps) {
   // Deduplicate messages by id (IDB + polling can produce dupes)
   const messages = useMemo(() => {
@@ -298,6 +302,13 @@ export function MessageList({
   const containerRef = useRef<HTMLDivElement>(null);
   const activeConversationIdRef = useRef(activeConv?.id);
   activeConversationIdRef.current = activeConv?.id;
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const scrollRequestRef = useRef(0);
+  useEffect(() => {
+    scrollRequestRef.current++;
+  }, [navigationTarget]);
+  useEffect(() => () => { scrollRequestRef.current++; }, [activeConv?.id]);
+  useEffect(() => { setHistoryError(null); }, [activeConv?.id]);
 
   // ---- Mobile long-press for reply button ----
   const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -357,7 +368,7 @@ export function MessageList({
   const scrollToBottom = useCallback((behavior: ScrollBehavior = "smooth") => {
     requestAnimationFrame(() => {
       const el = containerRef.current;
-      if (el) {
+      if (el && wasNearBottomRef.current) {
         el.scrollTop = el.scrollHeight;
       }
     });
@@ -381,34 +392,39 @@ export function MessageList({
   }, []);
 
   // ---- Scroll handler ----
+  const loadHistory = useCallback(() => {
+    const el = containerRef.current;
+    if (!el || !hasOlderMessages || loadingOlderMessages || !onLoadOlderMessages) return;
+    setHistoryError(null);
+    const previousHeight = el.scrollHeight;
+    const previousTop = el.scrollTop;
+    const requestedConversationId = activeConv?.id;
+    const preservePosition = !navigationTarget;
+    void onLoadOlderMessages().then(() => {
+      requestAnimationFrame(() => {
+        const current = containerRef.current;
+        if (current && preservePosition && activeConversationIdRef.current === requestedConversationId) {
+          current.scrollTop = preservePrependScrollTop(
+            previousTop,
+            previousHeight,
+            current.scrollHeight,
+          );
+        }
+      });
+    }).catch(() => {
+      if (activeConversationIdRef.current === requestedConversationId) {
+        setHistoryError("Could not load older messages.");
+      }
+    });
+  }, [activeConv?.id, hasOlderMessages, loadingOlderMessages, onLoadOlderMessages, navigationTarget]);
+
   const onScroll = useCallback(() => {
     const el = containerRef.current;
     if (!el) return;
     setScrollTop(el.scrollTop);
-    wasNearBottomRef.current = isNearBottom();
-    if (
-      el.scrollTop < 200 &&
-      hasOlderMessages &&
-      !loadingOlderMessages &&
-      onLoadOlderMessages
-    ) {
-      const previousHeight = el.scrollHeight;
-      const previousTop = el.scrollTop;
-      const requestedConversationId = activeConv?.id;
-      void onLoadOlderMessages().then(() => {
-        requestAnimationFrame(() => {
-          const current = containerRef.current;
-          if (current && activeConversationIdRef.current === requestedConversationId) {
-            current.scrollTop = preservePrependScrollTop(
-              previousTop,
-              previousHeight,
-              current.scrollHeight,
-            );
-          }
-        });
-      }).catch(() => {});
-    }
-  }, [activeConv?.id, hasOlderMessages, isNearBottom, loadingOlderMessages, onLoadOlderMessages]);
+    wasNearBottomRef.current = !navigationTarget && isNearBottom();
+    if (el.scrollTop < 200 && !historyError) loadHistory();
+  }, [historyError, isNearBottom, loadHistory, navigationTarget]);
 
   // ---- Compute per-message heights & cumulative offsets ----
   const { offsets, totalHeight, layoutSignatures } = useMemo(() => {
@@ -434,7 +450,7 @@ export function MessageList({
         isTerminalChat &&
         effectiveType !== "system" &&
         effectiveType !== "runtime_transcript" &&
-        isAgent(agents, msg.sender_id) &&
+        isAgent(principals, msg.sender_id) &&
         msg.sender_id !== principal.id
       ) {
         effectiveType = "runtime_transcript";
@@ -470,7 +486,7 @@ export function MessageList({
       offs[i] = cumulative;
     }
     return { offsets: offs, totalHeight: cumulative, layoutSignatures: signatures };
-  }, [messages, containerWidth, isTerminalChat, agents, principal.id, threadRollups, measuredHeights]);
+  }, [messages, containerWidth, isTerminalChat, principals, principal.id, threadRollups, measuredHeights]);
 
   // ---- Determine visible window ----
   const [startIdx, endIdx] = useMemo(
@@ -494,26 +510,42 @@ export function MessageList({
 
   // ---- scrollToMessage ----
   const scrollToMessage = useCallback(
-    (msgId: string) => {
+    (msgId: string, onLocated?: () => void) => {
       const idx = messages.findIndex((m) => m.id === msgId);
       if (idx < 0) return;
       const el = containerRef.current;
       if (!el) return;
       const targetTop = idx > 0 ? offsets[idx - 1] : 0;
+      wasNearBottomRef.current = false;
       const targetCenter = targetTop - containerHeight / 2;
-      el.scrollTo({ top: Math.max(0, targetCenter), behavior: "smooth" });
+      const conversationId = activeConv?.id;
+      const requestId = ++scrollRequestRef.current;
+      el.scrollTo({ top: Math.max(0, targetCenter), behavior: "instant" });
       requestAnimationFrame(() => {
         setTimeout(() => {
+          if (activeConversationIdRef.current !== conversationId || scrollRequestRef.current !== requestId) return;
           const domEl = el.querySelector(`[data-msg-id="${msgId}"]`);
           if (domEl) {
+            domEl.scrollIntoView({ block: "center" });
             domEl.classList.add("msg-highlight");
             setTimeout(() => domEl.classList.remove("msg-highlight"), 1500);
+            onLocated?.();
           }
         }, 400);
       });
     },
-    [messages, offsets, containerHeight],
+    [messages, offsets, containerHeight, activeConv?.id],
   );
+
+  useEffect(() => {
+    if (!navigationTarget) return;
+    if (messages.some((message) => message.id === navigationTarget)) {
+      scrollToMessage(navigationTarget, loadingOlderMessages ? undefined : onNavigationComplete);
+    } else if (hasOlderMessages && !loadingOlderMessages && !historyError) {
+      wasNearBottomRef.current = false;
+      loadHistory();
+    }
+  }, [navigationTarget, loadingOlderMessages, historyError, messages, hasOlderMessages, loadHistory, scrollToMessage, onNavigationComplete]);
 
   // ---- Build the visible slice of rendered messages ----
   const renderedItems = useMemo(() => {
@@ -549,7 +581,7 @@ export function MessageList({
           idx={i}
           allMsgs={messages}
           principal={principal}
-          agents={agents}
+          principals={principals}
           isTerminalChat={isTerminalChat}
           showRuntimeHost={activeConv?.conversation_type === "group"}
           runtimeAccountName={agentAccountNames?.get(msg.sender_id)}
@@ -570,7 +602,7 @@ export function MessageList({
       );
     }
     return items;
-  }, [messages, startIdx, endIdx, principal, agents, activeConv?.conversation_type, isTerminalChat, agentAccountNames, onAvatarClick, onReply, onCreateTaskFromMessage, threadRollups, quotedMessages, onOpenThread, initialActionsOpen, scrollToMessage, touchActiveId, handleMsgTouchStart, handleMsgTouchEnd, handleMsgTouchMove, recordMeasuredHeight, layoutSignatures]);
+  }, [messages, startIdx, endIdx, principal, principals, activeConv?.conversation_type, isTerminalChat, agentAccountNames, onAvatarClick, onReply, onCreateTaskFromMessage, threadRollups, quotedMessages, onOpenThread, initialActionsOpen, scrollToMessage, touchActiveId, handleMsgTouchStart, handleMsgTouchEnd, handleMsgTouchMove, recordMeasuredHeight, layoutSignatures]);
 
   // Spacer heights
   const topSpacer = startIdx > 0 && offsets.length > 0 ? offsets[startIdx - 1] : 0;
@@ -587,8 +619,17 @@ export function MessageList({
         />
       ) : (
         <div style={{ position: "relative", display: "flex", flexDirection: "column", gap: "2px" }}>
+          {navigationTarget && <div className="messages-history-loading" role="status">
+            {!hasOlderMessages && !loadingOlderMessages ? "Message is not available in this conversation." : "Finding message…"}
+            <button type="button" onClick={onNavigationComplete}>Cancel</button>
+          </div>}
           {loadingOlderMessages && (
             <div className="messages-history-loading"><Spinner label="Loading older messages…" /></div>
+          )}
+          {historyError && (
+            <div className="messages-history-loading" role="alert">
+              {historyError} <button type="button" onClick={loadHistory}>Retry</button>
+            </div>
           )}
           {topSpacer > 0 && (
             <div style={{ height: topSpacer, pointerEvents: "none" }} />
@@ -601,7 +642,7 @@ export function MessageList({
             Array.from(thinkingAgents)
               .filter((id) => activeConv.members[id])
               .map((id) => {
-                const name = principalName(principal, agents, id);
+                const name = principalName(principal, principals, id);
                 return (
                 <div key={`thinking-${id}`} className="msg-thinking">
                   <Avatar name={name} size="small" />

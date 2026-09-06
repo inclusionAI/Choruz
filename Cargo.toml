@@ -18,10 +18,11 @@ members = [
   "crates/choruz-store",
   "crates/choruz-router",
   "crates/choruz-writer",
-  "crates/choruz-fanout",
   "crates/choruz-supervisor",
   "crates/choruz-harness-login",
+  "crates/choruz-host-runtime",
   "crates/choruz-infrastructure",
+  "crates/choruz-relay-client",
   "services/choruz-api-gateway",
 ]
 resolver = "2"
@@ -55,6 +56,8 @@ aes-gcm = "0.10.3"
 axum = { version = "0.8.6", features = ["macros", "ws"] }
 base64 = "0.22.1"
 chrono = { version = "0.4.42", features = ["serde"] }
+chrono-tz = "0.10"
+croner = "3.0.1"
 deadpool = "0.12"
 deadpool-postgres = "0.14"
 futures-util = "0.3.32"
@@ -85,5 +88,3 @@ tower = "0.5.2"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter", "fmt"] }
 uuid = { version = "1.18.1", features = ["serde", "v7"] }
-redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
-deadpool-redis = "0.18"

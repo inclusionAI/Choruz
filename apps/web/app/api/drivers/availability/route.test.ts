@@ -16,6 +16,18 @@ vi.mock("../../../../lib/drivers/driver-availability", () => ({
 describe("/api/drivers/availability", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it("uses the selected device without inspecting the controller", async () => {
+    vi.mocked(requireAuth).mockResolvedValue({ token: "session-token", claims: { principal_id: "user-a", workspace_id: "ws-a", display_name: "Alice", expires_at_epoch_s: 1 } });
+    const result = { drivers: [{ driverId: "opencode_terminal", status: "available" }] };
+    const request = vi.fn(async () => Response.json(result));
+    vi.stubGlobal("fetch", request);
+    const response = await GET(new NextRequest("http://localhost/api/drivers/availability?runtime_host_id=device-b"));
+    expect(await response.json()).toEqual(result);
+    expect(getDriverAvailability).not.toHaveBeenCalled();
+    expect(request).toHaveBeenCalledWith(expect.stringContaining("/runtime-hosts/device-b/operations"), expect.objectContaining({ body: JSON.stringify({ kind: "drivers.inspect", request: {} }) }));
   });
 
   it("requires auth before returning driver availability", async () => {

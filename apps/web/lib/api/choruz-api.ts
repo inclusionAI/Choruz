@@ -143,6 +143,8 @@ export type HarnessKind = "claude" | "codex" | "pi" | "grok" | "open_code";
 
 export type NativeSessionSummary = {
   harness: HarnessKind;
+  harness_account_id?: string | null;
+  harness_account_name?: string | null;
   native_session_id: string;
   title: string;
   workspace_path: string;
@@ -430,6 +432,33 @@ export async function createRuntimeHostPairing(sessionToken: string, companyId: 
     { method: "POST" },
     sessionToken,
   );
+}
+
+export async function onboardRuntimeHost(
+  transport: import("./transport").ChoruzTransport,
+  payload: {
+    controller_gateway_url: string;
+    controller_credential: string;
+    runtime_host_code: string;
+    name: string;
+  },
+) {
+  const response = await transport.fetch("/api/v1/runtime-host-onboarding", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) throw await apiRequestError(response);
+  const body = await response.json().catch(() => ({})) as {
+    host_id?: string;
+    host_name?: string;
+  };
+  if (!body.host_id || !body.host_name) {
+    throw new ApiRequestError(response.status, "Remote host onboarding returned an invalid response");
+  }
+  return { host_id: body.host_id, host_name: body.host_name };
 }
 
 export async function renameRuntimeHost(
@@ -810,12 +839,18 @@ export async function scanWorkspaceSessions(
   workspacePath: string,
   harnesses: HarnessKind[],
   signal?: AbortSignal,
+  options?: { companyId?: string | null; runtimeHostId?: string | null },
 ): Promise<WorkspaceSessionScanResult> {
   return apiJson<WorkspaceSessionScanResult>(
     "/v1/workspace-sessions/scan",
     {
       method: "POST",
-      body: JSON.stringify({ workspace_path: workspacePath, harnesses }),
+      body: JSON.stringify({
+        workspace_path: workspacePath,
+        harnesses,
+        ...(options?.companyId ? { company_id: options.companyId } : {}),
+        ...(options?.runtimeHostId ? { runtime_host_id: options.runtimeHostId } : {}),
+      }),
       signal,
     },
     sessionToken,
@@ -826,7 +861,8 @@ export async function importWorkspaceSessions(
   sessionToken: string,
   companyId: string,
   workspacePath: string,
-  sessions: Array<Pick<NativeSessionSummary, "harness" | "native_session_id" | "workspace_path">>,
+  sessions: Array<Pick<NativeSessionSummary, "harness" | "native_session_id" | "workspace_path" | "harness_account_id">>,
+  runtimeHostId?: string | null,
 ): Promise<{ imported: ImportedWorkspaceSession[] }> {
   return apiJson<{ imported: ImportedWorkspaceSession[] }>(
     "/v1/workspace-sessions/import",
@@ -836,7 +872,26 @@ export async function importWorkspaceSessions(
         company_id: companyId,
         workspace_path: workspacePath,
         sessions,
+        ...(runtimeHostId ? { runtime_host_id: runtimeHostId } : {}),
       }),
+    },
+    sessionToken,
+  );
+}
+
+export async function executeRuntimeHostOperation<T>(
+  sessionToken: string,
+  runtimeHostId: string,
+  kind: "filesystem.home" | "filesystem.list" | "workspace_sessions.scan",
+  request: Record<string, unknown> = {},
+  signal?: AbortSignal,
+): Promise<T> {
+  return apiJson<T>(
+    `/v1/runtime-hosts/${encodeURIComponent(runtimeHostId)}/operations`,
+    {
+      method: "POST",
+      body: JSON.stringify({ kind, request }),
+      signal,
     },
     sessionToken,
   );

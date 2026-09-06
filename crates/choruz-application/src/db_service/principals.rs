@@ -37,26 +37,33 @@ impl DbService {
         Ok(principal)
     }
 
-    /// List active principals by ID, preserving only non-disabled/non-deleted rows.
-    pub async fn list_principals_by_ids(&self, ids: &[String]) -> Result<Vec<Principal>, AppError> {
-        if ids.is_empty() {
+    /// Display identities for authorized conversations, including removed members.
+    /// Callers must authorize every conversation first. This catalog grants no
+    /// membership or task-assignment authority; disabled/deleted identities are omitted.
+    pub async fn list_conversation_principals(
+        &self,
+        conversation_ids: &[String],
+    ) -> Result<Vec<Principal>, AppError> {
+        if conversation_ids.is_empty() {
             return Ok(Vec::new());
         }
 
         let client = self.store.connect().await?;
         let rows = client
             .query(
-                "SELECT id, workspace_id, type, name, avatar_url, secret_hash, \
-                        channel_visibility, disabled, deleted_at, created_at, updated_at
-                 FROM principal
-                 WHERE id = ANY($1)
-                   AND disabled = FALSE
-                   AND deleted_at IS NULL
-                 ORDER BY name",
-                &[&ids],
+                "SELECT DISTINCT p.id, p.workspace_id, p.type, p.name, p.avatar_url, p.secret_hash, \
+                        p.channel_visibility, p.disabled, p.deleted_at, p.created_at, p.updated_at
+                 FROM principal p
+                 JOIN conversation_member cm ON cm.principal_id = p.id
+                 JOIN conversation c ON c.id = cm.conv_id AND c.workspace_id = p.workspace_id
+                 WHERE c.id = ANY($1)
+                   AND p.disabled = FALSE
+                   AND p.deleted_at IS NULL
+                 ORDER BY p.name",
+                &[&conversation_ids],
             )
             .await
-            .map_err(|e| AppError::Internal(format!("list_principals_by_ids: {e}")))?;
+            .map_err(|e| AppError::Internal(format!("list_conversation_principals: {e}")))?;
 
         Ok(rows.iter().map(row_to_principal).collect())
     }
@@ -291,6 +298,7 @@ impl DbService {
                  FROM principal
                  WHERE type = 'human'
                    AND lower(name) = lower($1)
+                   AND NOT online_guest
                    AND deleted_at IS NULL
                  LIMIT 1",
                 &[&username],

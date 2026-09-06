@@ -4,11 +4,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   importWorkspaceSessions,
+  listRuntimeHosts,
   scanWorkspaceSessions,
   type HarnessKind,
   type ImportedWorkspaceSession,
   type NativeSessionSummary,
 } from "../../lib/api/choruz-api";
+import type { RuntimeHost } from "../../lib/remote/remote-control";
 import { Modal } from "../ui/modal";
 import { FolderPickerModal } from "../workspace/folder-picker-modal";
 import { PathPicker } from "../workspace/path-picker";
@@ -28,8 +30,8 @@ type Props = {
   onImported: (sessions: ImportedWorkspaceSession[]) => Promise<void> | void;
 };
 
-function selectionKey(session: Pick<NativeSessionSummary, "harness" | "native_session_id" | "workspace_path">) {
-  return JSON.stringify([session.harness, session.native_session_id, session.workspace_path]);
+function selectionKey(session: Pick<NativeSessionSummary, "harness" | "native_session_id" | "workspace_path" | "harness_account_id">) {
+  return JSON.stringify([session.harness, session.native_session_id, session.workspace_path, session.harness_account_id ?? null]);
 }
 
 function relativeWorkspace(root: string | null, workspace: string) {
@@ -63,8 +65,37 @@ export function ImportWorkspaceSessionsModal({
   const [query, setQuery] = useState("");
   const [importing, setImporting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [runtimeHosts, setRuntimeHosts] = useState<RuntimeHost[]>([]);
+  const [runtimeHostId, setRuntimeHostId] = useState("");
 
   useEffect(() => () => scanRequestRef.current?.abort(), []);
+  useEffect(() => {
+    if (!activeCompanyId) {
+      setRuntimeHosts([]);
+      return;
+    }
+    let active = true;
+    void listRuntimeHosts(sessionToken, activeCompanyId)
+      .then((hosts) => {
+        if (active) setRuntimeHosts(hosts);
+      })
+      .catch((reason) => {
+        if (active) setError(reason instanceof Error ? reason.message : String(reason));
+      });
+    return () => {
+      active = false;
+    };
+  }, [activeCompanyId, sessionToken]);
+
+  const resetScan = useCallback(() => {
+    scanRequestRef.current?.abort();
+    setScanning(false);
+    setSessions(null);
+    setCanonicalWorkspace(null);
+    setSelected(new Set());
+    setWarnings([]);
+    setQuery("");
+  }, []);
 
   const harnessLabels = useMemo(
     () => new Map(HARNESSES.map((harness) => [harness.id, harness.label])),
@@ -88,6 +119,7 @@ export function ImportWorkspaceSessionsModal({
       session.title,
       session.workspace_path,
       session.native_session_id,
+      session.harness_account_name ?? "",
       harnessLabels.get(session.harness) ?? session.harness,
       session.model ?? "",
       session.branch ?? "",
@@ -101,11 +133,7 @@ export function ImportWorkspaceSessionsModal({
       else next.add(harness);
       return next;
     });
-    scanRequestRef.current?.abort();
-    setScanning(false);
-    setSessions(null);
-    setCanonicalWorkspace(null);
-    setSelected(new Set());
+    resetScan();
   };
 
   const scan = useCallback(async (path: string, selectedHarnesses: HarnessKind[]) => {
@@ -121,6 +149,7 @@ export function ImportWorkspaceSessionsModal({
         path,
         selectedHarnesses,
         controller.signal,
+        { companyId: activeCompanyId, runtimeHostId },
       );
       setCanonicalWorkspace(result.workspace_path);
       setSessions(result.sessions);
@@ -133,7 +162,7 @@ export function ImportWorkspaceSessionsModal({
     } finally {
       if (scanRequestRef.current === controller) setScanning(false);
     }
-  }, [sessionToken]);
+  }, [activeCompanyId, runtimeHostId, sessionToken]);
 
   const canScan = workspacePath.trim().length > 0 && harnesses.size > 0 && !scanning;
   const startScan = () => {
@@ -159,6 +188,7 @@ export function ImportWorkspaceSessionsModal({
         activeCompanyId,
         canonicalWorkspace,
         chosen,
+        runtimeHostId,
       );
       await onImported(result.imported);
     } catch (reason) {
@@ -179,6 +209,25 @@ export function ImportWorkspaceSessionsModal({
         {error ? <p className="server-manager-error-block" role="alert">{error}</p> : null}
 
         <section className="remote-control-section workspace-session-scope" aria-labelledby="workspace-path-title">
+          <label>
+            Device
+            <select
+              aria-label="Device to scan"
+              value={runtimeHostId}
+              onChange={(event) => {
+                setRuntimeHostId(event.target.value);
+                setWorkspacePath("");
+                resetScan();
+              }}
+            >
+              <option value="">This computer</option>
+              {runtimeHosts.map((host) => (
+                <option key={host.id} value={host.id} disabled={host.status !== "online"}>
+                  {host.name}{host.status === "online" ? "" : " (offline)"}
+                </option>
+              ))}
+            </select>
+          </label>
           <div className="workspace-session-section-heading">
             <div>
               <h3 id="workspace-path-title">Folder scope</h3>
@@ -189,14 +238,16 @@ export function ImportWorkspaceSessionsModal({
             </span>
           </div>
           <div className="workspace-session-folder-row">
-            <PathPicker value={workspacePath} onChange={(path) => {
-              setWorkspacePath(path);
-              scanRequestRef.current?.abort();
-              setScanning(false);
-              setSessions(null);
-              setCanonicalWorkspace(null);
-              setSelected(new Set());
-            }} placeholder="/path/to/project" />
+            <PathPicker
+              value={workspacePath}
+              runtimeHostId={runtimeHostId}
+              sessionToken={sessionToken}
+              onChange={(path) => {
+                setWorkspacePath(path);
+                resetScan();
+              }}
+              placeholder="/path/to/project"
+            />
             <button type="button" className="server-manager-btn" onClick={() => setShowFolderPicker(true)}>
               Browse
             </button>
@@ -210,6 +261,7 @@ export function ImportWorkspaceSessionsModal({
               <label key={harness.id}>
                 <input
                   type="checkbox"
+                  data-activity={`import_harness_${harness.id}`}
                   checked={harnesses.has(harness.id)}
                   onChange={() => toggleHarness(harness.id)}
                 />
@@ -234,13 +286,21 @@ export function ImportWorkspaceSessionsModal({
                   {sessions ? `${sessions.length} found · ${selected.size} selected · newest first` : "Scanning…"}
                 </p>
               </div>
-              {sessions && sessions.length > 0 ? (
+              {visibleSessions.length > 0 ? (
                 <button type="button" className="server-manager-btn" onClick={() => {
-                  setSelected((current) => current.size === sessions.length
-                    ? new Set()
-                    : new Set(sessions.map(selectionKey)));
+                  setSelected((current) => {
+                    const next = new Set(current);
+                    const clear = visibleSessions.every((session) => current.has(selectionKey(session)));
+                    for (const session of visibleSessions) {
+                      if (clear) next.delete(selectionKey(session));
+                      else next.add(selectionKey(session));
+                    }
+                    return next;
+                  });
                 }}>
-                  {selected.size === sessions.length ? "Clear all" : "Select all"}
+                  {visibleSessions.every((session) => selected.has(selectionKey(session)))
+                    ? (query.trim() ? "Clear visible" : "Clear all")
+                    : (query.trim() ? "Select visible" : "Select all")}
                 </button>
               ) : null}
             </div>
@@ -276,6 +336,7 @@ export function ImportWorkspaceSessionsModal({
                         <span className="workspace-session-row-title">
                           <strong>{session.title || `${harnessLabel} session`}</strong>
                           <span className="workspace-session-harness-badge">{harnessLabel}</span>
+                          {session.harness_account_name ? <span className="workspace-session-harness-badge">{session.harness_account_name}</span> : null}
                         </span>
                         <small className="workspace-session-row-workspace" title={session.workspace_path}>
                           {relativeWorkspace(canonicalWorkspace, session.workspace_path)}
@@ -304,14 +365,13 @@ export function ImportWorkspaceSessionsModal({
       </Modal>
       {showFolderPicker ? (
         <FolderPickerModal
+          key={runtimeHostId || "local"}
           initialPath={workspacePath || undefined}
+          runtimeHostId={runtimeHostId}
+          sessionToken={sessionToken}
           onSelect={(path) => {
             setWorkspacePath(path);
-            scanRequestRef.current?.abort();
-            setScanning(false);
-            setSessions(null);
-            setCanonicalWorkspace(null);
-            setSelected(new Set());
+            resetScan();
             setShowFolderPicker(false);
           }}
           onClose={() => setShowFolderPicker(false)}

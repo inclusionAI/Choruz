@@ -5,10 +5,14 @@ import { Spinner } from "../ui/spinner";
 import type { DirEntry } from "../../lib/api/choruz-types";
 import { fetchHomeDirectory, listDirectory, usePathSuggestions } from "../../hooks/use-path-suggestions";
 import { Modal } from "../ui/modal";
+import { FileText } from "lucide-react";
 
 interface FolderPickerModalProps {
   initialPath?: string;
+  runtimeHostId?: string | null;
+  sessionToken?: string;
   selectionError?: string | null;
+  fileExtension?: string;
   onSelect: (path: string) => Promise<void> | void;
   /** Removes the optional workspace association without touching its files. */
   onClearFolder?: () => Promise<void> | void;
@@ -21,7 +25,10 @@ interface FolderPickerModalProps {
 
 export function FolderPickerModal({
   initialPath,
+  runtimeHostId,
+  sessionToken,
   selectionError = null,
+  fileExtension,
   onSelect,
   onClearFolder,
   onClose,
@@ -29,7 +36,7 @@ export function FolderPickerModal({
   const [currentPath, setCurrentPath] = useState(initialPath || "");
   const [entries, setEntries] = useState<DirEntry[]>([]);
   const [parentPath, setParentPath] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [selectionPending, setSelectionPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selectedEntry, setSelectedEntry] = useState<string | null>(null);
@@ -43,7 +50,7 @@ export function FolderPickerModal({
     scheduleFetch: schedulePathSuggestions,
     close: closeSuggestions,
     handleNavigationKey,
-  } = usePathSuggestions();
+  } = usePathSuggestions({ target: { runtimeHostId, sessionToken } });
   const abortRef = useRef<AbortController | undefined>(undefined);
 
   const handleClose = useCallback(() => {
@@ -53,14 +60,20 @@ export function FolderPickerModal({
   // Fetch home directory on mount if no initial path
   useEffect(() => {
     if (!initialPath) {
-      fetchHomeDirectory()
+      fetchHomeDirectory(undefined, { runtimeHostId, sessionToken })
         .then((home) => {
-          if (!home) return;
+          if (!home) {
+            setLoading(false);
+            return;
+          }
           setCurrentPath(home);
           setPathInput(home);
           fetchEntries(home);
         })
-        .catch(() => {});
+        .catch(() => {
+          setError("Cannot read this directory");
+          setLoading(false);
+        });
     } else {
       setPathInput(initialPath);
       fetchEntries(initialPath);
@@ -78,11 +91,14 @@ export function FolderPickerModal({
     setSelectedEntry(null);
 
     try {
-      const listing = await listDirectory(dirPath, controller.signal);
+      const listing = await listDirectory(dirPath, controller.signal, {
+        runtimeHostId,
+        sessionToken,
+      }, Boolean(fileExtension));
       setCurrentPath(listing.path || dirPath);
       setPathInput(listing.path || dirPath);
       setParentPath(listing.parent || null);
-      setEntries(listing.entries);
+      setEntries(listing.entries.filter((entry) => entry.type === "directory" || (fileExtension && entry.name.endsWith(fileExtension))));
     } catch (e) {
       if ((e as Error).name !== "AbortError") {
         setError("Cannot read this directory");
@@ -91,7 +107,7 @@ export function FolderPickerModal({
     } finally {
       if (!controller.signal.aborted) setLoading(false);
     }
-  }, []);
+  }, [runtimeHostId, sessionToken, fileExtension]);
 
   const navigateTo = useCallback(
     (path: string) => {
@@ -123,21 +139,30 @@ export function FolderPickerModal({
     [handleNavigationKey, highlightedSuggestion, pathInput, fetchPathSuggestions, navigateTo],
   );
 
-  const handleDoubleClick = useCallback(
-    (entry: DirEntry) => {
-      navigateTo(entry.path);
-    },
-    [navigateTo],
-  );
+  let selectionPath = pathInput !== currentPath ? pathInput.trim() : selectedEntry || currentPath;
+  if (fileExtension) {
+    selectionPath = entries.find((entry) => pathInput === currentPath && entry.path === selectedEntry && entry.type === "file")?.path || "";
+  }
 
   const handleSelect = useCallback(async () => {
-    // Select either the highlighted entry or the current directory
-    const target = selectedEntry || currentPath;
+    const target = selectionPath;
     if (target) {
       if (selectionPending) return;
       setSelectionPending(true);
       try {
-        await onSelect(target);
+        let validatedPath: string;
+        try {
+          if (fileExtension) validatedPath = target;
+          else {
+            const listing = await listDirectory(target, undefined, { runtimeHostId, sessionToken });
+            validatedPath = listing.path || target;
+          }
+        } catch {
+          setError("Cannot read this directory");
+          return;
+        }
+        setError(null);
+        await onSelect(validatedPath);
       } catch {
         // The parent exposes the failed workspace update through
         // `selectionError`; keep this dialog open for a corrected retry.
@@ -145,7 +170,7 @@ export function FolderPickerModal({
         setSelectionPending(false);
       }
     }
-  }, [selectedEntry, currentPath, onSelect, selectionPending]);
+  }, [selectionPath, onSelect, selectionPending, runtimeHostId, sessionToken, fileExtension]);
 
   const handleClearFolder = useCallback(async () => {
     if (!onClearFolder || selectionPending) return;
@@ -199,16 +224,17 @@ export function FolderPickerModal({
         e.preventDefault();
         if (selectedEntry) {
           const item = allItems.find((i) => i.path === selectedEntry);
-          if (item) navigateTo(item.path);
+          if (item?.type === "directory") navigateTo(item.path);
+          else if (item) void handleSelect();
         }
       }
     },
-    [entries, parentPath, selectedEntry, navigateTo, selectionPending],
+    [entries, parentPath, selectedEntry, navigateTo, selectionPending, handleSelect],
   );
 
   return (
     <Modal
-      title="Select Folder"
+      title={fileExtension ? "Select File" : "Select Folder"}
       onClose={handleClose}
       closeDisabled={selectionPending}
       layout="flush"
@@ -244,9 +270,11 @@ export function FolderPickerModal({
           value={pathInput}
           onChange={(e) => {
             setPathInput(e.target.value);
+            setSelectedEntry(null);
+            setError(null);
             schedulePathSuggestions(e.target.value);
           }}
-          disabled={selectionPending}
+          disabled={selectionPending || loading}
           onKeyDown={handlePathInputKeyDown}
           onFocus={() => {
             if (pathInput) fetchPathSuggestions(pathInput);
@@ -325,12 +353,12 @@ export function FolderPickerModal({
                 role="option"
                 aria-selected={selectedEntry === entry.path}
                 onClick={() => !selectionPending && setSelectedEntry(entry.path)}
-                onDoubleClick={() => !selectionPending && handleDoubleClick(entry)}
+                onDoubleClick={() => !selectionPending && (entry.type === "directory" ? navigateTo(entry.path) : void handleSelect())}
               >
                 <span className="folder-item-icon">
-                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                  {entry.type === "file" ? <FileText size={16} aria-hidden="true" /> : <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
                     <path d="M2 4.5C2 3.67 2.67 3 3.5 3h2.59a1 1 0 01.7.29L8 4.5h4.5c.83 0 1.5.67 1.5 1.5v5.5c0 .83-.67 1.5-1.5 1.5h-9A1.5 1.5 0 012 11.5V4.5z"/>
-                  </svg>
+                  </svg>}
                 </span>
                 <span className="folder-item-name">{entry.name}</span>
               </div>
@@ -343,7 +371,7 @@ export function FolderPickerModal({
       <div className="folder-picker-selected-info">
         <span className="folder-picker-selected-label">Selected:</span>
         <span className="folder-picker-selected-path">
-          {selectedEntry || currentPath || "None"}
+          {selectionPath || "None"}
         </span>
       </div>
 
@@ -365,9 +393,9 @@ export function FolderPickerModal({
         <button
           className="btn-primary"
           onClick={() => void handleSelect()}
-          disabled={selectionPending || (!currentPath && !selectedEntry)}
+          disabled={selectionPending || loading || !selectionPath}
         >
-          Select This Folder
+          {fileExtension ? "Select File" : "Select This Folder"}
         </button>
       </div>
     </Modal>

@@ -1,6 +1,6 @@
 "use client";
 
-import { Check, Copy, Laptop, Pencil, Plus, Server, Trash2 } from "lucide-react";
+import { Check, Copy, ExternalLink, Laptop, Pencil, Plus, Server, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Spinner } from "../ui/spinner";
 
@@ -12,6 +12,11 @@ import {
 } from "../../lib/api/choruz-api";
 import type { RuntimeBindingInfo } from "../../lib/api/choruz-types";
 import type { RuntimeHost, RuntimeHostPairing } from "../../lib/remote/remote-control";
+import {
+  clearManagedRemoteCredentials,
+  loadManagedRemoteCredentials,
+  storeRemoteCredentials,
+} from "../../lib/remote/relay-pairing";
 import { Modal } from "../ui/modal";
 
 type Props = {
@@ -125,6 +130,7 @@ export function RuntimeHostManager({
     setError(null);
     try {
       await revokeRuntimeHost(sessionToken, host.id);
+      clearManagedRemoteCredentials(host.id);
       const next = hosts.filter((item) => item.id !== host.id);
       setHosts(next);
       onHostsChanged?.(next);
@@ -209,6 +215,7 @@ export function RuntimeHostManager({
         {loading ? <p className="machines-loading"><Spinner label="Loading machines…" /></p> : null}
         {!loading && hosts.map((host) => {
           const count = agentCountByHost.get(host.id) ?? 0;
+          const remoteCredentials = loadManagedRemoteCredentials(host.id);
           return (
             <article className="machine-card" key={host.id}>
               <div className="machine-icon"><Server size={20} /></div>
@@ -235,6 +242,21 @@ export function RuntimeHostManager({
                 <small>{count} {count === 1 ? "Agent" : "Agents"}</small>
               </div>
               <div className="machine-actions">
+                {remoteCredentials ? (
+                  <button
+                    type="button"
+                    className="icon-button"
+                    aria-label={`Open ${host.name} remote dashboard`}
+                    onClick={() => {
+                      storeRemoteCredentials(remoteCredentials.gateway_url, remoteCredentials);
+                      window.open(
+                        `/remote?gateway=${encodeURIComponent(remoteCredentials.gateway_url)}`,
+                        "_blank",
+                        "noopener,noreferrer",
+                      );
+                    }}
+                  ><ExternalLink size={15} /></button>
+                ) : null}
                 <button
                   type="button"
                   className="icon-button"

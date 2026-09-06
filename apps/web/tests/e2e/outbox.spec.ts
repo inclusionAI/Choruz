@@ -50,14 +50,7 @@ test.describe("Outbox / agent message pipeline", () => {
     page,
   }) => {
     const { token, principal } = await login(page);
-    const snap = await getConsoleSnapshot(page, token);
-    const group = snap.conversations.find(
-      (c) => c.conversation_type === "group",
-    );
-    if (!group) {
-      test.skip();
-      return;
-    }
+    const group = await createGroup(page, token, principal.id, uniqueName("outbox-owned"));
     const content = `outbox-delivery-${Date.now()}`;
     const msg = await sendMessage(
       page,
@@ -72,14 +65,7 @@ test.describe("Outbox / agent message pipeline", () => {
 
   test("should assign sequential server_seq to messages", async ({ page }) => {
     const { token, principal } = await login(page);
-    const snap = await getConsoleSnapshot(page, token);
-    const group = snap.conversations.find(
-      (c) => c.conversation_type === "group",
-    );
-    if (!group) {
-      test.skip();
-      return;
-    }
+    const group = await createGroup(page, token, principal.id, uniqueName("outbox-owned"));
     const msg1 = await sendMessage(
       page,
       token,
@@ -99,14 +85,7 @@ test.describe("Outbox / agent message pipeline", () => {
 
   test("should not duplicate messages on rapid sends", async ({ page }) => {
     const { token, principal } = await login(page);
-    const snap = await getConsoleSnapshot(page, token);
-    const group = snap.conversations.find(
-      (c) => c.conversation_type === "group",
-    );
-    if (!group) {
-      test.skip();
-      return;
-    }
+    const group = await createGroup(page, token, principal.id, uniqueName("outbox-owned"));
     const uniqueKey = `rapid-${Date.now()}`;
     // Send two messages rapidly
     await Promise.all([
@@ -126,14 +105,7 @@ test.describe("Outbox / agent message pipeline", () => {
     page,
   }) => {
     const { token, principal } = await login(page);
-    const snap = await getConsoleSnapshot(page, token);
-    const group = snap.conversations.find(
-      (c) => c.conversation_type === "group",
-    );
-    if (!group) {
-      test.skip();
-      return;
-    }
+    const group = await createGroup(page, token, principal.id, uniqueName("outbox-owned"));
     const idempotencyKey = `idem-${Date.now()}`;
     const data = {
       actor_id: principal.id,
@@ -309,14 +281,7 @@ test.describe("Outbox / agent message pipeline", () => {
 
   test("should maintain message order by server_seq", async ({ page }) => {
     const { token, principal } = await login(page);
-    const snap = await getConsoleSnapshot(page, token);
-    const group = snap.conversations.find(
-      (c) => c.conversation_type === "group",
-    );
-    if (!group) {
-      test.skip();
-      return;
-    }
+    const group = await createGroup(page, token, principal.id, uniqueName("outbox-owned"));
     // Send several messages
     for (let i = 0; i < 3; i++) {
       await sendMessage(

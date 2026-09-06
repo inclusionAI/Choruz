@@ -5,6 +5,7 @@ pub mod db_service;
 mod events;
 mod messages;
 mod principals;
+pub mod schedule;
 mod state;
 mod types;
 

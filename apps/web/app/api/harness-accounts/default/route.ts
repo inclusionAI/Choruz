@@ -40,11 +40,11 @@ export async function POST(request: NextRequest) {
     return new NextResponse(null, { status: 204 });
   }
   const account = await ensureDefaultHarnessAccount(defaultAccount);
-  if (body?.probe !== true || account.runtimeHostId || account.status === "active") {
+  if (body?.probe !== true || account.status === "active") {
     return NextResponse.json(account);
   }
   try {
-    return NextResponse.json(await probeHarnessAccount(account));
+    return NextResponse.json(await probeHarnessAccount(auth.token, account));
   } catch {
     return NextResponse.json((await getHarnessAccount(account.id, companyId)) ?? account);
   }

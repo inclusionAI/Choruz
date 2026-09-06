@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ChatApp, optimisticChannelTask } from "./chat-app";
+import { ThreadPanel } from "./thread-panel";
 import type { ChannelTask, ChatMessage, ConsoleSnapshot, Conversation, Principal } from "../../lib/api/choruz-types";
 
 const KANBAN_PLUGIN = {
@@ -15,6 +16,57 @@ const KANBAN_PLUGIN = {
 describe("ChatApp channel task tabs", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it("names a human group sender from bootstrap principals without marking them as an Agent", () => {
+    vi.spyOn(console, "debug").mockImplementation(() => {});
+    const principal = makePrincipal("human-1", "Pat", "human");
+    const guest = makePrincipal("online-guest-1", "Demo Guest", "human");
+    const conversation = conv("group-1", "group", [principal.id, guest.id]);
+    const html = renderToStaticMarkup(createElement(ChatApp, {
+      initialSnapshot: {
+        principal,
+        agents: [],
+        principals: [guest],
+        conversations: [conversation],
+        messages_by_conversation: { [conversation.id]: [msg({
+          conversation_id: conversation.id,
+          sender_id: guest.id,
+          content: "Hello from the other device",
+        })] },
+        audit_logs: [],
+        plugins: [],
+      },
+      sessionToken: "test-token",
+      runtimeBindings: [],
+      initialActiveConversationId: conversation.id,
+    }));
+    expect(html).toContain("Demo Guest");
+    expect(html).not.toContain(">online-g<");
+    expect(html).not.toContain('class="agent-badge"');
+  });
+
+  it("names human guest thread roots and replies without Agent styling", () => {
+    const principal = makePrincipal("human-1", "Pat", "human");
+    const guest = makePrincipal("online-guest-1", "Demo Guest", "human");
+    const conversation = conv("group-1", "group", [principal.id, guest.id]);
+    const root = msg({ conversation_id: conversation.id, sender_id: guest.id });
+    const html = renderToStaticMarkup(createElement(ThreadPanel, {
+      root,
+      replies: [msg({ id: "reply-1", conversation_id: conversation.id,
+        sender_id: guest.id, created_at: "2026-05-01T00:03:00Z",
+        metadata: { reply_to_id: root.id, thread: true } })],
+      principal,
+      principals: [principal, guest],
+      activeConv: conversation,
+      loading: false,
+      error: null,
+      onClose: () => {},
+      onSendReply: async () => {},
+    }));
+    expect(html.match(/class="msg-sender">Demo Guest/g)).toHaveLength(2);
+    expect(html).not.toContain('class="agent-badge"');
+    expect(html).not.toContain(">online-g<");
   });
 
   it("does not render the conversation Tasks tab while the gate is disabled", () => {

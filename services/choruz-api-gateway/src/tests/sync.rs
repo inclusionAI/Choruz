@@ -218,15 +218,20 @@ async fn sync_feed_is_gapless_private_and_independent_from_outbox_ack() {
     tokio::spawn(async move {
         let _ = connection.await;
     });
+    let reply_metadata = json!({
+        "runtime_host_id": "remote-sync-host",
+        "runtime_host_name": "Remote sync device",
+        "trace_id": "remote-sync-trace",
+    });
     client
         .execute(
             "INSERT INTO conversation_events
                (conversation_id, seq, event_id, event_type, sender_id, content,
                 content_type, metadata, turn_id, reply_event_id)
              VALUES ($1, 6, 'reply-sync-regression', 'reply', $2,
-                     'agent reply reaches sync', 'text', '{}',
+                     'agent reply reaches sync', 'text', $3,
                      'reply-sync-turn', 'reply-sync-regression')",
-            &[&conversation.id, &bob.id],
+            &[&conversation.id, &bob.id, &reply_metadata],
         )
         .await
         .expect("insert pipeline-style reply event");
@@ -274,6 +279,7 @@ async fn sync_feed_is_gapless_private_and_independent_from_outbox_ack() {
         change["payload"]["event_id"] == "reply-sync-regression"
             && change["payload"]["content"] == "agent reply reaches sync"
             && change["payload"]["sender_id"] == bob.id
+            && change["payload"]["metadata"] == reply_metadata
     }));
     assert!(
         alice_changes

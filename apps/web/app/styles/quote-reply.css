@@ -8,6 +8,12 @@
   position: relative;
 }
 
+/* The message's entrance animation creates a stacking context. Raise that
+ * owner while its menu is open so later message rows cannot cover it. */
+.msg-group:has(.msg-actions-btn[aria-expanded="true"]) {
+  z-index: var(--z-menu);
+}
+
 .msg-actions {
   position: absolute;
   top: 4px;

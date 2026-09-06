@@ -138,6 +138,20 @@ pub struct ReadReceipt {
     pub last_read_at: DateTime<Utc>,
 }
 
+/// Group-only Online projection: no runtime, attachment or private metadata.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct OnlineSharedMessage {
+    pub id: String,
+    pub seq: i64,
+    pub sender_id: String,
+    pub sender_name: String,
+    pub agent: bool,
+    pub own: bool,
+    pub content: String,
+    pub created_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AuditLog {
     pub id: String,

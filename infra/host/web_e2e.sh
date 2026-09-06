@@ -2,6 +2,9 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ "${CHORUZ_REMOTE_E2E_RUNNING:-0}" != "1" && ( "${CHORUZ_WEB_E2E_FULL:-0}" == "1" || "$*" == *remote-file-transport.spec.ts* || "$*" == *online.spec.ts* ) ]]; then
+  exec node "${SCRIPT_DIR}/remote_web_e2e.mjs" "$@"
+fi
 # shellcheck disable=SC1091
 source "${SCRIPT_DIR}/common.sh"
 
@@ -73,13 +76,14 @@ bash "${SCRIPT_DIR}/start.sh"
 bash "${SCRIPT_DIR}/migrate.sh" reset
 bash "${SCRIPT_DIR}/migrate.sh" up
 
-cargo build -p choruz-api-gateway -p choruz-pipeline
+cargo build -p choruz-api-gateway -p choruz-pipeline -p choruz-connector
 
 RUST_LOG=warn \
   CHORUZ_DATABASE_URL="${HOST_DATABASE_URL}" \
   CHORUZ_ATTACHMENT_DIR="$(attachment_dir_path)" \
   CHORUZ_API_HOST="${CHORUZ_API_HOST}" \
   CHORUZ_API_PORT="${API_PORT}" \
+  CHORUZ_WEB_PORT="${WEB_PORT}" \
   "${ROOT_DIR}/target/debug/choruz-api-gateway" > "${API_LOG}" 2>&1 &
 echo "$!" > "${API_PID_FILE}"
 
@@ -105,18 +109,10 @@ curl -fsS "http://127.0.0.1:${API_PORT}/healthz" >/dev/null 2>&1 \
   || fail_with_logs "choruz-api-gateway failed to become ready on port ${API_PORT}"
 require_pid_running "${API_PID_FILE}" "choruz-api-gateway"
 
-for _ in {1..60}; do
-  status="$(curl -sS -o /dev/null -w "%{http_code}" "http://127.0.0.1:${PIPELINE_PORT}/ws/fanout" 2>/dev/null || true)"
-  if [[ "${status}" != "000" ]]; then
-    break
-  fi
-  sleep 1
-done
-status="$(curl -sS -o /dev/null -w "%{http_code}" "http://127.0.0.1:${PIPELINE_PORT}/ws/fanout" 2>/dev/null || true)"
-if [[ "${status}" = "000" ]]; then
-  fail_with_logs "pipeline fanout server failed to become ready on port ${PIPELINE_PORT}"
-fi
 require_pid_running "${PIPELINE_PID_FILE}" "choruz-pipeline"
+wait_for_service_ready "$(cat "${PIPELINE_PID_FILE}")" "${CHORUZ_PIPELINE_PROCESS_REGEX}" \
+  "http://127.0.0.1:${PIPELINE_PORT}/readyz" choruz-pipeline 240 \
+  || fail_with_logs "choruz-pipeline failed to become ready on port ${PIPELINE_PORT}"
 
 CHORUZ_API_BASE_URL="http://127.0.0.1:${API_PORT}" \
 CHORUZ_API_URL="http://127.0.0.1:${API_PORT}" \
@@ -140,6 +136,7 @@ require_pid_running "${WEB_PID_FILE}" "web app"
 
 CHORUZ_API_PORT="${API_PORT}" \
 CHORUZ_WEB_PORT="${WEB_PORT}" \
+CHORUZ_PIPELINE_METRICS_PORT="${PIPELINE_PORT}" \
 CHORUZ_API_BASE_URL="http://127.0.0.1:${API_PORT}" \
 CHORUZ_WEB_BASE_URL="http://127.0.0.1:${WEB_PORT}" \
   pnpm --dir "${SCRIPT_DIR}/../../apps/web" e2e "$@"

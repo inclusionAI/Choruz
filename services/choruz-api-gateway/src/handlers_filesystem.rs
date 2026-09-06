@@ -3,10 +3,12 @@ use std::path::PathBuf;
 use axum::{
     Json,
     extract::{Query, State},
-    http::HeaderMap,
+    http::{HeaderMap, StatusCode},
+    response::{IntoResponse, Response},
 };
 use choruz_common::AppError;
 use serde::{Deserialize, Serialize};
+use tokio::io::AsyncReadExt;
 
 use crate::{ApiError, ApiState, require_human_operator};
 
@@ -17,21 +19,6 @@ pub(crate) struct FilesystemListQuery {
     path: String,
     show_hidden: Option<bool>,
     include_files: Option<bool>,
-}
-
-#[derive(Debug, Serialize)]
-pub(crate) struct FilesystemListResponse {
-    path: String,
-    parent: Option<String>,
-    entries: Vec<FilesystemEntry>,
-}
-
-#[derive(Debug, Serialize)]
-pub(crate) struct FilesystemEntry {
-    name: String,
-    #[serde(rename = "type")]
-    entry_type: String,
-    path: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -56,18 +43,7 @@ pub(crate) struct FilesystemStatQuery {
 // ── Helpers ───────────────────────────────────────────────────────────
 
 fn allowed_browse_roots() -> Vec<PathBuf> {
-    if let Ok(roots) = std::env::var("CHORUZ_FS_BROWSE_ROOTS") {
-        roots
-            .split(',')
-            .map(|s| PathBuf::from(s.trim()))
-            .filter(|p| !p.as_os_str().is_empty())
-            .collect()
-    } else {
-        let home = std::env::var("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from("/"));
-        vec![home]
-    }
+    choruz_host_runtime::filesystem::browse_roots()
 }
 
 pub(crate) fn validate_path_whitelist(path: &std::path::Path) -> Result<(), ApiError> {
@@ -86,78 +62,30 @@ fn path_is_within_roots(path: &std::path::Path, roots: &[PathBuf]) -> bool {
     roots.iter().any(|root| path.starts_with(root))
 }
 
-fn parent_within_roots(path: &std::path::Path, roots: &[PathBuf]) -> Option<PathBuf> {
-    path.parent()
-        .filter(|parent| path_is_within_roots(parent, roots))
-        .map(PathBuf::from)
-}
-
-const FS_LIST_MAX_ENTRIES: usize = 500;
-
 // ── Handlers ──────────────────────────────────────────────────────────
 
 pub(crate) async fn filesystem_list(
     headers: HeaderMap,
     Query(query): Query<FilesystemListQuery>,
     State(state): State<ApiState>,
-) -> Result<Json<FilesystemListResponse>, ApiError> {
+) -> Result<Json<choruz_host_runtime::filesystem::FilesystemListing>, ApiError> {
     let _ = require_human_operator(&headers, &state).await?;
 
-    let canonical = tokio::fs::canonicalize(&query.path)
-        .await
-        .map_err(|e| ApiError(AppError::NotFound(format!("path not found: {e}"))))?;
-
-    validate_path_whitelist(&canonical)?;
-
-    let show_hidden = query.show_hidden.unwrap_or(false);
-    let include_files = query.include_files.unwrap_or(false);
-    let mut entries = Vec::new();
-    let mut dir = tokio::fs::read_dir(&canonical)
-        .await
-        .map_err(|e| ApiError(AppError::NotFound(format!("cannot read directory: {e}"))))?;
-
-    while let Some(entry) = dir
-        .next_entry()
-        .await
-        .map_err(|e| ApiError(AppError::Internal(format!("read_dir entry error: {e}"))))?
-    {
-        let name = entry.file_name().to_string_lossy().to_string();
-        if !show_hidden && name.starts_with('.') {
-            continue;
-        }
-        let ft = entry
-            .file_type()
-            .await
-            .map_err(|e| ApiError(AppError::Internal(format!("file_type error: {e}"))))?;
-        let is_dir = ft.is_dir();
-        if !is_dir && !include_files {
-            continue;
-        }
-        let entry_type = if is_dir { "directory" } else { "file" };
-        entries.push(FilesystemEntry {
-            name: name.clone(),
-            entry_type: entry_type.into(),
-            path: canonical.join(&name).to_string_lossy().to_string(),
-        });
-        if entries.len() >= FS_LIST_MAX_ENTRIES {
-            break;
-        }
-    }
-
-    entries.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
-
-    // The picker must not offer `..` when it has reached its browse root.
-    // Otherwise clicking it sends a request for a deliberately forbidden
-    // parent (for example /Users from /Users/alice) and presents that normal
-    // access denial as a misleading directory-read error.
-    let parent = parent_within_roots(&canonical, &allowed_browse_roots())
-        .map(|path| path.to_string_lossy().to_string());
-
-    Ok(Json(FilesystemListResponse {
-        path: canonical.to_string_lossy().to_string(),
-        parent,
-        entries,
-    }))
+    let listing = tokio::task::spawn_blocking(move || {
+        choruz_host_runtime::filesystem::list_directory(
+            &query.path,
+            query.show_hidden.unwrap_or(false),
+            query.include_files.unwrap_or(false),
+        )
+    })
+    .await
+    .map_err(|error| {
+        ApiError(AppError::Internal(format!(
+            "directory listing task: {error}"
+        )))
+    })?
+    .map_err(ApiError)?;
+    Ok(Json(listing))
 }
 
 pub(crate) async fn filesystem_stat(
@@ -243,6 +171,7 @@ pub(crate) struct FilesystemReadResponse {
 pub(crate) struct FilesystemWriteRequest {
     path: String,
     content: String,
+    original_content: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -284,7 +213,16 @@ pub(crate) async fn filesystem_read(
 
     validate_path_under_home(&canonical)?;
 
-    let metadata = tokio::fs::metadata(&canonical)
+    let content = read_editable_content(&canonical).await?;
+    Ok(Json(FilesystemReadResponse {
+        size: content.len() as u64,
+        content,
+        path: canonical.to_string_lossy().to_string(),
+    }))
+}
+
+async fn read_editable_content(path: &std::path::Path) -> Result<String, ApiError> {
+    let metadata = tokio::fs::metadata(path)
         .await
         .map_err(|e| ApiError(AppError::NotFound(format!("cannot stat file: {e}"))))?;
 
@@ -300,53 +238,57 @@ pub(crate) async fn filesystem_read(
         ))));
     }
 
-    let bytes = tokio::fs::read(&canonical)
+    let file = tokio::fs::File::open(path)
+        .await
+        .map_err(|e| ApiError(AppError::Internal(format!("read error: {e}"))))?;
+    let mut bytes = Vec::new();
+    file.take(MAX_READ_SIZE + 1)
+        .read_to_end(&mut bytes)
         .await
         .map_err(|e| ApiError(AppError::Internal(format!("read error: {e}"))))?;
 
+    if bytes.len() as u64 > MAX_READ_SIZE {
+        return Err(ApiError(AppError::Validation("file too large".into())));
+    }
     if looks_binary(&bytes) {
         return Err(ApiError(AppError::Validation(
             "binary file, cannot display".into(),
         )));
     }
 
-    let content = String::from_utf8(bytes)
-        .map_err(|_| ApiError(AppError::Validation("binary file, cannot display".into())))?;
-
-    Ok(Json(FilesystemReadResponse {
-        content,
-        path: canonical.to_string_lossy().to_string(),
-        size,
-    }))
+    String::from_utf8(bytes)
+        .map_err(|_| ApiError(AppError::Validation("binary file, cannot display".into())))
 }
 
 pub(crate) async fn filesystem_write(
     headers: HeaderMap,
     State(state): State<ApiState>,
     Json(body): Json<FilesystemWriteRequest>,
-) -> Result<Json<FilesystemWriteResponse>, ApiError> {
+) -> Result<Response, ApiError> {
     let _ = require_human_operator(&headers, &state).await?;
 
-    let raw_path = PathBuf::from(&body.path);
+    if body.content.len() as u64 > MAX_READ_SIZE
+        || body.original_content.len() as u64 > MAX_READ_SIZE
+    {
+        return Err(ApiError(AppError::Validation("file too large".into())));
+    }
+    let target = tokio::fs::canonicalize(&body.path)
+        .await
+        .map_err(|e| ApiError(AppError::NotFound(format!("path not found: {e}"))))?;
+    validate_path_under_home(&target)?;
+    let current_content = read_editable_content(&target).await?;
+    if current_content != body.original_content {
+        return Ok((
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({
+                "error": "File changed on disk. Reload or explicitly overwrite with your draft.",
+                "current_content": current_content,
+            })),
+        )
+            .into_response());
+    }
 
-    // For write, the file may not exist yet, so validate the parent directory.
-    let parent = raw_path
-        .parent()
-        .ok_or_else(|| ApiError(AppError::Validation("invalid path".into())))?;
-
-    let canonical_parent = tokio::fs::canonicalize(parent).await.map_err(|e| {
-        ApiError(AppError::NotFound(format!(
-            "parent directory not found: {e}"
-        )))
-    })?;
-
-    validate_path_under_home(&canonical_parent)?;
-
-    let target = canonical_parent.join(
-        raw_path
-            .file_name()
-            .ok_or_else(|| ApiError(AppError::Validation("invalid file name".into())))?,
-    );
+    // Detect prior edits; arbitrary external writers do not participate in this comparison.
 
     tokio::fs::write(&target, body.content.as_bytes())
         .await
@@ -355,7 +297,8 @@ pub(crate) async fn filesystem_write(
     Ok(Json(FilesystemWriteResponse {
         ok: true,
         path: target.to_string_lossy().to_string(),
-    }))
+    })
+    .into_response())
 }
 
 #[cfg(test)]
@@ -475,23 +418,6 @@ mod tests {
             // ApiError wraps AppError::Forbidden
             assert!(matches!(err.0, choruz_common::AppError::Forbidden(_)));
         });
-    }
-
-    #[test]
-    fn browse_root_has_no_parent_but_children_do() {
-        let roots = vec![PathBuf::from("/Users/alice")];
-        assert!(path_is_within_roots(
-            std::path::Path::new("/Users/alice/project"),
-            &roots
-        ));
-        assert_eq!(
-            parent_within_roots(std::path::Path::new("/Users/alice"), &roots),
-            None
-        );
-        assert_eq!(
-            parent_within_roots(std::path::Path::new("/Users/alice/project"), &roots),
-            Some(PathBuf::from("/Users/alice"))
-        );
     }
 
     // validate_path_under_home ---------------------------------------------

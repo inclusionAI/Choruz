@@ -1,6 +1,6 @@
 # choruz-pipeline
 
-The single process that turns persisted conversation events into agent turns and agent output back into events: it wires `choruz-store`'s CDC poller, the router, the session store, a headless CLI executor, the writer and the fanout WebSocket into cooperating tokio tasks, drains every binding's Maildir outbox, refreshes workspace instruction files, and runs the cron scheduler, lease monitor and retry scheduler. Configuration comes from the environment (`CHORUZ_DATABASE_URL` or `CHORUZ_PG_*`, `CHORUZ_PIPELINE_METRICS_PORT`, `RUST_LOG`; `src/config.rs` lists the rest).
+The single process that turns persisted conversation events into agent turns and agent output back into events: it wires `choruz-store`'s CDC poller, the router, the session store, a headless CLI executor and the writer into cooperating tokio tasks, drains every binding's Maildir outbox, refreshes workspace instruction files, and runs the cron scheduler, lease monitor and retry scheduler. Configuration comes from the environment (`CHORUZ_DATABASE_URL` or `CHORUZ_PG_*`, `CHORUZ_PIPELINE_METRICS_PORT`, `RUST_LOG`; `src/config.rs` lists the rest).
 
 ## Entry points
 
@@ -8,7 +8,7 @@ The single process that turns persisted conversation events into agent turns and
 - `src/dispatch.rs`, `src/executor.rs` — lease pending commands and run one headless CLI turn each
 - `src/outbox_watcher.rs`, `src/outbox_handler.rs` — drain `$CHORUZ_SEND` commands from `<workspace>/.choruz-outbox/new/`
 - `src/instructions.rs` — `CLAUDE.md` / `AGENTS.md` bootstrap and refresh
-- `src/pg_member_provider.rs`, `src/pg_result_store.rs`, `src/pg_event_source.rs` — the PostgreSQL implementations of the stage-crate traits
+- `src/pg_member_provider.rs`, `src/pg_result_store.rs` — the PostgreSQL implementations of the stage-crate traits
 
 ## Tests
 

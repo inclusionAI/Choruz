@@ -1,6 +1,17 @@
 name = "choruz-remote-control-gateway"
 main = "src/index.ts"
 compatibility_date = "2026-08-20"
+compatibility_flags = ["nodejs_compat"]
+
+[[d1_databases]]
+binding = "ONLINE_DATABASE"
+database_name = "choruz-online-accounts"
+database_id = "e6d48b55-980d-4f5e-ad6c-48eab1d9baea"
+migrations_dir = "migrations"
+
+[[durable_objects.bindings]]
+name = "ONLINE_MAILBOXES"
+class_name = "OnlineMailbox"
 
 [[durable_objects.bindings]]
 name = "ROOMS"
@@ -25,6 +36,10 @@ new_sqlite_classes = ["PairingRateLimiter"]
 [[migrations]]
 tag = "v3"
 new_sqlite_classes = ["CapabilityStore"]
+
+[[migrations]]
+tag = "v4"
+new_sqlite_classes = ["OnlineMailbox"]
 
 # Set the same value used by CHORUZ_REMOTE_CONTROL_GATEWAY_SECRET:
 #   pnpm exec wrangler secret put GATEWAY_AUTH_SECRET

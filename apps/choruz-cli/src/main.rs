@@ -18,6 +18,8 @@ use tokio::{
     process::Command as ProcessCommand,
 };
 
+mod activity;
+
 const DEFAULT_API_URL: &str = "http://127.0.0.1:3000";
 const DEFAULT_PIPELINE_URL: &str = "http://127.0.0.1:3020";
 
@@ -31,6 +33,7 @@ enum Command {
     AgentList,
     RemoteStatus,
     RemotePairingCredential,
+    Activity(Vec<String>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -53,6 +56,9 @@ USAGE:
   choruz agent list [--json]
   choruz remote status [--json]
   choruz remote pairing-credential [--json]
+  choruz activity list|export|summary --since <RFC3339> --until <RFC3339> [--source telemetry|audit] [--trace-id <id>]
+  choruz activity messages --conversation <id> [--include-content]
+  choruz activity prune --before <RFC3339> [--apply]
 
 GLOBAL OPTIONS:
   --api-url <url>       API Gateway URL (default: CHORUZ_API_BASE_URL or http://127.0.0.1:3000)
@@ -138,6 +144,17 @@ fn parse_args(input: &[String]) -> Result<Args, String> {
                 index += 1;
                 token = Some(input.get(index).ok_or("--token requires a value")?.clone());
             }
+            "--since" | "--until" | "--source" | "--trace-id" | "--before" | "--conversation" => {
+                positional.push(input[index].clone());
+                index += 1;
+                positional.push(
+                    input
+                        .get(index)
+                        .ok_or("activity option requires a value")?
+                        .clone(),
+                );
+            }
+            "--apply" | "--include-content" => positional.push(input[index].clone()),
             value if value.starts_with('-') => return Err(format!("unknown option: {value}")),
             value => positional.push(value.to_owned()),
         }
@@ -153,6 +170,10 @@ fn parse_args(input: &[String]) -> Result<Args, String> {
         [area, action] if area == "remote" && action == "status" => Command::RemoteStatus,
         [area, action] if area == "remote" && action == "pairing-credential" => {
             Command::RemotePairingCredential
+        }
+        [area, rest @ ..] if area == "activity" => {
+            activity::parse(rest)?;
+            Command::Activity(rest.to_vec())
         }
         _ => return Err(format!("unknown command: {}", positional.join(" "))),
     };
@@ -555,6 +576,7 @@ async fn main() -> ExitCode {
                 Command::RemotePairingCredential => create_remote_pairing(&client, &args)
                     .await
                     .map(|value| print_pairing(&value, args.json)),
+                Command::Activity(input) => activity::run(&client, &args, &input).await,
                 Command::Help | Command::Version => unreachable!(),
             };
             if let Err(error) = outcome {

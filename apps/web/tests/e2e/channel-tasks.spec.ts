@@ -10,6 +10,8 @@ import { API_BASE, WEB_BASE, login } from "../fixtures/auth";
 import {
   addGroupMember,
   createAgent,
+  createCompany,
+  deleteCompany,
   createGroup,
   createDirectConversation,
   disablePrincipal,
@@ -1704,54 +1706,63 @@ test.describe("Channel tasks board", () => {
     const { token, principal } = await login(page);
     await ensureKanbanPluginEnabled(page, token);
 
-    const agent = await provisionAgent(page, token, uniqueName("ct-cfm-agent"));
-    const group = await createGroup(
-      page,
-      token,
-      principal.id,
-      uniqueName("ct-cfm-group"),
-      [agent.agentId],
-    );
+    const company = await createCompany(page, token, principal.id, uniqueName("ct-cfm-company"));
+    try {
+      const agent = await provisionAgent(page, token, uniqueName("ct-cfm-agent"), { workspaceId: company.id });
+      const group = await createGroup(
+        page,
+        token,
+        principal.id,
+        uniqueName("ct-cfm-group"),
+        [agent.agentId],
+        company.id,
+      );
 
-    const messageContent = `please track this work ${Date.now()}`;
-    await sendMessage(page, token, principal.id, group.id, messageContent);
+      const messageContent = `please track this work ${Date.now()}`;
+      await sendMessage(page, token, principal.id, group.id, messageContent);
 
-    await openConversation(page, group.id);
+      await page.goto(`${WEB_BASE}/dashboard`);
+      await page.locator(".company-selector-btn").click();
+      await page.locator(".company-dropdown-item-name").filter({ hasText: company.name }).click();
+      await openConversation(page, group.id);
 
-    const messageRow = page.locator(".msg-group").filter({ hasText: messageContent }).first();
-    await expect(messageRow).toBeVisible({ timeout: 15_000 });
-    await messageRow.hover();
-    await messageRow.locator('[aria-label="Message actions"]').click();
-    await page.getByRole("menuitem", { name: "Create task" }).click();
+      const messageRow = page.locator(".msg-group").filter({ hasText: messageContent }).first();
+      await expect(messageRow).toBeVisible({ timeout: 15_000 });
+      await messageRow.hover();
+      await messageRow.locator('[aria-label="Message actions"]').click();
+      await page.getByRole("menuitem", { name: "Create task" }).click();
 
-    const modal = page.locator(".channel-task-create-modal");
-    await expect(modal).toBeVisible({ timeout: 5000 });
+      const modal = page.locator(".channel-task-create-modal");
+      await expect(modal).toBeVisible({ timeout: 5000 });
 
-    const submit = modal.getByRole("button", { name: /^Create$/ });
-    await expect(submit).toBeDisabled();
+      const submit = modal.getByRole("button", { name: /^Create$/ });
+      await expect(submit).toBeDisabled();
 
-    const titleInput = modal.locator("label", { hasText: "Title" }).locator("input");
-    await titleInput.fill(`Track ${messageContent}`);
-    // Still disabled until assignee is picked.
-    await expect(submit).toBeDisabled();
+      const titleInput = modal.locator("label", { hasText: "Title" }).locator("input");
+      await titleInput.fill(`Track ${messageContent}`);
+      // Still disabled until assignee is picked.
+      await expect(submit).toBeDisabled();
 
-    const assigneeSelect = modal.locator("label", { hasText: "Assignee" }).locator("select");
-    await assigneeSelect.selectOption({ label: agent.agentName });
-    await expect(submit).toBeEnabled();
+      const assigneeSelect = modal.locator("label", { hasText: "Assignee" }).locator("select");
+      await assigneeSelect.selectOption({ label: agent.agentName });
+      await expect(submit).toBeEnabled();
 
-    await submit.click();
-    await expect(modal).toBeHidden({ timeout: 10_000 });
+      await submit.click();
+      await expect(modal).toBeHidden({ timeout: 10_000 });
 
-    await page.getByRole("tab", { name: "Tasks" }).click();
+      await page.getByRole("tab", { name: "Tasks" }).click();
 
-    const card = page.locator(".channel-task-card", { hasText: `Track ${messageContent}` }).first();
-    await expect(card).toBeVisible({ timeout: 15_000 });
-    await expect(card.locator(".channel-task-meta")).toContainText(agent.agentName);
-    // The task card title is a read-only heading; there is no editable
-    // post-creation title control anywhere on the card.
-    await expect(card.locator("h3")).toHaveText(`Track ${messageContent}`);
-    await expect(card.locator("h3").locator("input, textarea, [contenteditable='true']")).toHaveCount(0);
-    await expect(card.getByRole("button", { name: /edit title/i })).toHaveCount(0);
+      const card = page.locator(".channel-task-card", { hasText: `Track ${messageContent}` }).first();
+      await expect(card).toBeVisible({ timeout: 15_000 });
+      await expect(card.locator(".channel-task-meta")).toContainText(agent.agentName);
+      // The task card title is a read-only heading; there is no editable
+      // post-creation title control anywhere on the card.
+      await expect(card.locator("h3")).toHaveText(`Track ${messageContent}`);
+      await expect(card.locator("h3").locator("input, textarea, [contenteditable='true']")).toHaveCount(0);
+      await expect(card.getByRole("button", { name: /edit title/i })).toHaveCount(0);
+    } finally {
+      await deleteCompany(page, token, company.id);
+    }
   });
 
   test("repeated create-from-message dedupes and does not mutate the existing task", async ({ page }) => {
@@ -1955,10 +1966,18 @@ test.describe("Channel tasks board", () => {
     await statusSelect.selectOption("in_progress");
 
     await expect(board.locator(".channel-task-board-toast")).toBeVisible({ timeout: 10_000 });
+    await page.getByRole("tab", { name: "Chat", exact: true }).click();
+    await page.getByRole("tab", { name: "Tasks", exact: true }).click();
+    await expect(board.locator(".channel-task-board-toast")).toBeVisible({ timeout: 10_000 });
     await expect(board.locator(".channel-task-board-toast")).toContainText(/test denial|forbidden/i);
     await expect(todoColumn.locator(".channel-task-card", { hasText: `Reject ${messageContent}` })).toHaveCount(1);
 
     await page.unroute("**/api/v1/tasks/*");
+    const retryResponse = page.waitForResponse(response => response.request().method() === "PATCH" && response.url().includes("/api/v1/tasks/"));
+    await statusSelect.selectOption("in_progress");
+    expect((await retryResponse).status()).toBe(200);
+    await expect(card.locator("select").first()).toHaveValue("in_progress");
+    await expect(board.locator(".channel-task-board-toast")).toHaveCount(0);
   });
 
   test("direct-agent conversation exposes the Tasks tab and loads the board", async ({ page }) => {

@@ -6,6 +6,71 @@ use super::DbService;
 use crate::ConversationUnread;
 
 impl DbService {
+    /// Search active memberships reachable from the authenticated principal's workspace or companies.
+    /// Results descend by `(created_at, event_id)` and exclude the cursor boundary.
+    /// Empty queries return `Validation`; the result limit is clamped to 1..=100.
+    pub async fn search_messages(
+        &self,
+        principal_id: &str,
+        query: &str,
+        limit: i64,
+        conversation_id: Option<&str>,
+        before: Option<(chrono::DateTime<chrono::Utc>, &str)>,
+    ) -> Result<Vec<crate::MessageSearchResult>, AppError> {
+        if query.trim().is_empty() {
+            return Err(AppError::Validation(
+                "search query `q` must not be empty".into(),
+            ));
+        }
+        let principal = self.get_principal(principal_id).await?;
+        let limit = limit.clamp(1, 100);
+        let (before_created_at, before_message_id) = before.unzip();
+        let client = self.store.connect().await?;
+        let rows = client
+            .query(
+                "SELECT ce.event_id, ce.conversation_id, ce.sender_id, ce.content, ce.created_at,
+                    c.name AS conv_name
+             FROM conversation_events ce
+             JOIN conversation c ON c.id = ce.conversation_id
+             LEFT JOIN company co ON co.id = c.workspace_id
+             LEFT JOIN company_member com
+               ON com.company_id = co.id AND com.principal_id = $3
+             JOIN conversation_member cm ON cm.conv_id = ce.conversation_id
+             WHERE ce.content ILIKE '%' || $1 || '%'
+               AND ce.event_type IN ('message', 'message.created', 'reply')
+               AND cm.principal_id = $3
+               AND cm.removed_at IS NULL
+               AND ($4::text IS NULL OR ce.conversation_id = $4)
+               AND ((co.id IS NULL AND c.workspace_id = $5) OR (co.deleted_at IS NULL
+                    AND (c.workspace_id = $5 OR com.principal_id IS NOT NULL)))
+               AND ($6::timestamptz IS NULL OR (ce.created_at, ce.event_id) < ($6, $7))
+             ORDER BY ce.created_at DESC, ce.event_id DESC
+             LIMIT $2",
+                &[
+                    &query,
+                    &limit,
+                    &principal.id,
+                    &conversation_id,
+                    &principal.workspace_id,
+                    &before_created_at,
+                    &before_message_id,
+                ],
+            )
+            .await
+            .map_err(|error| AppError::Internal(format!("search: {error}")))?;
+        Ok(rows
+            .iter()
+            .map(|row| crate::MessageSearchResult {
+                message_id: row.get("event_id"),
+                conversation_id: row.get("conversation_id"),
+                conversation_name: row.get("conv_name"),
+                sender_id: row.get("sender_id"),
+                content: row.get("content"),
+                created_at: row.get("created_at"),
+            })
+            .collect())
+    }
+
     // ── Message reads (Phase 1D) ────────────────────────────────────────
 
     /// List messages for a conversation from the database.

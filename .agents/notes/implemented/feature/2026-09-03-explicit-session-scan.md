@@ -10,13 +10,17 @@ The Import Sessions modal (`apps/web/components/agents/import-workspace-sessions
 
 A `Scan` button starts the scan for the current folder and Harness set; changing either clears the previous results (status `Ready to scan`) and nothing scans until the button is pressed again. Results start with no session selected; `Select all` and the row checkboxes opt in, and the import button stays disabled at zero.
 
+With a filter, `Select visible` and `Clear visible` affect only matching rows. Explicit selections outside that filter remain selected and count toward the import total. No bulk action appears for an empty filtered result.
+
 ## Alternatives considered
 
 - **Keep the automatic scan but debounce longer**: rejected. A longer delay still scans on every settled edit, and the user still cannot tell when a scan will start.
 - **Auto-scan, select nothing**: rejected. Halves the problem; the surprise scans over a bridge stay.
 - **Pre-select only the newest N sessions**: rejected. Any default picks Agents the user did not ask for; an explicit selection is cheap on a list that is already sorted newest first and filterable.
+- **Apply bulk selection to hidden rows**: rejected. A filtered list cannot show which additional sessions that action selects. Clearing every selection on each filter edit also discards deliberate cross-filter choices.
 
 ## Consequences
 
 - Import needs two clicks more than before: `Scan`, then a selection.
 - `apps/web/tests/e2e/workspace-session-import.spec.ts` asserts no scan request before `Scan`, a fresh `0 selected` after each scan, and a disabled import button at zero.
+- The same spec scans two owned native files, checks bulk actions across filters, imports only the chosen session through the actual API, and verifies its persisted hide/re-import identity.

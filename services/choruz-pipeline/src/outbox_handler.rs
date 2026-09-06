@@ -116,7 +116,7 @@ pub(crate) async fn process_outbox_commands_with_stats(
                     matches!(
                         e.path().extension().and_then(|x| x.to_str()),
                         Some("json" | "processing")
-                    )
+                    ) && choruz_host_runtime::outbox::outbox_command_is_ready(work_dir, &e.path())
                 })
                 .collect();
             files.sort_by_key(|e| e.file_name());
@@ -285,7 +285,7 @@ async fn send_to_group(
     group_name: &str,
     content: &str,
     content_type: &str,
-    metadata: serde_json::Value,
+    mut metadata: serde_json::Value,
 ) -> Result<(), String> {
     let client = match store.connect().await {
         Ok(c) => c,
@@ -300,9 +300,13 @@ async fn send_to_group(
     // UUID-shaped group name is still valid because this is a name lookup.
     let rows = match client
         .query(
-            "SELECT c.id
+            "SELECT c.id, rh.id AS runtime_host_id, rh.name AS runtime_host_name
              FROM conversation c
              JOIN principal p ON p.id = $2
+             LEFT JOIN agent_runtime_bindings arb ON arb.agent_principal_id = p.id
+             LEFT JOIN runtime_host rh
+               ON rh.id = arb.config_json->>'runtime_host_id'
+              AND rh.company_id = c.workspace_id
              JOIN conversation_member cm
                ON cm.conv_id = c.id
               AND cm.principal_id = p.id
@@ -323,8 +327,8 @@ async fn send_to_group(
             return Err(format!("group lookup failed for '{}': {e}", group_name));
         }
     };
-    let conv_id: String = match rows.as_slice() {
-        [row] => row.get(0),
+    let row = match rows.as_slice() {
+        [row] => row,
         [] => {
             tracing::warn!(
                 session_key,
@@ -348,6 +352,15 @@ async fn send_to_group(
             ));
         }
     };
+    let conv_id: String = row.get(0);
+    if let Some(metadata) = metadata.as_object_mut() {
+        for key in ["runtime_host_id", "runtime_host_name"] {
+            metadata.remove(key);
+            if let Some(value) = row.get::<_, Option<String>>(key) {
+                metadata.insert(key.into(), serde_json::Value::String(value));
+            }
+        }
+    }
 
     // Write to conversation_events + event_outbox in a transaction
     let message_id = choruz_ids::MessageId::new().to_string();
@@ -771,6 +784,7 @@ async fn process_single_outbox_command(
             // (the previous behaviour silently misrouted agents and broke
             // create_group's name resolution downstream).
             let workspace_id = lookup_agent_workspace(event_store, agent_id).await;
+            let runtime_host_id = lookup_agent_runtime_host(event_store, agent_id).await;
 
             tracing::info!(
                 session_key,
@@ -785,6 +799,7 @@ async fn process_single_outbox_command(
                 driver,
                 instructions,
                 workspace_id.as_deref(),
+                runtime_host_id.as_deref(),
                 channel_visibility == Some("internal"),
                 model,
             );
@@ -931,11 +946,38 @@ async fn process_single_outbox_command(
                             size = bytes.len(),
                             "outbox: sharing text file"
                         );
-                        return Some(format!(
+                        let content = format!(
                             "**{}**\n```\n{}\n```",
                             filename,
                             String::from_utf8_lossy(&bytes),
-                        ));
+                        );
+                        if group.is_empty() {
+                            return Some(content);
+                        }
+                        let Some(store) = event_store else {
+                            return Some(format!(
+                                "Failed to share file to group '{}': event store is unavailable.",
+                                group
+                            ));
+                        };
+                        return Some(
+                            match send_to_group(
+                                session_key,
+                                agent_id,
+                                store,
+                                group,
+                                &content,
+                                "text/plain",
+                                serde_json::json!({}),
+                            )
+                            .await
+                            {
+                                Ok(()) => String::new(),
+                                Err(error) => {
+                                    format!("Failed to share file to group '{}': {}", group, error)
+                                }
+                            },
+                        );
                     }
 
                     // Binary: upload to /v1/attachments, then post to the group
@@ -1195,7 +1237,19 @@ async fn process_single_outbox_command(
                     } else {
                         "every"
                     };
-                    let next_run = compute_next_run_simple(schedule_type, schedule);
+                    let next_run = match choruz_application::schedule::next_run_at(
+                        schedule_type,
+                        schedule,
+                        None,
+                        chrono::Utc::now(),
+                    ) {
+                        Ok(next) => next,
+                        Err(error) => {
+                            return Some(format!(
+                                "Failed to create cron job '{cron_name}': {error}"
+                            ));
+                        }
+                    };
                     let Some(conv_id) =
                         resolve_cron_conversation_id(&client, session_key, agent_id).await
                     else {
@@ -1929,6 +1983,7 @@ fn provision_agent_payload(
     driver: &str,
     instructions: &str,
     workspace_id: Option<&str>,
+    runtime_host_id: Option<&str>,
     internal: bool,
     model: Option<&str>,
 ) -> serde_json::Value {
@@ -1939,6 +1994,9 @@ fn provision_agent_payload(
     });
     if let Some(ws) = workspace_id {
         payload["workspace_id"] = serde_json::Value::String(ws.to_string());
+    }
+    if let Some(host) = runtime_host_id {
+        payload["runtime_host_id"] = serde_json::Value::String(host.to_string());
     }
     if internal {
         payload["channel_visibility"] = serde_json::Value::String("internal".to_string());
@@ -2080,40 +2138,6 @@ async fn resolve_cron_conversation_id(
         .map(|(_, conv_id)| conv_id.to_string())
 }
 
-/// Simple next-run computation for outbox-created cron jobs.
-pub fn compute_next_run_simple(
-    schedule_type: &str,
-    schedule_value: &str,
-) -> Option<chrono::DateTime<chrono::Utc>> {
-    let now = chrono::Utc::now();
-    match schedule_type {
-        "every" => {
-            let s = schedule_value.trim();
-            if s.is_empty() {
-                return None;
-            }
-            let (num_str, unit) = s.split_at(s.len() - 1);
-            let num: i64 = num_str.parse().ok()?;
-            let duration = match unit {
-                "s" => chrono::Duration::seconds(num),
-                "m" => chrono::Duration::minutes(num),
-                "h" => chrono::Duration::hours(num),
-                "d" => chrono::Duration::days(num),
-                _ => {
-                    let num: i64 = s.parse().ok()?;
-                    chrono::Duration::minutes(num)
-                }
-            };
-            Some(now + duration)
-        }
-        "cron" => {
-            // Schedule first run in 1 minute for cron expressions
-            Some(now + chrono::Duration::minutes(1))
-        }
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests;
 
@@ -2132,6 +2156,29 @@ async fn lookup_agent_workspace(
         .await
         .ok()??;
     Some(row.get(0))
+}
+
+/// The device the requesting agent runs on, so a teammate it provisions
+/// lands beside it; `None` for an agent on the gateway's own device.
+async fn lookup_agent_runtime_host(
+    event_store: Option<&EventStore>,
+    agent_id: &str,
+) -> Option<String> {
+    let store = event_store?;
+    let client = store.connect().await.ok()?;
+    let row = client
+        .query_opt(
+            "SELECT config_json->>'runtime_host_id'
+             FROM agent_runtime_bindings
+             WHERE agent_principal_id = $1 AND state <> 'disabled'
+             ORDER BY updated_at DESC
+             LIMIT 1",
+            &[&agent_id],
+        )
+        .await
+        .ok()??;
+    row.get::<_, Option<String>>(0)
+        .filter(|host| !host.trim().is_empty())
 }
 
 /// For each entry: resolve as a principal name in the given workspace first.
@@ -2159,7 +2206,7 @@ async fn resolve_names_to_ids(
         match client
             .query_opt(
                 "SELECT id FROM principal
-                 WHERE workspace_id = $1 AND lower(name) = lower($2) AND deleted_at IS NULL
+                 WHERE workspace_id = $1 AND lower(name) = lower($2) AND deleted_at IS NULL AND NOT online_guest
                  LIMIT 1",
                 &[&workspace_id, &trimmed],
             )

@@ -1,12 +1,139 @@
 import { expect, test } from "@playwright/test";
-import { API_BASE, login, gotoDashboard } from "../fixtures/auth";
+import { mkdir, writeFile, readFile, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { API_BASE, login, signup, gotoDashboard } from "../fixtures/auth";
 import {
   getConsoleSnapshot,
   provisionAgent,
   createGroup,
   addGroupMember,
   uniqueName,
+  createCompany,
+  deleteCompany,
 } from "../fixtures/api";
+
+for (const scenario of ["reports load and delete failures", "keeps skill content with its selected title", "keeps loading until the selected skill returns", "browses and imports a Markdown file"] as const) {
+  test(`Skills ${scenario}`, async ({ page }, testInfo) => {
+    const { token, principal } = await signup(page, uniqueName("skills-user"), "skills-test-password");
+    const company = await createCompany(page, token, principal.id, uniqueName("skills-owner"));
+    const ownedDirs: string[] = [];
+    let release = () => {};
+    let releaseSelected = () => {};
+    try {
+      const agent = await provisionAgent(page, token, uniqueName("skills-agent"), { workspaceId: company.id });
+      for (const name of ["audit-a", "audit-b"]) {
+        const dir = join(agent.workspacePath, ".claude", "skills", name);
+        ownedDirs.push(dir);
+        await mkdir(dir, { recursive: true });
+        await writeFile(join(dir, "SKILL.md"), `# ${name}\nOwned ${name} content\n`);
+      }
+      await page.routeWebSocket((url) => url.pathname.startsWith("/v1/ws/terminals/"), (socket) => socket.close());
+      await gotoDashboard(page);
+      await page.locator(".company-selector-btn").click();
+      await page.locator(".company-dropdown-item-name").filter({ hasText: company.name }).click();
+      await page.locator(`[data-conversation-id="${agent.conversationId}"]`).click();
+      await page.getByTitle("Toggle details", { exact: true }).click();
+      if (scenario === "browses and imports a Markdown file") {
+        const sourceDir = join(agent.workspacePath, "skill-source");
+        const source = join(sourceDir, "audit-import.md");
+        const installed = join(agent.workspacePath, ".claude", "commands", "audit-import.md");
+        ownedDirs.push(sourceDir, installed);
+        await mkdir(sourceDir, { recursive: true });
+        await writeFile(source, "# Imported skill\nOwned original instructions\n");
+        await writeFile(join(sourceDir, "not-a-skill.txt"), "Do not import");
+        await page.locator(".detail-tab").filter({ hasText: "Skills" }).click();
+        const panel = page.locator(".detail-panel");
+        await panel.getByTitle("Add skill", { exact: true }).click();
+        await panel.getByRole("button", { name: "Browse", exact: true }).click();
+        const picker = page.locator(".folder-picker-modal");
+        await picker.getByRole("option", { name: "skill-source", exact: true }).dblclick();
+        await expect(picker.getByRole("option", { name: "not-a-skill.txt", exact: true })).toHaveCount(0);
+        await expect(picker.getByRole("button", { name: "Select File", exact: true })).toBeDisabled();
+        await expect(picker.getByRole("option", { name: "audit-import.md", exact: true })).toBeVisible();
+        await picker.getByRole("option", { name: "audit-import.md", exact: true }).click();
+        await picker.screenshot({ path: testInfo.outputPath("skill-file-picker.png") });
+        await picker.getByRole("button", { name: "Select File", exact: true }).click();
+        await expect(picker).toHaveCount(0);
+        await expect(panel.getByPlaceholder("/path/to/skill.md", { exact: true })).toHaveValue(source);
+        await expect(readFile(installed, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+        await panel.getByRole("button", { name: "Import skill", exact: true }).click();
+        await expect(panel.getByText("audit-import", { exact: true })).toBeVisible();
+        expect(await readFile(installed, "utf8")).toBe(await readFile(source, "utf8"));
+        expect(await readFile(source, "utf8")).toBe("# Imported skill\nOwned original instructions\n");
+        return;
+      }
+      if (scenario === "reports load and delete failures") {
+        await page.route((url) => url.pathname === "/api/agent-skills" && url.searchParams.get("workspace_path") === agent.workspacePath && !url.searchParams.has("read"),
+          (route) => route.fulfill({ status: 503, body: "unavailable" }), { times: 1 });
+      }
+      await page.locator(".detail-tab").filter({ hasText: "Skills" }).click();
+      const panel = page.locator(".detail-panel");
+      if (scenario === "reports load and delete failures") {
+        await expect(panel.getByRole("alert")).toContainText("Could not load skills");
+        await expect(panel.getByRole("heading", { name: "Skills (0)", exact: true })).toHaveCount(0);
+        await expect(panel.getByText("No skills installed.", { exact: true })).toHaveCount(0);
+        await panel.getByRole("button", { name: "Retry", exact: true }).click();
+        await expect(panel.getByText("audit-a", { exact: true })).toBeVisible();
+        await page.route("**/api/agent-skills", async (route) => {
+          if (route.request().method() === "DELETE") await route.fulfill({ status: 503, body: "unavailable" });
+          else await route.continue();
+        }, { times: 1 });
+        page.on("dialog", (dialog) => dialog.accept());
+        await panel.getByTitle("Delete audit-a", { exact: true }).click();
+        await expect(panel.getByRole("alert")).toContainText('Could not delete "audit-a"');
+        expect(await readFile(join(ownedDirs[0], "SKILL.md"), "utf8")).toContain("Owned audit-a");
+        await expect(panel.getByText("audit-a", { exact: true })).toBeVisible();
+        await panel.getByTitle("Delete audit-a", { exact: true }).click();
+        await expect(panel.getByText("audit-a", { exact: true })).toHaveCount(0);
+        await expect(readFile(join(ownedDirs[0], "SKILL.md"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+      } else {
+        await expect(panel.getByText("audit-a", { exact: true })).toBeVisible();
+        let arrived!: () => void;
+        let completed!: () => void;
+        const held = new Promise<void>((resolve) => { arrived = resolve; });
+        const released = new Promise<void>((resolve) => { release = resolve; });
+        const delivered = new Promise<void>((resolve) => { completed = resolve; });
+        const selectedResponse = new Promise<void>((resolve) => { releaseSelected = resolve; });
+        if (scenario === "keeps loading until the selected skill returns") {
+          await page.route((url) => url.pathname === "/api/agent-skills" && url.searchParams.get("workspace_path") === agent.workspacePath && url.searchParams.get("read") === "audit-b", async (route) => {
+            const response = await route.fetch();
+            await selectedResponse;
+            await route.fulfill({ response });
+          });
+        }
+        await page.route((url) => url.pathname === "/api/agent-skills" && url.searchParams.get("workspace_path") === agent.workspacePath && url.searchParams.get("read") === "audit-a", async (route) => {
+          const response = await route.fetch();
+          arrived();
+          await released;
+          await route.fulfill({ response });
+          completed();
+        });
+        await panel.getByText("audit-a", { exact: true }).click();
+        await held;
+        await panel.getByText("audit-b", { exact: true }).click();
+        if (scenario === "keeps skill content with its selected title") {
+          await expect(panel.locator(".skill-content-pre")).toContainText("Owned audit-b");
+        }
+        release();
+        await delivered;
+        await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+        if (scenario === "keeps loading until the selected skill returns") {
+          await expect(panel.locator(".skill-content-panel")).toContainText("Loading");
+          await expect(panel.locator(".skill-content-pre")).toHaveCount(0);
+          releaseSelected();
+        }
+        await expect(panel.locator(".skill-content-pre")).toContainText("Owned audit-b");
+        await expect(panel.locator(".skill-content-pre")).not.toContainText("Owned audit-a");
+      }
+    } finally {
+      release();
+      releaseSelected();
+      await page.unrouteAll({ behavior: "wait" });
+      try { await deleteCompany(page, token, company.id); }
+      finally { for (const dir of ownedDirs) await rm(dir, { recursive: true, force: true }); }
+    }
+  });
+}
 
 test.describe("Agent management", () => {
   /* ---------------------------------------------------------------------- */

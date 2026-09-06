@@ -49,6 +49,7 @@ const MAX_STREAMS: usize = 32;
 const MAX_PENDING_REQUESTS: usize = 64;
 const MAX_ID_LEN: usize = 128;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+const ONBOARDING_REQUEST_TIMEOUT: Duration = Duration::from_secs(70);
 const STREAM_COMMAND_CAPACITY: usize = 64;
 /// The web session cookie the Next.js route handlers read; see
 /// `local_auth::cookie_name`.
@@ -136,7 +137,6 @@ impl RelayExecutor {
     ) -> Result<Self, String> {
         let client = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(5))
-            .timeout(REQUEST_TIMEOUT)
             .build()
             .map_err(|error| error.to_string())?;
         Ok(Self {
@@ -527,12 +527,14 @@ fn resolve_http_target(
     })
 }
 
-/// Only the two gateway sockets the dashboard opens cross the relay.
+/// The two gateway sockets the dashboard opens and the host link a paired
+/// connector keeps are the only sockets that cross the relay.
 fn resolve_stream_target(targets: &ExecutorTargets, path: &str) -> Result<String, Rejection> {
     let allowed = valid_path(path)
         && (path == "/v1/ws/sync"
             || path.starts_with("/v1/ws/sync?")
-            || path.starts_with("/v1/ws/terminals/"));
+            || path.starts_with("/v1/ws/terminals/")
+            || path == choruz_host_runtime::link::LINK_PATH);
     if !allowed {
         return Err(Rejection {
             status: 404,
@@ -560,6 +562,7 @@ async fn execute_http(
     head: RequestHead,
     body: Vec<u8>,
 ) -> Result<HttpResponse, String> {
+    let timeout = request_timeout(&head.path);
     let method = reqwest::Method::from_bytes(head.method.as_bytes())
         .map_err(|error| format!("invalid method: {error}"))?;
     let mut headers = reqwest::header::HeaderMap::new();
@@ -582,7 +585,10 @@ async fn execute_http(
         auth_value.0,
         reqwest::header::HeaderValue::from_str(&auth_value.1).map_err(|error| error.to_string())?,
     );
-    let mut request = client.request(method, url).headers(headers);
+    let mut request = client
+        .request(method, url)
+        .headers(headers)
+        .timeout(timeout);
     if !body.is_empty() {
         request = request.body(body);
     }
@@ -614,6 +620,14 @@ async fn execute_http(
         headers,
         body: body.to_vec(),
     })
+}
+
+fn request_timeout(path: &str) -> Duration {
+    if path == "/api/v1/runtime-host-onboarding" {
+        ONBOARDING_REQUEST_TIMEOUT
+    } else {
+        REQUEST_TIMEOUT
+    }
 }
 
 fn response_frames(request_id: &str, response: HttpResponse) -> Vec<Value> {
@@ -1043,6 +1057,15 @@ mod tests {
         let response = collect_response(&mut rx, "u1").await;
         assert_eq!(response.status, None);
         assert!(response.error.is_some());
+    }
+
+    #[test]
+    fn runtime_host_onboarding_gets_the_server_side_pairing_window() {
+        assert_eq!(
+            request_timeout("/api/v1/runtime-host-onboarding"),
+            ONBOARDING_REQUEST_TIMEOUT
+        );
+        assert_eq!(request_timeout("/api/v1/companies"), REQUEST_TIMEOUT);
     }
 
     async fn open_stream_and_wait_ready(

@@ -597,6 +597,16 @@ pub struct MessagePageQuery {
     pub limit: Option<u64>,
 }
 
+#[derive(Debug, Serialize)]
+pub struct MessageSearchResult {
+    pub message_id: String,
+    pub conversation_id: String,
+    pub conversation_name: Option<String>,
+    pub sender_id: String,
+    pub content: String,
+    pub created_at: DateTime<Utc>,
+}
+
 /// A keyset-paginated message page. `next_cursor` points in the requested
 /// direction: to an older page for `latest`/`before`, or a newer page for
 /// `after`.

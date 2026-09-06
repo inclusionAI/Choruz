@@ -3,6 +3,9 @@ import { describe, expect, it } from "vitest";
 import { sanitizeTelemetryData, sanitizeTelemetryValue } from "./telemetry-sanitize";
 
 describe("telemetry sanitization", () => {
+  it("redacts authentication codes and pairing credentials before browser storage", () => {
+    expect(sanitizeTelemetryData({ authenticationCode: "auth-value", pairing_credential: "pair-value", deviceCode: "device-value" })).toEqual({ authenticationCode: "[REDACTED]", pairing_credential: "[REDACTED]", deviceCode: "[REDACTED]" });
+  });
   it("redacts camelCase path, token, private content, filename, and byte fields", () => {
     const sanitized = sanitizeTelemetryData({
       conversation_id: "conv-safe",

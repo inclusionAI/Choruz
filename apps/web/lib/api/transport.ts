@@ -58,6 +58,18 @@ export const localTransport: ChoruzTransport = {
 
 let active: ChoruzTransport = localTransport;
 
+export interface RequestObservation {
+  traceId: string;
+  finish(result: { status?: number; outcome: "succeeded" | "failed" | "cancelled" }): void;
+}
+
+let observeRequest: ((input: string, init?: RequestInit) => RequestObservation) | null = null;
+
+/** Observe client requests until replaced or cleared by the authenticated owner. */
+export function setRequestObserver(observer: typeof observeRequest): void {
+  observeRequest = observer;
+}
+
 /** Install the transport every client call uses; `null` restores the local one. */
 export function setActiveTransport(transport: ChoruzTransport | null): void {
   active = transport ?? localTransport;
@@ -69,9 +81,20 @@ export function activeTransport(): ChoruzTransport {
 
 /** `fetch` through the active transport. On the server there is no
  *  transport to swap, so the call goes straight to `fetch`. */
-export function transportFetch(input: string, init?: RequestInit): Promise<Response> {
+export async function transportFetch(input: string, init?: RequestInit): Promise<Response> {
   if (typeof window === "undefined") return globalThis.fetch(input, init);
-  return active.fetch(input, init);
+  const observation = observeRequest?.(input, init);
+  if (!observation) return active.fetch(input, init);
+  const headers = new Headers(init?.headers);
+  headers.set("x-trace-id", observation.traceId);
+  try {
+    const response = await active.fetch(input, { ...init, headers });
+    observation.finish({ status: response.status, outcome: response.ok ? "succeeded" : "failed" });
+    return response;
+  } catch (error) {
+    observation.finish({ outcome: error instanceof Error && error.name === "AbortError" ? "cancelled" : "failed" });
+    throw error;
+  }
 }
 
 export function transportSocket(path: string, options?: SocketOptions): DashboardSocket {

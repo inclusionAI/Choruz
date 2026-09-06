@@ -50,6 +50,15 @@ class DocsOnlyTest(unittest.TestCase):
 
 
 class SpecsForChangeTest(unittest.TestCase):
+    def test_online_modal_keeps_its_real_worker_regression(self):
+        _, specs = specs_for_change(["apps/web/components/online/online-modal.tsx"])
+        self.assertIn("tests/e2e/online.spec.ts", specs)
+
+    def test_device_discovery_keeps_its_real_connector_regression(self):
+        for source in ("apps/web/hooks/use-driver-availability.ts", "apps/web/lib/drivers/device-driver-catalog.ts", "apps/web/components/agents/create-agent-modal.tsx"):
+            _, specs = specs_for_change([source])
+            self.assertIn("tests/e2e/device-provisioning.spec.ts", specs)
+
     def test_backend_change_runs_everything(self):
         everything, specs = specs_for_change(["crates/choruz-domain/src/lib.rs"])
         self.assertTrue(everything)

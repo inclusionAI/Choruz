@@ -138,7 +138,7 @@ if [ "${API_CONNECT_HOST}" = "0.0.0.0" ]; then
 fi
 API_BASE_URL="http://${API_CONNECT_HOST}:${API_PORT}"
 WEB_BASE_URL="http://${API_CONNECT_HOST}:${WEB_PORT}"
-CODEX_RUNTIME_DIR="${CHORUZ_CODEX_RUNTIME_DIR:-${TMPDIR:-/tmp}/choruz-codex-runtime-$(id -u)-$(printf '%s' "${ROOT_DIR}" | cksum | awk '{print $1}')}"
+SERVICE_RUNTIME_DIR="$(host_service_runtime_dir)"
 
 if [ -f "${WATCHDOG_RECORD}" ]; then
   OLD_WATCHDOG_PID=$(read_process_record_pid "${WATCHDOG_RECORD}")
@@ -160,7 +160,7 @@ nohup env \
   CHORUZ_INTERNAL_API_URL="${API_BASE_URL}" \
   CHORUZ_INTERNAL_WEB_URL="${WEB_BASE_URL}" \
   CHORUZ_ATTACHMENT_DIR=".choruz-runtime/attachments" \
-  CHORUZ_RUNTIME_DIR="${CODEX_RUNTIME_DIR}" \
+  CHORUZ_RUNTIME_DIR="${SERVICE_RUNTIME_DIR}" \
   CHORUZ_API_HOST="${BIND_HOST}" CHORUZ_API_PORT="${API_PORT}" \
   ./target/release/choruz-api-gateway >"${LOG_DIR}/api-gateway.log" 2>&1 &
 API_PID=$!
@@ -169,6 +169,7 @@ echo "  API Gateway PID: $API_PID"
 # 4. Start Pipeline (WebSocket fanout, port 3020)
 echo -e "${YELLOW}[4/4] Starting Pipeline (port ${PIPELINE_PORT}, host ${BIND_HOST})...${NC}"
 nohup env \
+  CHORUZ_RUNTIME_DIR="${SERVICE_RUNTIME_DIR}" \
   CHORUZ_DATABASE_URL="${DB_URL}" \
   CHORUZ_API_BASE_URL="${API_BASE_URL}" \
   CHORUZ_WEB_BASE_URL="${WEB_BASE_URL}" \
@@ -210,6 +211,7 @@ echo "  Pipeline ready"
 # Pipeline reports 503 when no runners are connected; the pipeline itself
 # handles delivery via headless --print mode, so that condition is expected.
 nohup env \
+  CHORUZ_CODEX_RUNTIME_DIR="${SERVICE_RUNTIME_DIR}" \
   CHORUZ_DATABASE_URL="${DB_URL}" \
   CHORUZ_API_BASE_URL="${API_BASE_URL}" \
   CHORUZ_WEB_BASE_URL="${WEB_BASE_URL}" \

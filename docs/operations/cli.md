@@ -33,6 +33,18 @@ where the API URL is loopback, the CLI may instead use
 session token. Supplying the operator password to a remote URL is deliberately
 not supported; use a session token there.
 
+## Activity data
+
+Use `choruz activity` with the same authentication as other CLI commands. Reads contain only the signed-in human's records in their home workspace and current companies. They do not grant access to other people's activity. The API's filters and pagination are defined in [the HTTP contract](../../openapi/choruz.yaml); the data stays on the API host being queried.
+
+`activity list`, `activity export` and `activity summary` require `--since` and `--until` as RFC3339 timestamps, at most 31 days apart. `--source telemetry` selects browser observations; `--source audit` selects projected server audit records. `--trace-id` narrows the range to a request chain. Time filters use server receipt time, not the client clock. Each exported observation also carries its occurrence time when supplied by the browser.
+
+`list` prints one JSON page with an opaque continuation cursor. `export` follows every page and prints one JSON object per line; redirect stdout to a protected file for analysis. A failed request or output write exits nonzero, and an interrupted export can leave a partial file. `summary` reports event counts, explicitly failed outcomes and mean recorded durations by name. Its `truncated` field identifies more than 200 groups; export the records when that happens. Counts are not unique users, intent, satisfaction or inferred abandonment.
+
+`choruz activity messages --conversation <id>` exports committed message metadata and execution attempts as JSON lines. Add `--include-content` to include committed conversation text; membership is checked and reads are audited. Native CLI transcript text, terminal keystrokes, unsent drafts and tool payloads are not exported. Terminal activity describes transport operations, not model success.
+
+`choruz activity prune --before <RFC3339>` previews at most 1000 old telemetry rows. Add `--apply` to delete that batch; repeat only while `has_more` is true. The cutoff must be at least 24 hours old. Deletion and its audit marker commit together. This command never deletes audit logs, message history or other users' rows. There is no automatic retention schedule; an operator can schedule the explicit command under their own policy. Exported files have their own retention and access controls.
+
 ## Remote Control from a server
 
 Remote Control uses Choruz's hosted Gateway by default. On a fresh server,
@@ -60,3 +72,5 @@ that advanced mode, set the matching `CHORUZ_REMOTE_CONTROL_GATEWAY_SECRET`.
 
 `choruz-connector` is separate: it joins an execution machine to an existing
 Choruz host. It does not replace `choruz` or host the Remote Control bridge.
+
+For independent host instances under one operating-system user, set `CHORUZ_CONNECTOR_CONFIG_DIR` to a different absolute directory for each API process. Onboarding writes and supervision reads that same directory. An unset value uses `~/.choruz/connectors`; an empty or relative value is rejected rather than falling back. This isolates connector ownership only: each instance also needs separate database, runtime and listener configuration. It does not change Harness login stores or move existing connector configurations.

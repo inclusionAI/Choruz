@@ -6,14 +6,15 @@ import path from "node:path";
 import {
   defaultPiRuntimeCheck,
   getDriverAvailability,
-  resolveDriverBinary,
 } from "./driver-availability";
+import { resolveDriverBinary } from "./driver-registry";
 
 describe("driver availability", () => {
   it("uses provisioning-compatible env/default binary resolution", () => {
     expect(resolveDriverBinary("claude_terminal", {})).toBe("claude");
     expect(resolveDriverBinary("codex_terminal", {})).toBe("codex");
     expect(resolveDriverBinary("codex_exec", {})).toBe("codex");
+    expect(resolveDriverBinary("codex_app_server", {})).toBe("codex");
     expect(resolveDriverBinary("pi_terminal", {})).toBe("pi");
     expect(resolveDriverBinary("grok_terminal", {})).toBe("grok");
     expect(resolveDriverBinary("opencode_terminal", {})).toBe("opencode");
@@ -27,6 +28,10 @@ describe("driver availability", () => {
     expect(resolveDriverBinary("claude_terminal", {
       CHORUZ_CLAUDE_CLI_PATH: "/runtime/bin/claude",
     })).toBe("/runtime/bin/claude");
+    expect(resolveDriverBinary("codex_app_server", {
+      CHORUZ_CODEX_BINARY: " /explicit/codex ",
+      CHORUZ_CODEX_CLI_PATH: "/runtime/codex",
+    })).toBe("/explicit/codex");
   });
 
   it("reports user-facing status without requiring real CLIs in tests", async () => {
@@ -94,6 +99,16 @@ describe("driver availability", () => {
         }),
       ]),
     );
+  });
+
+  it("checks the supplied runtime executable without adding app-server to choices", async () => {
+    const binaries: string[] = [];
+    const items = await getDriverAvailability({
+      env: { CHORUZ_CODEX_BINARY: " ", CHORUZ_CODEX_CLI_PATH: " /runtime/codex " },
+      checkBinary: (binary) => { binaries.push(binary); return false; },
+    });
+    expect(binaries.filter((binary) => binary === "/runtime/codex")).toHaveLength(2);
+    expect(items.some((item) => String(item.driverId) === "codex_app_server")).toBe(false);
   });
 
   it("uses the supplied PATH for the default binary check", async () => {

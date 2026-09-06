@@ -160,7 +160,7 @@ describe("channel task create-from-message helpers", () => {
       idx: 0,
       allMsgs: [message],
       principal: currentUser,
-      agents: [principal("agent-1", "Ada", "agent")],
+      principals: [principal("agent-1", "Ada", "agent")],
       isTerminalChat: false,
       scrollToMessage: () => {},
       touchActiveId: null,

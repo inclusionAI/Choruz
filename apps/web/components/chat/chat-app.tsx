@@ -15,8 +15,7 @@ const TerminalView = lazy(() =>
   import("../runtime/terminal-view").then((m) => ({ default: m.TerminalView })),
 );
 
-import { trace, endTrace, initTrace, startInteractionTracking } from "../../lib/api/choruz-trace";
-import { sanitizeTelemetryData } from "../../lib/api/telemetry-sanitize";
+import { trace, endTrace, initTrace, startInteractionTracking, setActivityContext } from "../../lib/api/choruz-trace";
 import { mergePreviewIntoMessages, appendIncrementalMessages, mergeFetchedMessages, maxCachedSeq, messagesMissingFromPrevious, upsertConfirmedMessage } from "../../lib/messages/messages";
 import { persistMessages, loadAllCachedMessages } from "../../lib/messages/message-db";
 import type { Principal, Conversation, ChatMessage, MessagePage, ConsoleSnapshot, RuntimeBindingInfo, DashboardBootstrap, DashboardSyncChange, ChannelTask, PatchChannelTaskRequest, Company } from "../../lib/api/choruz-types";
@@ -53,6 +52,7 @@ import { KanbanBoard, kanbanConversationTab } from "../../plugins/kanban/client"
 import { pixelWorldSidebarAction } from "../../plugins/pixel-world/client";
 import { remoteSshSidebarAction, RemoteSshModal } from "../../plugins/remote-ssh/client";
 import { remoteControlSidebarAction, RemoteControlModal, RuntimeHostsModal } from "../../plugins/remote-control/client";
+import { OnlineModal } from "../online/online-modal";
 import { ImportWorkspaceSessionsModal } from "../agents/import-workspace-sessions-modal";
 import type { RuntimeHost } from "../../lib/remote/remote-control";
 import { resolveClientPluginIds } from "../../plugins/registry";
@@ -78,6 +78,7 @@ import {
   OPTIMISTIC_SERVER_SEQ,
   mergeThreadReplies,
   partitionThreadMessages,
+  isThreadReply,
   resolveThreadRoot,
   rollbackOptimisticMessage,
 } from "../../lib/messages/threads";
@@ -170,6 +171,10 @@ export function ChatApp({ initialSnapshot, sessionToken, runtimeBindings: initia
   }>>({});
   const loadingOlderConversationIdsRef = useRef(new Set<string>());
   const [agents, setAgents] = useState(initialSnapshot.agents);
+  const displayPrincipals = useMemo(
+    () => mergeKnownPrincipals(knownPrincipals, [principal, ...agents]),
+    [knownPrincipals, principal, agents],
+  );
   const [hostPlugins, setHostPlugins] = useState(initialSnapshot.plugins ?? []);
   const clientPluginIds = useMemo(() => resolveClientPluginIds(hostPlugins), [hostPlugins]);
   const kanbanEnabled = clientPluginIds.has("kanban");
@@ -181,11 +186,18 @@ export function ChatApp({ initialSnapshot, sessionToken, runtimeBindings: initia
   const mathcodeEnabled = clientPluginIds.has("mathcode");
   const [channelTasksByConv, setChannelTasksByConv] = useState<Record<string, ChannelTask[]>>({});
   const [channelTaskLoadErrors, setChannelTaskLoadErrors] = useState<Record<string, string | null>>({});
+  const [channelTaskMutationErrors, setChannelTaskMutationErrors] = useState<Record<string, string | null>>({});
   const [loadingChannelTaskConvIds, setLoadingChannelTaskConvIds] = useState<Set<string>>(new Set());
   const [mutatingChannelTaskIds, setMutatingChannelTaskIds] = useState<Set<string>>(new Set());
   const [channelTaskRefetchConvIds, setChannelTaskRefetchConvIds] = useState<string[]>([]);
   const [runtimeBindings, setRuntimeBindings] = useState(initialBindings);
   const [activeConvId, setActiveConvId] = useState<string | null>(initialActiveConversationId);
+  const [searchTarget, setSearchTarget] = useState<{ conversationId: string; messageId: string } | null>(null);
+  const [threadSearchTarget, setThreadSearchTarget] = useState<string | null>(null);
+  useEffect(() => {
+    setSearchTarget((target) => target?.conversationId === activeConvId ? target : null);
+    setThreadSearchTarget(null);
+  }, [activeConvId]);
   const [showDetail, setShowDetail] = useState(false);
   const [showPixelWorld, setShowPixelWorld] = useState(false);
   const [pixelWorldPreferenceLoaded, setPixelWorldPreferenceLoaded] = useState(false);
@@ -194,11 +206,7 @@ export function ChatApp({ initialSnapshot, sessionToken, runtimeBindings: initia
   const detailResize = usePanelResize({ storageKey: "choruz_detail_width", initial: 320, min: 280, max: 600, anchor: "right" });
   // ---- Analytics ----
   const trackEvent = useCallback((event: string, data?: Record<string, unknown>) => {
-    transportFetch("/api/analytics", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ event, data: sanitizeTelemetryData(data), timestamp: new Date().toISOString() }),
-    }).catch(() => {});
+    trace.event(event, data);
   }, []);
 
   const flags = useConversationFlags({
@@ -214,9 +222,13 @@ export function ChatApp({ initialSnapshot, sessionToken, runtimeBindings: initia
 
   // Initialize tracing on mount
   useEffect(() => {
-    initTrace(sessionToken, gatewayBaseUrl ?? "");
-    startInteractionTracking();
-  }, [sessionToken, gatewayBaseUrl]);
+    const stopTrace = initTrace(sessionToken, gatewayBaseUrl ?? "", principal.id);
+    const stopInteractions = startInteractionTracking();
+    return () => {
+      stopInteractions?.();
+      stopTrace();
+    };
+  }, [sessionToken, gatewayBaseUrl, principal.id]);
 
   useEffect(() => {
     if (!pixelWorldPreferenceLoaded) return;
@@ -357,6 +369,7 @@ export function ChatApp({ initialSnapshot, sessionToken, runtimeBindings: initia
   const [showHarnessAccounts, setShowHarnessAccounts] = useState(false);
   const [showServers, setShowServers] = useState(false);
   const [showRemoteControl, setShowRemoteControl] = useState(false);
+  const [showOnline, setShowOnline] = useState(false);
   const [machinesCompanyId, setMachinesCompanyId] = useState<string | null>(null);
   const [runtimeHosts, setRuntimeHosts] = useState<RuntimeHost[]>([]);
   const [showWorkspaceSessionImport, setShowWorkspaceSessionImport] = useState(false);
@@ -385,6 +398,7 @@ export function ChatApp({ initialSnapshot, sessionToken, runtimeBindings: initia
 
   // Quote-reply state
   const [replyTo, setReplyTo] = useState<ReplyTo | null>(null);
+  const [pendingFilesByConversation, setPendingFilesByConversation] = useState<Record<string, File[]>>({});
   // Thread side-panel state: the open thread's root message id (null = closed)
   const [openThreadRootId, setOpenThreadRootId] = useState<string | null>(null);
   const [threadLoading, setThreadLoading] = useState(false);
@@ -412,6 +426,9 @@ export function ChatApp({ initialSnapshot, sessionToken, runtimeBindings: initia
   );
   const [activeTabId, setActiveTabId] = useState<string | null>(initialActiveConversationId); // convId or filePath
   const [activeConversationView, setActiveConversationView] = useState<"chat" | "tasks">(initialActiveConversationView);
+  useEffect(() => {
+    if (activeTabId !== activeConvId || activeConversationView !== "chat") setSearchTarget(null);
+  }, [activeTabId, activeConvId, activeConversationView]);
 
   const selectCompany = useCallback((companyId: string) => {
     const visibleConversationIds = new Set(
@@ -427,6 +444,7 @@ export function ChatApp({ initialSnapshot, sessionToken, runtimeBindings: initia
       ? rememberedConversationId
       : null;
     setActiveCompanyId(companyId);
+    try { localStorage.setItem(`choruz_active_company:${principal.id}`, companyId); } catch {}
     setOpenTabs((previous) => {
       const visibleTabs = previous.filter((tab) =>
         tab.type === "conv"
@@ -442,10 +460,12 @@ export function ChatApp({ initialSnapshot, sessionToken, runtimeBindings: initia
     setActiveTabId(nextConversationId);
     if (nextConversationId) {
       try { localStorage.setItem("choruz_active_conv", nextConversationId); } catch {}
+    } else {
+      try { localStorage.removeItem("choruz_active_conv"); } catch {}
     }
     setReplyTo(null);
     setOpenThreadRootId(null);
-  }, [activeCompanyId, activeConvId, conversations]);
+  }, [activeCompanyId, activeConvId, conversations, principal.id]);
 
   // Deleting the active company moves to the first remaining one.
   const handleDeleteCompany = useCallback(async (companyId: string) => {
@@ -721,7 +741,17 @@ export function ChatApp({ initialSnapshot, sessionToken, runtimeBindings: initia
       const savedExists = saved &&
         !hiddenConversationIds.has(saved) &&
         initialSnapshot.conversations.some((c) => c.id === saved);
-      const restored = initialExists ? initialActiveConversationId : requestedExists ? requested : savedExists ? saved : null;
+      let restored = initialExists ? initialActiveConversationId : requestedExists ? requested : savedExists ? saved : null;
+      const savedCompany = localStorage.getItem(`choruz_active_company:${principal.id}`);
+      const validSavedCompany = initialCompanies.some((company) => company.id === savedCompany) ? savedCompany : null;
+      const conversationCompany = initialSnapshot.conversations.find((conversation) => conversation.id === restored)?.workspace_id;
+      const restoredCompany = initialExists || requestedExists
+        ? conversationCompany
+        : validSavedCompany ?? conversationCompany;
+      if (restoredCompany) {
+        setActiveCompanyId(restoredCompany);
+        if (conversationCompany && conversationCompany !== restoredCompany) restored = null;
+      }
 
       if (restored) {
         setActiveConvId(restored);
@@ -804,8 +834,8 @@ export function ChatApp({ initialSnapshot, sessionToken, runtimeBindings: initia
     [activeMessages],
   );
   const resolveName = useCallback(
-    (id: string) => principalName(principal, agents, id),
-    [principal, agents],
+    (id: string) => principalName(principal, displayPrincipals, id),
+    [principal, displayPrincipals],
   );
   const threadRollups = useMemo(() => {
     const map = new Map<string, ThreadRollupInfo>();
@@ -868,9 +898,9 @@ export function ChatApp({ initialSnapshot, sessionToken, runtimeBindings: initia
   const visibleChannelTaskAssignees = useMemo(() => {
     return resolveVisibleChannelTaskAssignees({
       conversation: activeConv,
-      principals: mergeKnownPrincipals(knownPrincipals, [principal, ...agents]),
+      principals: displayPrincipals,
     });
-  }, [activeConv, knownPrincipals, principal, agents]);
+  }, [activeConv, displayPrincipals]);
   const canCreateChannelTaskFromActiveMessage = showChannelTasksTab && visibleChannelTaskAssignees.length > 0;
 
   useEffect(() => {
@@ -944,7 +974,6 @@ export function ChatApp({ initialSnapshot, sessionToken, runtimeBindings: initia
     const conversationId = activeConvId;
     const previousTask = (channelTasksByConv[conversationId] ?? []).find((task) => task.task_id === taskId);
     setMutatingChannelTaskIds((prev) => new Set(prev).add(taskId));
-    setChannelTaskLoadErrors((prev) => ({ ...prev, [conversationId]: null }));
     setChannelTasksByConv((prev) => ({
       ...prev,
       [conversationId]: (prev[conversationId] ?? []).map((task) =>
@@ -953,6 +982,7 @@ export function ChatApp({ initialSnapshot, sessionToken, runtimeBindings: initia
     }));
     try {
       const updated = await patchChannelTask(sessionToken, taskId, patch);
+      setChannelTaskMutationErrors((prev) => ({ ...prev, [conversationId]: null }));
       setChannelTasksByConv((prev) => ({
         ...prev,
         [updated.conversation_id]: replaceChannelTask(prev[updated.conversation_id] ?? [], updated),
@@ -965,7 +995,7 @@ export function ChatApp({ initialSnapshot, sessionToken, runtimeBindings: initia
         patchKeys: Object.keys(patch),
         error: message,
       });
-      setChannelTaskLoadErrors((prev) => ({ ...prev, [conversationId]: message }));
+      setChannelTaskMutationErrors((prev) => ({ ...prev, [conversationId]: message }));
       if (previousTask) {
         setChannelTasksByConv((prev) => ({
           ...prev,
@@ -1253,10 +1283,10 @@ export function ChatApp({ initialSnapshot, sessionToken, runtimeBindings: initia
   // Hiding also closes the conversation if it is open.
   const handleHideSession = useCallback(
     (conversationId: string) => flags.hide(conversationId, () => {
+      setOpenTabs((previous) => previous.filter((tab) => tab.type !== "conv" || tab.convId !== conversationId));
       if (activeConvId !== conversationId) return;
       setActiveConvId(null);
       setActiveTabId(null);
-      setOpenTabs((previous) => previous.filter((tab) => tab.type !== "conv" || tab.convId !== conversationId));
       try { localStorage.removeItem("choruz_active_conv"); } catch { /* ignore */ }
       setReplyTo(null);
       setOpenThreadRootId(null);
@@ -1269,6 +1299,12 @@ export function ChatApp({ initialSnapshot, sessionToken, runtimeBindings: initia
     (convId: string) => {
       const span = trace.start("select_conversation", { convId });
       setActiveConvId(convId);
+      const conv = conversations.find((conversation) => conversation.id === convId);
+      const companyId = conv?.workspace_id ?? activeCompanyId;
+      if (companyId) {
+        setActiveCompanyId(companyId);
+        try { localStorage.setItem(`choruz_active_company:${principal.id}`, companyId); } catch {}
+      }
       setActiveTabId(convId);
       // Add conversation tab if not already open
       setOpenTabs(prev => {
@@ -1295,8 +1331,6 @@ export function ChatApp({ initialSnapshot, sessionToken, runtimeBindings: initia
         unreadCommitGateRef.current.claimedSeq(),
       );
       setUnreads((prev) => clearConversationUnread(prev, convId));
-      const conv = conversations.find((c) => c.id === convId);
-      const companyId = conv?.workspace_id ?? activeCompanyId;
       if (companyId) {
         activeConversationByCompanyRef.current.set(companyId, convId);
       }
@@ -1359,7 +1393,6 @@ export function ChatApp({ initialSnapshot, sessionToken, runtimeBindings: initia
         conversation_id: activeConvId,
         content_len: content.length,
       });
-      trackEvent("send_message", { conversation_id: activeConvId });
 
       const mentionedAgentIds = mentionedAgentIdsIn(activeConv, agents, content);
       if (mentionedAgentIds.size > 0) markAgentsThinking(mentionedAgentIds);
@@ -1442,6 +1475,7 @@ export function ChatApp({ initialSnapshot, sessionToken, runtimeBindings: initia
   const handleOpenThread = useCallback(
     (msgId: string) => {
       if (!activeConvId) return;
+      setThreadSearchTarget(null);
       // Canonicalize locally: clicking "open thread" on a broadcast reply
       // must open its ROOT's thread, not start a nested one (threads are
       // flat). Local resolution can still land on a non-canonical id when
@@ -1562,7 +1596,6 @@ export function ChatApp({ initialSnapshot, sessionToken, runtimeBindings: initia
         broadcast,
         content_len: content.length,
       });
-      trackEvent("send_thread_reply", { conversation_id: activeConvId, broadcast });
 
       // Same mention scan as handleSendMessage, @all included: the backend
       // router wakes agents on @all regardless of thread context.
@@ -1671,6 +1704,7 @@ export function ChatApp({ initialSnapshot, sessionToken, runtimeBindings: initia
         const idempotencyKey = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
         optimisticIdempotencyKey = idempotencyKey;
         const attachmentMetadata = {
+          ...(replyTo ? { reply_to_id: replyTo.id } : {}),
           attachment_id: attachment.id,
           filename: attachment.filename,
           mime_type: attachment.content_type,
@@ -1746,17 +1780,21 @@ export function ChatApp({ initialSnapshot, sessionToken, runtimeBindings: initia
       sessionToken,
       principal.id,
       refreshActiveMessages,
+      replyTo,
     ],
   );
 
-  const handleComposerSend = useCallback(async (content: string, attachments: File[]) => {
+  const handleComposerSend = useCallback(async (content: string, attachments: File[], onAttachmentSent?: () => void) => {
     for (const file of attachments) {
       await handleUploadAttachment(file);
+      onAttachmentSent?.();
     }
     if (content) {
       await handleSendMessage(content);
+    } else if (attachments.length > 0) {
+      setReplyTo((current) => current?.id === replyTo?.id ? null : current);
     }
-  }, [handleSendMessage, handleUploadAttachment]);
+  }, [handleSendMessage, handleUploadAttachment, replyTo]);
 
   // ---- Open direct conversation on avatar click ----
   const handleAvatarClick = useCallback(
@@ -1822,6 +1860,19 @@ export function ChatApp({ initialSnapshot, sessionToken, runtimeBindings: initia
         : null,
     [activeConv, terminalAgentId, runtimeBindings],
   );
+  useEffect(() => {
+    const binding = runtimeBindings.find(item => item.id === terminalBindingId);
+    setActivityContext({
+      company_id: activeCompanyId,
+      conversation_id: activeConvId,
+      binding_id: binding?.id ?? null,
+      runtime_host_id: binding?.runtime_host_id ?? null,
+      harness_account_id: binding?.harness_account_id ?? null,
+    });
+  }, [activeCompanyId, activeConvId, terminalBindingId, runtimeBindings, sessionToken]);
+  useEffect(() => {
+    trace.event("view_changed", { view: activeConversationView });
+  }, [activeCompanyId, activeConvId, activeConversationView, sessionToken]);
   // An agent created through the API alone has no runtime binding and talks
   // over messages, so the message view is right for it; the trace tells that
   // case apart from a binding the feed has not delivered yet.
@@ -1864,8 +1915,28 @@ export function ChatApp({ initialSnapshot, sessionToken, runtimeBindings: initia
     principalId: principal.id,
     sessionToken,
     activeConversationId: activeConvId,
-    onSelectResult: selectConversation,
+    onSelectResult: (conversationId, messageId) => {
+      selectConversation(conversationId);
+      setActiveConversationView("chat");
+      setThreadSearchTarget(null);
+      setSearchTarget({ conversationId, messageId });
+    },
   });
+
+  const loadedSearchTarget = searchTarget?.conversationId === activeConvId
+    ? activeMessages.find((message) => message.id === searchTarget.messageId)
+    : undefined;
+  const searchTargetIsThreadReply = Boolean(loadedSearchTarget && isThreadReply(loadedSearchTarget));
+  const searchThreadRootId = loadedSearchTarget && searchTargetIsThreadReply
+    ? resolveThreadRoot(loadedSearchTarget, new Map(activeMessages.map((message) => [message.id, message])))
+    : null;
+  const searchThreadRootLoaded = Boolean(searchThreadRootId && timelineMessages.some((message) => message.id === searchThreadRootId));
+  useEffect(() => {
+    if (!searchThreadRootLoaded || !searchTarget) return;
+    handleOpenThread(searchTarget.messageId);
+    setThreadSearchTarget(searchTarget.messageId);
+    setSearchTarget(null);
+  }, [searchThreadRootLoaded, searchTarget, handleOpenThread]);
 
   // ---- Conversation header info ----
   const chatTitle = activeConv
@@ -1945,6 +2016,7 @@ export function ChatApp({ initialSnapshot, sessionToken, runtimeBindings: initia
         onCreateCompany={() => setShowCreateCompany(true)}
         onToggleAgentsActive={toggleAgentsActive}
         pluginActions={[
+          { id: "online", label: "Online", onSelect: () => { trace.event("open_online"); setShowOnline(true); } },
           ...(remoteSshEnabled ? [{
             ...remoteSshSidebarAction,
             onSelect: () => { trace.event("open_servers"); setShowServers(true); },
@@ -2083,7 +2155,7 @@ export function ChatApp({ initialSnapshot, sessionToken, runtimeBindings: initia
                     tasks={activeConvId ? channelTasksByConv[activeConvId] ?? [] : []}
                     visibleAssignees={visibleChannelTaskAssignees}
                     loading={Boolean(activeConvId && loadingChannelTaskConvIds.has(activeConvId))}
-                    error={activeConvId ? channelTaskLoadErrors[activeConvId] ?? null : null}
+                    error={activeConvId ? channelTaskMutationErrors[activeConvId] ?? channelTaskLoadErrors[activeConvId] ?? null : null}
                     mutatingTaskIds={mutatingChannelTaskIds}
                     onPatchTask={handlePatchChannelTask}
                   />
@@ -2099,7 +2171,7 @@ export function ChatApp({ initialSnapshot, sessionToken, runtimeBindings: initia
                       <MessageList
                         messages={timelineMessages}
                         principal={principal}
-                        agents={agents}
+                        principals={displayPrincipals}
                         activeConv={activeConv}
                         isTerminalChat={isAgentDm}
                         thinkingAgents={thinkingAgents}
@@ -2114,9 +2186,13 @@ export function ChatApp({ initialSnapshot, sessionToken, runtimeBindings: initia
                         hasOlderMessages={messagePageState[activeConv.id]?.hasMoreBefore ?? false}
                         loadingOlderMessages={messagePageState[activeConv.id]?.loadingBefore ?? false}
                         onLoadOlderMessages={loadOlderMessages}
+                        navigationTarget={searchTarget?.conversationId === activeConv.id && !searchThreadRootLoaded ? searchThreadRootId ?? searchTarget.messageId : null}
+                        onNavigationComplete={() => setSearchTarget(null)}
                       />
 
                       <ChatInput
+                        pendingFilesByConversation={pendingFilesByConversation}
+                        setPendingFilesByConversation={setPendingFilesByConversation}
                         principal={principal}
                         agents={agents}
                         activeConv={activeConv}
@@ -2132,13 +2208,15 @@ export function ChatApp({ initialSnapshot, sessionToken, runtimeBindings: initia
                     </div>
                     {openThreadRoot && (
                       <ThreadPanel
+                        key={openThreadRoot.id}
                         root={openThreadRoot}
                         replies={openThreadReplies}
                         principal={principal}
-                        agents={agents}
+                        principals={displayPrincipals}
                         activeConv={activeConv}
                         loading={threadLoading}
                         error={threadError}
+                        navigationTarget={threadSearchTarget}
                         onClose={handleCloseThread}
                         onSendReply={handleSendThreadReply}
                       />
@@ -2193,6 +2271,10 @@ export function ChatApp({ initialSnapshot, sessionToken, runtimeBindings: initia
         searchQuery={search.query}
         searchResults={search.results}
         searchLoading={search.loading}
+        searchHasMore={search.hasMore}
+        searchError={search.error}
+        onSearchLoadMore={search.loadMore}
+        onSearchRetry={search.retry}
         onSearchInput={search.handleInput}
         onSearchResultClick={search.handleResultClick}
         showCreateGroup={showCreateGroup}
@@ -2248,9 +2330,13 @@ export function ChatApp({ initialSnapshot, sessionToken, runtimeBindings: initia
       {remoteControlEnabled && showRemoteControl && (
         <RemoteControlModal
           sessionToken={sessionToken}
+          companyId={activeCompanyId}
+          companyName={companies.find((company) => company.id === activeCompanyId)?.name ?? null}
+          onHostsChanged={setRuntimeHosts}
           onClose={() => setShowRemoteControl(false)}
         />
       )}
+      {showOnline && <OnlineModal sessionToken={sessionToken} principal={principal} conversations={conversations} onOpenConversation={(id) => { selectConversation(id); setShowOnline(false); }} onClose={() => setShowOnline(false)} />}
       {remoteControlEnabled && machinesCompanyId && (() => {
         const company = companies.find((item) => item.id === machinesCompanyId);
         return company ? (

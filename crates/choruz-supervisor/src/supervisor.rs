@@ -394,7 +394,7 @@ impl Supervisor {
     }
 }
 
-fn stop_child(child: &mut Child) -> std::io::Result<()> {
+pub(crate) fn stop_child(child: &mut Child) -> std::io::Result<()> {
     if child.try_wait()?.is_some() {
         return Ok(());
     }

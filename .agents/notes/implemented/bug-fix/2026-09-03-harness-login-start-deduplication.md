@@ -8,7 +8,7 @@ The Harness account panel can mount its sign-in subpanel more than once while th
 
 ## Decision
 
-`apps/web/components/agents/harness-account-picker.tsx` shares an in-flight start request by company and account for a short post-settlement window. A remount receives the same `HarnessLogin` response instead of creating a duplicate login. The panel reads both string errors and the gateway's `{ error: { detail } }` form for start, poll, and callback failures, and identifies the selected Harness in its heading. [One sign-in flow for harness accounts on any device](../feature/2026-09-03-local-harness-login-handoff.md) remains the owner of the cross-device login protocol.
+The browser-cache decision is superseded by [authoritative login recovery](2026-09-05-resume-open-harness-login.md). The independently useful error-rendering contract remains: the panel reads both string errors and the gateway's `{ error: { detail } }` form for start, poll, and callback failures, and identifies the selected Harness in its heading. [One sign-in flow for harness accounts on any device](../feature/2026-09-03-local-harness-login-handoff.md) remains the owner of the cross-device login protocol.
 
 ## Alternatives considered
 
@@ -18,6 +18,5 @@ The Harness account panel can mount its sign-in subpanel more than once while th
 
 ## Consequences
 
-- A quick re-render does not create a second login or show a false "already in progress" error.
-- The one-second entry lifetime intentionally covers React remount churn without caching a completed login for an extended period; a later user retry starts a fresh request.
-- `apps/web/tests/e2e/modals.spec.ts` asserts one start request for the normal flow and readable text for a structured conflict.
+- The short browser cache covered remount churn but could not recover an open task after later navigation; its replacement is owned by the linked recovery decision.
+- `apps/web/tests/e2e/modals.spec.ts` retains readable text for structured errors and tests the official sign-in flow independently of request count.

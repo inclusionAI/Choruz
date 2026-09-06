@@ -161,6 +161,7 @@ export async function pairWithHost(options: PairingOptions): Promise<RemoteCrede
 // ---------------------------------------------------------------------------
 
 const STORAGE_PREFIX = "choruz.remote-control.credentials:";
+const MANAGED_STORAGE_PREFIX = "choruz.managed-runtime-host.credentials:";
 
 export function credentialsStorageKey(gatewayUrl: string): string {
   return `${STORAGE_PREFIX}${new URL(gatewayUrl).origin}`;
@@ -201,6 +202,46 @@ export function storeRemoteCredentials(gatewayUrl: string, credentials: RemoteCr
 export function clearRemoteCredentials(gatewayUrl: string): void {
   try {
     globalThis.localStorage?.removeItem(credentialsStorageKey(gatewayUrl));
+  } catch {
+    // Nothing to clear.
+  }
+}
+
+export function storeManagedRemoteCredentials(
+  runtimeHostId: string,
+  credentials: RemoteCredentials,
+): void {
+  try {
+    globalThis.localStorage?.setItem(
+      `${MANAGED_STORAGE_PREFIX}${runtimeHostId}`,
+      JSON.stringify(credentials),
+    );
+  } catch {
+    // The runtime connector is already persistent; this only preserves the
+    // optional "open remote dashboard" shortcut in this browser.
+  }
+}
+
+export function loadManagedRemoteCredentials(runtimeHostId: string): RemoteCredentials | null {
+  try {
+    const raw = globalThis.localStorage?.getItem(`${MANAGED_STORAGE_PREFIX}${runtimeHostId}`);
+    if (!raw) return null;
+    const value = JSON.parse(raw) as Partial<RemoteCredentials>;
+    if (
+      typeof value.device_id !== "string"
+      || typeof value.gateway_url !== "string"
+      || typeof value.gateway_ticket !== "string"
+      || typeof value.session_key !== "string"
+    ) return null;
+    return value as RemoteCredentials;
+  } catch {
+    return null;
+  }
+}
+
+export function clearManagedRemoteCredentials(runtimeHostId: string): void {
+  try {
+    globalThis.localStorage?.removeItem(`${MANAGED_STORAGE_PREFIX}${runtimeHostId}`);
   } catch {
     // Nothing to clear.
   }

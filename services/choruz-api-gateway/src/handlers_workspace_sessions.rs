@@ -1,24 +1,87 @@
-use std::{collections::BTreeSet, path::PathBuf};
+use std::{
+    collections::BTreeSet,
+    path::{Component, Path, PathBuf},
+};
 
 use axum::{Json, extract::State, http::HeaderMap};
-use choruz_agent_runtime::{
-    HarnessKind, NativeSessionSummary, SessionCatalogScanner, SessionScanResult,
-};
+use choruz_agent_runtime::{HarnessKind, NativeSessionSummary, SessionAccount, SessionScanResult};
 use choruz_common::AppError;
+use choruz_host_runtime::HostRequest;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::{
-    ApiError, ApiState, handlers_filesystem::validate_path_whitelist,
-    handlers_terminals::import_codex_terminal_session, require_human_operator,
+    ApiError, ApiState,
+    handlers_terminals::{import_codex_terminal_session, lock_terminal_launch},
+    host_runtime::RuntimeHost,
+    require_human_operator,
 };
 
-const SEND_HELPER: &str = include_str!("../assets/choruz-send.sh");
+/// A connected runtime host that belongs to `company_id`.
+async fn company_host(
+    state: &ApiState,
+    company_id: &str,
+    host_id: &str,
+) -> Result<RuntimeHost, ApiError> {
+    let client = state.event_store.connect().await.map_err(ApiError::from)?;
+    let owned = client
+        .query_opt(
+            "SELECT 1 FROM runtime_host WHERE id = $1 AND company_id = $2 AND revoked_at IS NULL",
+            &[&host_id, &company_id],
+        )
+        .await
+        .map_err(|error| ApiError(AppError::Internal(format!("find runtime host: {error}"))))?
+        .is_some();
+    if !owned {
+        return Err(ApiError(AppError::NotFound(format!(
+            "runtime host {host_id}"
+        ))));
+    }
+    RuntimeHost::for_host(state, host_id).map_err(ApiError)
+}
+
+pub(crate) async fn session_accounts(
+    state: &ApiState,
+    company_id: Option<&str>,
+    host_id: Option<&str>,
+) -> Result<Vec<SessionAccount>, ApiError> {
+    let Some(company_id) = company_id else {
+        return Ok(Vec::new());
+    };
+    let client = state.event_store.connect().await.map_err(ApiError::from)?;
+    let rows = client
+        .query(
+            "SELECT id, driver_type, name FROM harness_account WHERE company_id = $1
+         AND runtime_host_id IS NOT DISTINCT FROM $2 AND profile_kind = 'isolated'
+         AND disabled_at IS NULL AND status = 'active' ORDER BY id",
+            &[&company_id, &host_id],
+        )
+        .await
+        .map_err(|error| {
+            ApiError(AppError::Internal(format!(
+                "list session profiles: {error}"
+            )))
+        })?;
+    Ok(rows
+        .into_iter()
+        .map(|row| SessionAccount {
+            account_id: row.get(0),
+            name: row.get(2),
+            harness: if row.get::<_, String>(1) == "claude_terminal" {
+                HarnessKind::Claude
+            } else {
+                HarnessKind::Codex
+            },
+        })
+        .collect())
+}
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct ScanWorkspaceSessionsRequest {
+    company_id: Option<String>,
     workspace_path: String,
     harnesses: BTreeSet<HarnessKind>,
+    runtime_host_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -26,11 +89,14 @@ pub(crate) struct ImportWorkspaceSessionsRequest {
     company_id: String,
     workspace_path: String,
     sessions: Vec<ImportSessionSelection>,
+    runtime_host_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct ImportSessionSelection {
     harness: HarnessKind,
+    #[serde(default)]
+    harness_account_id: Option<String>,
     native_session_id: String,
     #[serde(default)]
     workspace_path: Option<String>,
@@ -57,38 +123,48 @@ pub(crate) async fn scan_workspace_sessions(
     State(state): State<ApiState>,
     Json(payload): Json<ScanWorkspaceSessionsRequest>,
 ) -> Result<Json<SessionScanResult>, ApiError> {
-    let _ = require_human_operator(&headers, &state).await?;
+    require_human_operator(&headers, &state).await?;
     if payload.harnesses.is_empty() {
         return Err(ApiError(AppError::Validation(
             "select at least one harness".into(),
         )));
     }
 
-    let canonical = tokio::fs::canonicalize(PathBuf::from(&payload.workspace_path))
-        .await
-        .map_err(|error| {
-            ApiError(AppError::NotFound(format!(
-                "workspace path not found: {error}"
-            )))
+    if let Some(company_id) = payload.company_id.as_deref() {
+        crate::handlers_companies::require_company_access(&headers, &state, company_id).await?;
+    }
+    let accounts = session_accounts(
+        &state,
+        payload.company_id.as_deref(),
+        payload.runtime_host_id.as_deref(),
+    )
+    .await?;
+
+    if let Some(host_id) = payload.runtime_host_id.as_deref() {
+        let company_id = payload.company_id.as_deref().ok_or_else(|| {
+            ApiError(AppError::Validation(
+                "company_id is required when scanning another device".into(),
+            ))
         })?;
-    validate_path_whitelist(&canonical)?;
-    let metadata = tokio::fs::metadata(&canonical).await.map_err(|error| {
-        ApiError(AppError::NotFound(format!(
-            "cannot inspect workspace: {error}"
-        )))
-    })?;
-    if !metadata.is_dir() {
-        return Err(ApiError(AppError::Validation(
-            "workspace path must be a directory".into(),
-        )));
+        let workspace = validate_remote_workspace_path(&payload.workspace_path)?;
+        let result: SessionScanResult = company_host(&state, company_id, host_id)
+            .await?
+            .call(HostRequest::ScanSessions {
+                workspace_path: workspace.to_owned(),
+                harnesses: payload.harnesses,
+                accounts,
+            })
+            .await?;
+        return Ok(Json(result));
     }
 
-    let scanner =
-        SessionCatalogScanner::from_env().map_err(|error| ApiError(AppError::Internal(error)))?;
-    let result = scanner
-        .scan(&canonical, &payload.harnesses)
-        .await
-        .map_err(|error| ApiError(AppError::Internal(error)))?;
+    let result: SessionScanResult = RuntimeHost::local(&state)
+        .call(HostRequest::ScanSessions {
+            workspace_path: payload.workspace_path,
+            harnesses: payload.harnesses,
+            accounts,
+        })
+        .await?;
     Ok(Json(result))
 }
 
@@ -126,14 +202,6 @@ pub(crate) async fn import_workspace_sessions(
         )));
     }
 
-    let canonical = tokio::fs::canonicalize(PathBuf::from(&payload.workspace_path))
-        .await
-        .map_err(|error| {
-            ApiError(AppError::NotFound(format!(
-                "workspace path not found: {error}"
-            )))
-        })?;
-    validate_path_whitelist(&canonical)?;
     // Re-discover immediately before mutation. A remote client can select IDs,
     // but it cannot invent a session ID or bind a session from another cwd.
     let harnesses = payload
@@ -141,12 +209,26 @@ pub(crate) async fn import_workspace_sessions(
         .iter()
         .map(|selection| selection.harness)
         .collect::<BTreeSet<_>>();
-    let scanner =
-        SessionCatalogScanner::from_env().map_err(|error| ApiError(AppError::Internal(error)))?;
-    let scan = scanner
-        .scan(&canonical, &harnesses)
-        .await
-        .map_err(|error| ApiError(AppError::Internal(error)))?;
+    let host = match payload.runtime_host_id.as_deref() {
+        Some(host_id) => {
+            validate_remote_workspace_path(&payload.workspace_path)?;
+            company_host(&state, &payload.company_id, host_id).await?
+        }
+        None => RuntimeHost::local(&state),
+    };
+    let scan: SessionScanResult = host
+        .call(HostRequest::ScanSessions {
+            workspace_path: payload.workspace_path.clone(),
+            harnesses,
+            accounts: session_accounts(
+                &state,
+                Some(&payload.company_id),
+                payload.runtime_host_id.as_deref(),
+            )
+            .await?,
+        })
+        .await?;
+    let canonical = PathBuf::from(validate_remote_workspace_path(&scan.workspace_path)?);
     let discovered = scan
         .sessions
         .into_iter()
@@ -156,6 +238,7 @@ pub(crate) async fn import_workspace_sessions(
                     session.harness,
                     session.native_session_id.clone(),
                     session.workspace_path.clone(),
+                    session.harness_account_id.clone(),
                 ),
                 session,
             )
@@ -169,14 +252,19 @@ pub(crate) async fn import_workspace_sessions(
             .as_deref()
             .map(PathBuf::from)
             .unwrap_or_else(|| canonical.clone());
-        let selected_workspace =
+        let selected_workspace = if payload.runtime_host_id.is_some() {
+            PathBuf::from(validate_remote_workspace_path(
+                selected_workspace.to_string_lossy().as_ref(),
+            )?)
+        } else {
             tokio::fs::canonicalize(selected_workspace)
                 .await
                 .map_err(|error| {
                     ApiError(AppError::NotFound(format!(
                         "session workspace path not found: {error}"
                     )))
-                })?;
+                })?
+        };
         if !selected_workspace.starts_with(&canonical) {
             return Err(ApiError(AppError::Forbidden(
                 "session workspace is outside the selected scan root".into(),
@@ -187,6 +275,7 @@ pub(crate) async fn import_workspace_sessions(
             selection.harness,
             selection.native_session_id.clone(),
             selected_workspace,
+            selection.harness_account_id,
         );
         let session = discovered.get(&key).ok_or_else(|| {
             ApiError(AppError::NotFound(format!(
@@ -198,10 +287,12 @@ pub(crate) async fn import_workspace_sessions(
         imported.push(
             import_one_session(
                 &state,
+                &host,
                 &operator.id,
                 &payload.company_id,
                 &session_workspace,
                 session,
+                payload.runtime_host_id.as_deref(),
             )
             .await?,
         );
@@ -210,14 +301,20 @@ pub(crate) async fn import_workspace_sessions(
     Ok(Json(ImportWorkspaceSessionsResponse { imported }))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn import_one_session(
     state: &ApiState,
+    host: &RuntimeHost,
     operator_id: &str,
     company_id: &str,
     workspace: &std::path::Path,
     session: &NativeSessionSummary,
+    runtime_host_id: Option<&str>,
 ) -> Result<ImportedWorkspaceSession, ApiError> {
-    ensure_outbox_helper(workspace).await?;
+    host.call::<()>(HostRequest::EnsureOutboxHelper {
+        workspace_path: workspace.to_string_lossy().into_owned(),
+    })
+    .await?;
     let mut client = state.runtime.connect().await.map_err(ApiError)?;
     let transaction = client.transaction().await.map_err(|error| {
         ApiError(AppError::Internal(format!(
@@ -225,15 +322,14 @@ async fn import_one_session(
         )))
     })?;
     let driver_type = import_driver(session.harness);
-    // Imported sessions enter through the same terminal route as newly
-    // provisioned Agents.  Terminal handlers cannot infer a binary from the
-    // driver type: their historical fallback is `claude`, so persist the
-    // harness-specific executable here rather than accidentally launching
-    // Claude for an imported Codex/Pi/Grok/OpenCode session.
-    let binary_path = import_binary(session.harness);
     let workspace_text = workspace.to_string_lossy().into_owned();
-    let import_key =
-        native_session_import_lock_key(&workspace_text, driver_type, &session.native_session_id);
+    let import_key = native_session_import_lock_key(
+        runtime_host_id,
+        &workspace_text,
+        driver_type,
+        &session.native_session_id,
+        session.harness_account_id.as_deref(),
+    );
     transaction
         .query_one(
             "SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0::bigint))",
@@ -251,8 +347,16 @@ async fn import_one_session(
             "SELECT n.company_id, n.agent_principal_id, n.conversation_id, n.binding_id, p.name
              FROM native_session_import n
              JOIN principal p ON p.id = n.agent_principal_id
-             WHERE n.workspace_path = $1 AND n.driver_type = $2 AND n.native_session_id = $3",
-            &[&workspace_text, &driver_type, &session.native_session_id],
+             WHERE n.runtime_host_id IS NOT DISTINCT FROM $1
+               AND n.workspace_path = $2 AND n.driver_type = $3 AND n.native_session_id = $4
+               AND n.harness_account_id IS NOT DISTINCT FROM $5",
+            &[
+                &runtime_host_id,
+                &workspace_text,
+                &driver_type,
+                &session.native_session_id,
+                &session.harness_account_id,
+            ],
         )
         .await
         .map_err(|error| {
@@ -263,24 +367,126 @@ async fn import_one_session(
     {
         let imported_company_id: String = row.get(0);
         if imported_company_id != company_id {
-            return Err(ApiError(AppError::Conflict(
-                "this native session is already imported into another company".into(),
-            )));
+            let previous_binding: String = row.get(3);
+            let previous_agent: String = row.get(1);
+            transaction
+                .batch_execute("SET LOCAL lock_timeout = '90s'")
+                .await
+                .map_err(|error| {
+                    ApiError(AppError::Internal(format!(
+                        "bound session recovery locks: {error}"
+                    )))
+                })?;
+            transaction
+                .execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1)::bigint)",
+                    &[&previous_agent],
+                )
+                .await
+                .map_err(|error| {
+                    ApiError(AppError::Internal(format!(
+                        "lock previous agent commands: {error}"
+                    )))
+                })?;
+            lock_terminal_launch(&transaction, &previous_binding).await?;
+            let commands = transaction
+                .query(
+                    "SELECT command_id FROM agent_commands WHERE agent_id = $1
+                 AND status IN ('pending', 'leased', 'started', 'heartbeating', 'retry_scheduled')
+                 ORDER BY command_id FOR UPDATE",
+                    &[&previous_agent],
+                )
+                .await
+                .map_err(|error| {
+                    ApiError(AppError::Internal(format!(
+                        "check previous agent commands: {error}"
+                    )))
+                })?;
+            let previous = transaction
+                .query_one(
+                    "SELECT c.owner_id, c.deleted_at, b.state, b.in_flight_turn_id
+                 FROM company c JOIN agent_runtime_bindings b ON b.id = $2
+                 WHERE c.id = $1 FOR UPDATE OF c, b",
+                    &[&imported_company_id, &previous_binding],
+                )
+                .await
+                .map_err(|error| {
+                    ApiError(AppError::Internal(format!(
+                        "lock previous session owner: {error}"
+                    )))
+                })?;
+            if previous.get::<_, String>(0) != operator_id
+                || previous
+                    .get::<_, Option<chrono::DateTime<chrono::Utc>>>(1)
+                    .is_none()
+            {
+                return Err(ApiError(AppError::Conflict(
+                    "this native session is already imported into another company".into(),
+                )));
+            }
+            if !commands.is_empty()
+                || previous.get::<_, String>(2) == "running"
+                || previous.get::<_, Option<String>>(3).is_some()
+            {
+                return Err(ApiError(AppError::Conflict(
+                    "the previous agent has queued or running work; wait for it to finish before importing".into(),
+                )));
+            }
+            host.close_terminal(&previous_binding).await?;
+            transaction
+                .execute(
+                    "UPDATE agent_runtime_bindings SET state = 'disabled', updated_at = NOW()
+                 WHERE id = $1",
+                    &[&previous_binding],
+                )
+                .await
+                .map_err(|error| {
+                    ApiError(AppError::Internal(format!(
+                        "retire previous session binding: {error}"
+                    )))
+                })?;
+            transaction
+                .execute(
+                    "UPDATE principal SET disabled = true, updated_at = NOW() WHERE id = $1",
+                    &[&row.get::<_, String>(1)],
+                )
+                .await
+                .map_err(|error| {
+                    ApiError(AppError::Internal(format!(
+                        "retire previous session agent: {error}"
+                    )))
+                })?;
+            transaction
+                .execute(
+                    "DELETE FROM native_session_import WHERE binding_id = $1",
+                    &[&previous_binding],
+                )
+                .await
+                .map_err(|error| {
+                    ApiError(AppError::Internal(format!(
+                        "release previous session claim: {error}"
+                    )))
+                })?;
+        } else {
+            transaction.commit().await.map_err(|error| {
+                ApiError(AppError::Internal(format!(
+                    "finish native session lookup: {error}"
+                )))
+            })?;
+            state
+                .db
+                .restore_hidden_agent_session(operator_id, row.get::<_, &str>(2))
+                .await?;
+            return Ok(ImportedWorkspaceSession {
+                harness: session.harness,
+                native_session_id: session.native_session_id.clone(),
+                agent_principal_id: row.get(1),
+                conversation_id: row.get(2),
+                binding_id: row.get(3),
+                agent_name: row.get(4),
+                already_imported: true,
+            });
         }
-        transaction.commit().await.map_err(|error| {
-            ApiError(AppError::Internal(format!(
-                "finish native session lookup: {error}"
-            )))
-        })?;
-        return Ok(ImportedWorkspaceSession {
-            harness: session.harness,
-            native_session_id: session.native_session_id.clone(),
-            agent_principal_id: row.get(1),
-            conversation_id: row.get(2),
-            binding_id: row.get(3),
-            agent_name: row.get(4),
-            already_imported: true,
-        });
     }
 
     let agent_name = unique_agent_name(&transaction, company_id, session).await?;
@@ -295,7 +501,6 @@ async fn import_one_session(
         "agent_name": agent_name,
         "mention_aliases": [agent_name],
         "interaction_mode": "terminal",
-        "binary_path": binary_path,
         "native_session_import": {
             "harness": session.harness,
             "native_session_id": session.native_session_id,
@@ -308,10 +513,32 @@ async fn import_one_session(
         "external_session_binding_id": binding_id,
         "external_session_mode": "terminal",
         "external_session_captured_at": now,
-        "model": session.model,
     });
+    if let Some(account_id) = &session.harness_account_id {
+        config["harness_account_id"] = json!(account_id);
+        config["harness_account_profile_kind"] = json!("isolated");
+        crate::handlers_runtime::validate_harness_account(
+            state,
+            company_id,
+            if session.harness == HarnessKind::Claude {
+                choruz_agent_runtime::DriverType::ClaudeTerminal
+            } else {
+                choruz_agent_runtime::DriverType::CodexTerminal
+            },
+            runtime_host_id,
+            Some(&config),
+        )
+        .await?;
+    }
+    if let Some(runtime_host_id) = runtime_host_id {
+        config
+            .as_object_mut()
+            .expect("native session import configuration is an object")
+            .insert("runtime_host_id".into(), json!(runtime_host_id));
+    }
     if session.harness == choruz_agent_runtime::HarnessKind::Codex {
         let anchor = import_codex_terminal_session(
+            host,
             &binding_id,
             &conversation_id,
             &agent_id,
@@ -319,7 +546,9 @@ async fn import_one_session(
             company_id,
             &workspace_text,
             &session.native_session_id,
-        )?;
+            config.clone(),
+        )
+        .await?;
         let config = config
             .as_object_mut()
             .expect("native session import configuration is an object");
@@ -387,13 +616,14 @@ async fn import_one_session(
     transaction
         .execute(
             "INSERT INTO native_session_import
-             (id, company_id, workspace_path, driver_type, native_session_id,
+             (id, company_id, runtime_host_id, workspace_path, driver_type, native_session_id,
               agent_principal_id, conversation_id, binding_id, imported_by,
-              native_title, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $11)",
+              native_title, created_at, updated_at, harness_account_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $12, $13)",
             &[
                 &import_id,
                 &company_id,
+                &runtime_host_id,
                 &workspace_text,
                 &driver_type,
                 &session.native_session_id,
@@ -403,6 +633,7 @@ async fn import_one_session(
                 &operator_id,
                 &session.title,
                 &now,
+                &session.harness_account_id,
             ],
         )
         .await
@@ -421,7 +652,11 @@ async fn import_one_session(
                 &company_id,
                 &operator_id,
                 &agent_id,
-                &json!({"driver_type": driver_type, "workspace_path": workspace_text}),
+                &json!({
+                    "driver_type": driver_type,
+                    "workspace_path": workspace_text,
+                    "runtime_host_id": runtime_host_id,
+                }),
                 &now,
             ],
         )
@@ -446,42 +681,6 @@ async fn import_one_session(
         agent_name,
         already_imported: false,
     })
-}
-
-async fn ensure_outbox_helper(workspace: &std::path::Path) -> Result<(), ApiError> {
-    let helper_dir = workspace.join(".choruz");
-    let outbox_dir = workspace.join(".choruz-outbox");
-    for directory in [
-        outbox_dir.join("tmp"),
-        outbox_dir.join("new"),
-        helper_dir.clone(),
-    ] {
-        tokio::fs::create_dir_all(directory)
-            .await
-            .map_err(|error| {
-                ApiError(AppError::Internal(format!("prepare Agent outbox: {error}")))
-            })?;
-    }
-    let helper_path = helper_dir.join("send");
-    tokio::fs::write(&helper_path, SEND_HELPER)
-        .await
-        .map_err(|error| {
-            ApiError(AppError::Internal(format!(
-                "install Agent outbox helper: {error}"
-            )))
-        })?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        tokio::fs::set_permissions(&helper_path, std::fs::Permissions::from_mode(0o755))
-            .await
-            .map_err(|error| {
-                ApiError(AppError::Internal(format!(
-                    "enable Agent outbox helper: {error}"
-                )))
-            })?;
-    }
-    Ok(())
 }
 
 async fn unique_agent_name(
@@ -513,7 +712,7 @@ async fn unique_agent_name(
         let exists = transaction
             .query_opt(
                 "SELECT 1 FROM principal
-                 WHERE workspace_id = $1 AND lower(name) = lower($2) AND deleted_at IS NULL",
+                 WHERE workspace_id = $1 AND lower(name) = lower($2) AND deleted_at IS NULL AND NOT online_guest",
                 &[&company_id, &candidate],
             )
             .await
@@ -557,42 +756,41 @@ fn import_driver(harness: HarnessKind) -> &'static str {
     }
 }
 
-fn import_binary(harness: HarnessKind) -> String {
-    let environment_key = import_binary_environment_key(harness);
-    std::env::var(environment_key)
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| import_binary_fallback(harness).to_string())
-}
-
-fn import_binary_environment_key(harness: HarnessKind) -> &'static str {
-    match harness {
-        HarnessKind::Claude => "CHORUZ_CLAUDE_BINARY",
-        HarnessKind::Codex => "CHORUZ_CODEX_BINARY",
-        HarnessKind::Pi => "CHORUZ_PI_BINARY",
-        HarnessKind::Grok => "CHORUZ_GROK_BINARY",
-        HarnessKind::OpenCode => "CHORUZ_OPENCODE_BINARY",
-    }
-}
-
-fn import_binary_fallback(harness: HarnessKind) -> &'static str {
-    match harness {
-        HarnessKind::Claude => "claude",
-        HarnessKind::Codex => "codex",
-        HarnessKind::Pi => "pi",
-        HarnessKind::Grok => "grok",
-        HarnessKind::OpenCode => "opencode",
-    }
-}
-
 pub(crate) fn native_session_import_lock_key(
+    runtime_host_id: Option<&str>,
     workspace_path: &str,
     driver_type: &str,
     native_session_id: &str,
+    harness_account_id: Option<&str>,
 ) -> String {
     // PostgreSQL text values cannot contain NUL bytes. JSON gives the tuple a
     // stable, unambiguous representation while escaping every control byte.
-    json!([workspace_path, driver_type, native_session_id]).to_string()
+    json!([
+        runtime_host_id,
+        workspace_path,
+        driver_type,
+        native_session_id,
+        harness_account_id
+    ])
+    .to_string()
+}
+
+fn validate_remote_workspace_path(value: &str) -> Result<&str, ApiError> {
+    let value = value.trim();
+    let path = Path::new(value);
+    if value.is_empty()
+        || value.len() > 4_096
+        || !path.is_absolute()
+        || path
+            .components()
+            .any(|part| matches!(part, Component::ParentDir))
+        || value.chars().any(char::is_control)
+    {
+        return Err(ApiError(AppError::Validation(
+            "remote workspace path must be an absolute normalized path".into(),
+        )));
+    }
+    Ok(value)
 }
 
 #[cfg(test)]
@@ -617,15 +815,6 @@ mod tests {
         assert_eq!(import_driver(HarnessKind::Pi), "pi_terminal");
         assert_eq!(import_driver(HarnessKind::Grok), "grok_terminal");
         assert_eq!(import_driver(HarnessKind::OpenCode), "opencode_terminal");
-    }
-
-    #[test]
-    fn imported_sessions_use_their_own_terminal_binary() {
-        assert_eq!(import_binary_fallback(HarnessKind::Claude), "claude");
-        assert_eq!(import_binary_fallback(HarnessKind::Codex), "codex");
-        assert_eq!(import_binary_fallback(HarnessKind::Pi), "pi");
-        assert_eq!(import_binary_fallback(HarnessKind::Grok), "grok");
-        assert_eq!(import_binary_fallback(HarnessKind::OpenCode), "opencode");
     }
 
     #[test]
@@ -657,34 +846,20 @@ mod tests {
     #[test]
     fn native_session_import_lock_keys_are_postgres_safe_and_unambiguous() {
         let key = native_session_import_lock_key(
+            None,
             "/projects/example",
             "codex_exec",
             "session\0with-control-byte",
+            None,
         );
         assert!(!key.contains('\0'));
         assert_ne!(
-            native_session_import_lock_key("/projects/a", "bc", "d"),
-            native_session_import_lock_key("/projects/ab", "c", "d")
+            native_session_import_lock_key(None, "/projects/a", "bc", "d", None),
+            native_session_import_lock_key(None, "/projects/ab", "c", "d", None)
         );
-    }
-
-    #[tokio::test]
-    async fn imported_workspace_gets_the_shared_outbox_helper() {
-        let directory = tempfile::tempdir().expect("temp workspace");
-        ensure_outbox_helper(directory.path())
-            .await
-            .expect("helper");
-        let helper = directory.path().join(".choruz/send");
-        assert_eq!(std::fs::read_to_string(&helper).unwrap(), SEND_HELPER);
-        assert!(directory.path().join(".choruz-outbox/new").is_dir());
-        assert!(directory.path().join(".choruz-outbox/tmp").is_dir());
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            assert_ne!(
-                std::fs::metadata(helper).unwrap().permissions().mode() & 0o111,
-                0
-            );
-        }
+        assert_ne!(
+            native_session_import_lock_key(Some("host-a"), "/projects/a", "bc", "d", None),
+            native_session_import_lock_key(Some("host-b"), "/projects/a", "bc", "d", None)
+        );
     }
 }

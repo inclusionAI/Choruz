@@ -14,6 +14,15 @@ import {
 describe("driver model discovery", () => {
   beforeEach(() => clearDriverModelDiscoveryCache());
 
+  it("uses the supplied runtime executable for model discovery", async () => {
+    const discoverCodex = vi.fn(async () => [{ id: "model", label: "Model" }]);
+    await discoverDriverModels("codex_terminal", {
+      env: { CHORUZ_CODEX_BINARY: " ", CHORUZ_CODEX_CLI_PATH: " /runtime/codex " },
+      discoverCodex,
+    });
+    expect(discoverCodex).toHaveBeenCalledWith("/runtime/codex");
+  });
+
   it("uses Claude SDK model metadata without sending a prompt", async () => {
     const discoverClaude = vi.fn(async () => [
       {

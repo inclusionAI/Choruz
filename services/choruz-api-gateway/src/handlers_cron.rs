@@ -231,7 +231,12 @@ pub(crate) async fn create_cron_job(
     let now = chrono::Utc::now();
 
     // Compute initial next_run_at
-    let next_run = compute_initial_next_run(&body.schedule_type, &body.schedule_value);
+    let next_run = choruz_application::schedule::next_run_at(
+        &body.schedule_type,
+        &body.schedule_value,
+        body.schedule_timezone.as_deref(),
+        now,
+    )?;
 
     let client = state
         .event_store
@@ -283,7 +288,7 @@ pub(crate) async fn create_cron_job(
         delivery_mode: body.delivery_mode,
         enabled: true,
         last_run_at: None,
-        next_run_at: next_run.map(|t| t.to_rfc3339()),
+        next_run_at: Some(next_run.to_rfc3339()),
         last_status: None,
         last_error: None,
         consecutive_errors: 0,
@@ -315,10 +320,11 @@ pub(crate) async fn update_cron_job(
     // Recompute next_run_at if schedule changed
     let new_next_run: Option<chrono::DateTime<chrono::Utc>> = if body.schedule_type.is_some()
         || body.schedule_value.is_some()
+        || body.schedule_timezone.is_some()
     {
         let current = client
                 .query_opt(
-                    "SELECT schedule_type, schedule_value FROM agent_cron_job WHERE id = $1 AND agent_id = $2",
+                    "SELECT schedule_type, schedule_value, schedule_timezone FROM agent_cron_job WHERE id = $1 AND agent_id = $2",
                     &[&job_id, &agent_id],
                 )
                 .await
@@ -333,7 +339,16 @@ pub(crate) async fn update_cron_job(
                     .schedule_value
                     .clone()
                     .unwrap_or_else(|| row.get::<_, String>(1));
-                compute_initial_next_run(&stype, &sval)
+                let zone = body
+                    .schedule_timezone
+                    .clone()
+                    .or_else(|| row.get::<_, Option<String>>(2));
+                Some(choruz_application::schedule::next_run_at(
+                    &stype,
+                    &sval,
+                    zone.as_deref(),
+                    chrono::Utc::now(),
+                )?)
             }
             None => {
                 return Err(ApiError::from(AppError::NotFound(format!(
@@ -428,138 +443,9 @@ pub(crate) async fn delete_cron_job(
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
-fn compute_initial_next_run(
-    schedule_type: &str,
-    schedule_value: &str,
-) -> Option<chrono::DateTime<chrono::Utc>> {
-    let now = chrono::Utc::now();
-    match schedule_type {
-        "every" => {
-            let duration = parse_interval(schedule_value)?;
-            Some(now + duration)
-        }
-        "cron" => {
-            // Approximate: schedule first run soon
-            Some(now + chrono::Duration::minutes(1))
-        }
-        "at" => {
-            // Parse ISO datetime
-            schedule_value.parse::<chrono::DateTime<chrono::Utc>>().ok()
-        }
-        _ => None,
-    }
-}
-
-fn parse_interval(s: &str) -> Option<chrono::Duration> {
-    let s = s.trim();
-    if s.is_empty() {
-        return None;
-    }
-    let (num_str, unit) = s.split_at(s.len() - 1);
-    let num: i64 = num_str.parse().ok()?;
-    match unit {
-        "s" => Some(chrono::Duration::seconds(num)),
-        "m" => Some(chrono::Duration::minutes(num)),
-        "h" => Some(chrono::Duration::hours(num)),
-        "d" => Some(chrono::Duration::days(num)),
-        _ => {
-            let num: i64 = s.parse().ok()?;
-            Some(chrono::Duration::minutes(num))
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // parse_interval --------------------------------------------------------
-
-    #[test]
-    fn parse_interval_returns_none_for_empty_input() {
-        assert!(parse_interval("").is_none());
-        assert!(parse_interval("   ").is_none());
-    }
-
-    #[test]
-    fn parse_interval_handles_seconds_minutes_hours_days() {
-        assert_eq!(parse_interval("30s"), Some(chrono::Duration::seconds(30)));
-        assert_eq!(parse_interval("15m"), Some(chrono::Duration::minutes(15)));
-        assert_eq!(parse_interval("2h"), Some(chrono::Duration::hours(2)));
-        assert_eq!(parse_interval("7d"), Some(chrono::Duration::days(7)));
-    }
-
-    #[test]
-    fn parse_interval_trims_whitespace() {
-        assert_eq!(
-            parse_interval("  10m  "),
-            Some(chrono::Duration::minutes(10))
-        );
-    }
-
-    #[test]
-    fn parse_interval_falls_back_to_minutes_for_bare_integers() {
-        // No unit suffix → treat as minutes.
-        assert_eq!(parse_interval("45"), Some(chrono::Duration::minutes(45)));
-    }
-
-    #[test]
-    fn parse_interval_returns_none_for_unparseable_input() {
-        assert!(parse_interval("abc").is_none());
-        assert!(parse_interval("10x").is_none()); // unknown unit AND non-numeric body
-        assert!(parse_interval("forty-five").is_none());
-    }
-
-    #[test]
-    fn parse_interval_accepts_zero_and_negative_intervals() {
-        // The function does not impose >0 — callers must validate semantically.
-        assert_eq!(parse_interval("0s"), Some(chrono::Duration::seconds(0)));
-        assert_eq!(parse_interval("-5m"), Some(chrono::Duration::minutes(-5)));
-    }
-
-    // compute_initial_next_run ---------------------------------------------
-
-    #[test]
-    fn compute_initial_next_run_every_returns_now_plus_interval() {
-        let before = chrono::Utc::now();
-        let next = compute_initial_next_run("every", "30s").unwrap();
-        let after = chrono::Utc::now();
-        // next should be in [before + 30s, after + 30s]
-        let lo = before + chrono::Duration::seconds(30);
-        let hi = after + chrono::Duration::seconds(30);
-        assert!(next >= lo && next <= hi, "{next} not in [{lo}, {hi}]");
-    }
-
-    #[test]
-    fn compute_initial_next_run_cron_returns_one_minute_from_now() {
-        let before = chrono::Utc::now();
-        let next = compute_initial_next_run("cron", "0 * * * *").unwrap();
-        let delta = next - before;
-        assert!(delta >= chrono::Duration::seconds(58));
-        assert!(delta <= chrono::Duration::seconds(62));
-    }
-
-    #[test]
-    fn compute_initial_next_run_at_parses_iso_datetime() {
-        let next = compute_initial_next_run("at", "2030-01-01T12:00:00Z").unwrap();
-        assert_eq!(next.to_rfc3339(), "2030-01-01T12:00:00+00:00");
-    }
-
-    #[test]
-    fn compute_initial_next_run_at_returns_none_for_unparseable_value() {
-        assert!(compute_initial_next_run("at", "not-a-date").is_none());
-    }
-
-    #[test]
-    fn compute_initial_next_run_every_returns_none_for_invalid_interval() {
-        assert!(compute_initial_next_run("every", "garbage").is_none());
-    }
-
-    #[test]
-    fn compute_initial_next_run_returns_none_for_unknown_schedule_type() {
-        assert!(compute_initial_next_run("hourly", "anything").is_none());
-        assert!(compute_initial_next_run("", "30s").is_none());
-    }
 
     // default_* ------------------------------------------------------------
 

@@ -5,21 +5,60 @@ import { Spinner } from "../ui/spinner";
 
 import {
   createRemoteControlPairing,
+  createRuntimeHostPairing,
   fetchRemoteControlSettings,
   listRemoteControlDevices,
+  listRuntimeHosts,
+  onboardRuntimeHost,
   revokeRemoteControlDevice,
 } from "../../lib/api/choruz-api";
+import { createRelayTransport } from "../../lib/remote/relay-transport";
+import { pairWithHost, storeManagedRemoteCredentials } from "../../lib/remote/relay-pairing";
+import { RelaySession, type RelayStatus } from "../../lib/remote/relay-session";
 import {
   type RemoteControlDevice,
   type RemoteControlPairing,
   type RemoteControlSettings,
-  remoteDashboardPath,
+  type RuntimeHost,
 } from "../../lib/remote/remote-control";
 import { Modal } from "../ui/modal";
 
-type Props = { sessionToken: string; onClose: () => void };
+type Props = {
+  sessionToken: string;
+  companyId: string | null;
+  companyName: string | null;
+  onHostsChanged?: (hosts: RuntimeHost[]) => void;
+  onClose: () => void;
+};
 
-export function RemoteControlManager({ sessionToken, onClose }: Props) {
+function waitForConnection(session: RelaySession): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (session.status === "connected") return resolve();
+    let timer: ReturnType<typeof setTimeout>;
+    let unsubscribe: () => void = () => {};
+    const finish = (error?: Error) => {
+      clearTimeout(timer);
+      unsubscribe();
+      if (error) reject(error);
+      else resolve();
+    };
+    unsubscribe = session.onStatus((status: RelayStatus) => {
+      if (status === "connected") finish();
+      else if (status === "revoked" || status === "closed") {
+        finish(new Error("The encrypted connection closed during setup."));
+      }
+    });
+    timer = setTimeout(() => finish(new Error("The other computer did not connect in time.")), 30_000);
+  });
+}
+
+export function RemoteControlManager({
+  sessionToken,
+  companyId,
+  companyName,
+  onHostsChanged,
+  onClose,
+}: Props) {
   const [settings, setSettings] = useState<RemoteControlSettings | null>(null);
   const [devices, setDevices] = useState<RemoteControlDevice[]>([]);
   const [pairing, setPairing] = useState<RemoteControlPairing | null>(null);
@@ -27,7 +66,9 @@ export function RemoteControlManager({ sessionToken, onClose }: Props) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pairingStatus, setPairingStatus] = useState<string | null>(null);
+  const [addDeviceStatus, setAddDeviceStatus] = useState<string | null>(null);
   const [remoteCredential, setRemoteCredential] = useState("");
+  const [remoteName, setRemoteName] = useState("");
   const pairingWatchRef = useRef<AbortController | null>(null);
   useEffect(() => () => pairingWatchRef.current?.abort(), []);
 
@@ -50,16 +91,49 @@ export function RemoteControlManager({ sessionToken, onClose }: Props) {
 
   useEffect(() => { void load(); }, [load]);
 
-  const connectToRemoteHost = () => {
+  const connectToRemoteHost = async () => {
     setError(null);
+    if (!companyId || !settings?.gateway_url) {
+      setError("Choose a Company before adding another computer.");
+      return;
+    }
+    setSaving(true);
+    let session: RelaySession | null = null;
+    let transport: ReturnType<typeof createRelayTransport> | null = null;
     try {
-      window.location.assign(remoteDashboardPath(
-        settings?.gateway_url ?? "",
-        remoteCredential,
-        navigator.platform ? `${navigator.platform} browser` : "Choruz browser",
-      ));
+      setAddDeviceStatus("Pairing with the other computer…");
+      const credentials = await pairWithHost({
+        gatewayUrl: settings.gateway_url,
+        credential: remoteCredential,
+        deviceName: navigator.platform ? `${navigator.platform} controller` : "Choruz controller",
+      });
+      session = new RelaySession(credentials);
+      transport = createRelayTransport(session, { requestTimeoutMs: 70_000 });
+      session.start();
+      await waitForConnection(session);
+      setAddDeviceStatus(`Adding ${remoteName.trim()} to ${companyName ?? "this Company"}…`);
+      const [hostPairing, reversePairing] = await Promise.all([
+        createRuntimeHostPairing(sessionToken, companyId),
+        createRemoteControlPairing(sessionToken),
+      ]);
+      const result = await onboardRuntimeHost(transport, {
+        controller_gateway_url: reversePairing.gateway_url,
+        controller_credential: reversePairing.credential,
+        runtime_host_code: hostPairing.code,
+        name: remoteName.trim(),
+      });
+      storeManagedRemoteCredentials(result.host_id, credentials);
+      const hosts = await listRuntimeHosts(sessionToken, companyId);
+      onHostsChanged?.(hosts);
+      setRemoteCredential("");
+      setAddDeviceStatus(`${result.host_name} is online in ${companyName ?? "this Company"}.`);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
+      setAddDeviceStatus(null);
+    } finally {
+      transport?.dispose();
+      session?.close();
+      setSaving(false);
     }
   };
 
@@ -114,7 +188,7 @@ export function RemoteControlManager({ sessionToken, onClose }: Props) {
         <>
           <section className="remote-control-section" aria-labelledby="remote-network-title">
             <h3 id="remote-network-title">Connection</h3>
-            <p className="server-manager-hint">Messages and essential control events are always end-to-end encrypted. Raw tools, terminal output, files, diffs, and system prompts stay local.</p>
+            <p className="server-manager-hint">Remote data is end-to-end encrypted. Depending on the connection, it can include messages, terminal and tool output, and files. Agent processes stay on their computer.</p>
             <p><strong>Cloud Gateway</strong></p>
             <p className="server-manager-hint">Connect through Choruz Cloud for reliable access from any network.</p>
             {!settings.gateway_url ? (
@@ -137,16 +211,25 @@ export function RemoteControlManager({ sessionToken, onClose }: Props) {
                   {pairingStatus ? <small>{pairingStatus}</small> : null}
                 </div>
               </>
-            ) : <p className="server-manager-hint" role={pairingStatus ? "status" : undefined}>{pairingStatus ?? "Paste this credential into the Remote Control Web Dashboard. The browser exchanges its encryption key during pairing."}</p>}
+            ) : <p className="server-manager-hint" role={pairingStatus ? "status" : undefined}>{pairingStatus ?? "A paired browser opens this computer's dashboard. Paste its credential into the Remote Control Web Dashboard to connect."}</p>}
           </section>
 
           <section className="remote-control-section" aria-labelledby="remote-connect-title">
             <h3 id="remote-connect-title">Control another Choruz</h3>
-            <p className="server-manager-hint">Paste the credential shown by Choruz on the other computer. The encrypted remote workspace opens in this browser.</p>
+            <p className="server-manager-hint">Paste the credential shown by Choruz on the other computer. It becomes a device in the selected Company, with its own accounts, workspaces, and Agents.</p>
             <form className="remote-control-connect-form" onSubmit={(event) => {
               event.preventDefault();
-              connectToRemoteHost();
+              void connectToRemoteHost();
             }}>
+              <input
+                className="remote-control-code-input"
+                aria-label="Computer name"
+                autoComplete="off"
+                placeholder="e.g. GPU server"
+                maxLength={80}
+                value={remoteName}
+                onChange={(event) => setRemoteName(event.target.value)}
+              />
               <input
                 className="remote-control-code-input"
                 aria-label="Other computer pairing credential"
@@ -159,11 +242,13 @@ export function RemoteControlManager({ sessionToken, onClose }: Props) {
               <button
                 type="submit"
                 className="server-manager-btn server-manager-btn--primary"
-                disabled={!settings.gateway_url || !/^v1\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{22}$/u.test(remoteCredential.trim())}
+                disabled={saving || !companyId || !remoteName.trim() || !settings.gateway_url || !/^v1\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{22}$/u.test(remoteCredential.trim())}
               >
-                Connect
+                Add device
               </button>
             </form>
+            {!companyId ? <p className="server-manager-hint" role="status">Choose a Company first.</p> : null}
+            {addDeviceStatus ? <p className="server-manager-hint" role="status">{addDeviceStatus}</p> : null}
           </section>
 
           <section className="remote-control-section" aria-labelledby="remote-devices-title">

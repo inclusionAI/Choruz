@@ -198,17 +198,15 @@ test.describe("API routes", () => {
   /*  Analytics API                                                          */
   /* ---------------------------------------------------------------------- */
 
-  test("POST /api/analytics should accept event data", async ({ page }) => {
-    await login(page);
-    const res = await page.request.post(`${WEB_BASE}/api/analytics`, {
+  test("POST telemetry acknowledges a versioned event", async ({ page }) => {
+    const { token } = await login(page);
+    const res = await page.request.post(`${WEB_BASE}/api/v1/telemetry`, {
+      headers: { Authorization: `Bearer ${token}` },
       data: {
-        event: "e2e_test",
-        data: { test: true },
-        timestamp: new Date().toISOString(),
+        events: [{ eventId: crypto.randomUUID(), schemaVersion: 1, sessionId: "e2e", traceId: "trace", spanId: "span", name: "e2e_test", ts: new Date().toISOString() }],
       },
     });
-    // Should accept the event (2xx or similar)
-    expect(res.status()).toBeLessThan(500);
+    expect(res.status()).toBe(204);
   });
 
   /* ---------------------------------------------------------------------- */

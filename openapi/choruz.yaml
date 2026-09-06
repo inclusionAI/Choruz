@@ -60,6 +60,186 @@ x-choruz-route-classes:
       - POST /v1/terminals/{bindingId}/ensure
       - POST /v1/terminals/{bindingId}/input
 paths:
+  /v1/online/groups:
+    get:
+      summary: List this Online account's shared groups and invitations
+      responses:
+        '200': {description: Actor-scoped group links without encryption keys}
+  /v1/online/groups/invite:
+    post:
+      summary: Invite one Online account to an owned group
+      description: Returns a single-use invitation containing an endpoint-only encryption key. Never log or send the invitation to telemetry.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [conversation_id]
+              properties:
+                conversation_id: {type: string}
+      responses:
+        '200': {description: Invitation and expiry}
+        '403': {description: Only the group owner can invite}
+  /v1/online/groups/join:
+    post:
+      summary: Accept an Online group invitation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [invitation]
+              properties:
+                invitation: {type: string, writeOnly: true, maxLength: 4096}
+      responses:
+        '200': {description: Group pending owner acknowledgement}
+        '400': {description: Invitation invalid, expired or consumed}
+  /v1/online/groups/{link_id}:
+    parameters:
+      - in: path
+        name: link_id
+        required: true
+        schema: {type: string}
+    delete:
+      summary: Leave a joined group or revoke an owned invitation
+      responses:
+        '204': {description: Local access disabled and cloud link revoked}
+  /v1/online/groups/{link_id}/messages:
+    parameters:
+      - in: path
+        name: link_id
+        required: true
+        schema: {type: string}
+    get:
+      summary: Read shared group messages after a stable sequence cursor
+      parameters:
+        - in: query
+          name: after_seq
+          schema: {type: integer, minimum: 0, default: 0}
+      responses:
+        '200': {description: Up to 100 messages in ascending sequence}
+    post:
+      summary: Queue a guest message for the owner's existing group pipeline
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [id, content]
+              properties:
+                id: {type: string, format: uuid}
+                content: {type: string, minLength: 1, maxLength: 32000}
+      responses:
+        '202': {description: Durably queued; delivery is asynchronous}
+        '409': {description: Group inactive or message ID already used}
+  /v1/online/session:
+    get:
+      summary: Read the current human's Online account without exposing its credential
+      description: State is signed_out, signed_in or reauth_required. Signed-in responses include account_id, device_id, display_name and a separate mailbox connection status, never the cloud session token. Network failure returns 500 rather than claiming the account is online.
+      responses:
+        '200':
+          description: Signed-in account or signed-out state
+    delete:
+      summary: Revoke the Online session and disconnect this local identity
+      responses:
+        '204':
+          description: Session revoked and local identity removed
+  /v1/online/sign-in:
+    post:
+      summary: Sign the current local human into the Online account service
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [email, password]
+              properties:
+                email: {type: string, format: email, maxLength: 254}
+                password: {type: string, writeOnly: true, maxLength: 128}
+      responses:
+        '200':
+          description: Account connected to this local identity
+        '400': {description: Credentials rejected}
+        '401': {description: Local authentication required}
+        '403': {description: Human operator required}
+        '409': {description: Sign out before changing accounts}
+        '429':
+          description: Account service rate limit; retry after the advertised delay
+          headers:
+            Retry-After: {schema: {type: integer}, description: Seconds until another attempt}
+        '500': {description: Account service or local storage unavailable}
+  /v1/online/sign-up:
+    post:
+      summary: Register an Online account and connect the current local human
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [email, password, name]
+              properties:
+                email: {type: string, format: email, maxLength: 254}
+                password: {type: string, writeOnly: true, minLength: 12, maxLength: 128}
+                name: {type: string, minLength: 1, maxLength: 80}
+      responses:
+        '200':
+          description: Account registered and connected
+        '400': {description: Registration rejected}
+        '401': {description: Local authentication required}
+        '403': {description: Human operator required}
+        '409': {description: Sign out before changing accounts}
+        '429':
+          description: Account service rate limit; retry after the advertised delay
+          headers:
+            Retry-After: {schema: {type: integer}, description: Seconds until another attempt}
+        '500': {description: Account service or local storage unavailable}
+  /v1/activity:
+    get:
+      summary: Read the signed-in human's activity records
+      description: Requires since and until RFC3339 timestamps spanning at most 31 days. source is telemetry (default) or audit. limit is 1–500 (default 100). Optional cursor is opaque; trace_id filters a trace. Returns records and next_cursor. Scope comes only from authentication. Message content is not included.
+      responses:
+        '200': {description: Activity page}
+        '400': {description: Invalid range or cursor}
+        '401': {description: Authentication required}
+        '403': {description: Human operator required}
+  /v1/activity/summary:
+    get:
+      summary: Aggregate the signed-in human's activity
+      description: Same source, since, until and trace_id filters as activity reads. Returns per-name counts, explicit failed outcomes and mean recorded duration; truncated is true if more than 200 groups exist. Counts are events, not unique users or inferred satisfaction. Pagination parameters are not accepted.
+      responses:
+        '200': {description: Activity summary}
+        '400': {description: Invalid filters}
+        '401': {description: Authentication required}
+        '403': {description: Human operator required}
+  /v1/activity/prune:
+    post:
+      summary: Preview or delete the signed-in human's old telemetry
+      description: JSON body requires before (RFC3339, at least 24 hours old); apply defaults to false. Operates on at most 1000 rows per call and returns count and has_more. Explicit apply deletes only this actor's telemetry and records the deletion in the same transaction. Audit logs and conversations are never deleted.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [before]
+              properties:
+                before: {type: string, format: date-time}
+                apply: {type: boolean, default: false}
+      responses:
+        '200': {description: Preview or applied batch}
+        '400': {description: Invalid cutoff}
+        '401': {description: Authentication required}
+        '403': {description: Human operator required}
   /healthz:
     get:
       operationId: healthCheck
@@ -432,8 +612,10 @@ paths:
     post:
       operationId: createAgentCronJob
       responses:
-        "201":
+        "200":
           description: Agent cron job created
+        "400":
+          description: Invalid schedule expression, timezone, interval, or one-shot timestamp
   /v1/agents/{agentId}/cron/{jobId}:
     parameters:
       - name: agentId
@@ -451,6 +633,8 @@ paths:
       responses:
         "200":
           description: Agent cron job updated
+        "400":
+          description: Invalid schedule expression, timezone, interval, or one-shot timestamp
     delete:
       operationId: deleteAgentCronJob
       responses:
@@ -534,6 +718,33 @@ paths:
       responses:
         "200":
           description: Conversation workspace migrated
+  /v1/conversations/{conversationId}/interactions:
+    get:
+      operationId: listInteractions
+      description: Human-operator read of committed message records and their execution outcomes. Active conversation membership is required. Content is omitted unless include_content=true; raw terminal keystrokes and tool payloads are not returned. Newest sequence first, with an exclusive before_seq cursor.
+      parameters:
+        - name: conversationId
+          in: path
+          required: true
+          schema: { type: string }
+        - name: before_seq
+          in: query
+          schema: { type: integer, minimum: 0 }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+        - name: include_content
+          in: query
+          schema: { type: boolean, default: false }
+      responses:
+        "200":
+          description: Records and next_before_seq. Each record identifies its event, sender role, trace, and execution attempts without duplicating the underlying message store. The read is audited.
+        "400":
+          description: Invalid pagination
+        "401":
+          description: Authentication required
+        "403":
+          description: Human operator with conversation membership required
   /v1/conversations/{conversationId}/messages:
     get:
       operationId: listMessages
@@ -821,9 +1032,45 @@ paths:
   /v1/messages/search:
     get:
       operationId: searchMessages
+      parameters:
+        - name: principal_id
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 1
+        - name: conversation_id
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+        - name: before_created_at
+          in: query
+          description: Older-result cursor timestamp; provide together with before_message_id.
+          schema:
+            type: string
+            format: date-time
+        - name: before_message_id
+          in: query
+          description: Cursor message ID; provide together with before_created_at from the last result.
+          schema:
+            type: string
       responses:
         "200":
-          description: Message search results
+          description: Authorized message search results ordered by created_at and message_id descending; the cursor excludes its boundary result.
+        "400":
+          description: Empty search query, malformed cursor, or incomplete cursor pair
   /v1/attachments:
     post:
       operationId: uploadAttachment
@@ -907,15 +1154,58 @@ paths:
       responses:
         "101":
           description: Terminal WebSocket upgraded
+  /v1/ws/runtime-hosts/link:
+    get:
+      operationId: openRuntimeHostLink
+      summary: A paired device's persistent host link (WebSocket; the first frame is a hello carrying the host token)
+      responses:
+        "101":
+          description: Switching Protocols
   /v1/telemetry:
     post:
       operationId: ingestTelemetry
+      description: Authenticated activity batches, at most 100 events. Each event carries eventId, schemaVersion (1), traceId, spanId, sessionId, name, ts (RFC3339), optional durationMs and sanitized data. Workspace and actor are derived from authentication. The whole batch commits before acknowledgement; replayed event IDs do not create duplicate rows.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [events]
+              properties:
+                events:
+                  type: array
+                  minItems: 1
+                  maxItems: 100
+                  items:
+                    type: object
+                    additionalProperties: false
+                    required: [eventId, schemaVersion, traceId, spanId, sessionId, name, ts]
+                    properties:
+                      eventId: {type: string, minLength: 1, maxLength: 128, pattern: '^[A-Za-z0-9_.:-]+$'}
+                      schemaVersion: {type: integer, enum: [1]}
+                      traceId: {type: string, minLength: 1, maxLength: 128, pattern: '^[A-Za-z0-9_.:-]+$'}
+                      spanId: {type: string, minLength: 1, maxLength: 128, pattern: '^[A-Za-z0-9_.:-]+$'}
+                      sessionId: {type: string, minLength: 1, maxLength: 128, pattern: '^[A-Za-z0-9_.:-]+$'}
+                      name: {type: string, minLength: 1, maxLength: 128, pattern: '^[A-Za-z0-9_.:-]+$'}
+                      ts: {type: string, format: date-time}
+                      durationMs: {type: integer, minimum: 0}
+                      data: {type: object, description: Sanitized properties up to 16384 serialized bytes}
       responses:
-        "202":
-          description: Telemetry accepted
+        "204":
+          description: Entire batch durably committed or already present
+        "400":
+          description: Invalid batch; no events committed
+        "422":
+          description: Event fields do not match the wire schema; no events committed
+        "401":
+          description: Authentication required
+        "500":
+          description: Persistence failed; retry the same event IDs
   /v1/terminals/{bindingId}/ensure:
     post:
       operationId: ensureTerminal
+      description: Starts the binding on its runtime device. An explicit binding binary_path names an executable on that device; otherwise that device resolves its configured Harness executable.
       parameters:
         - name: bindingId
           in: path
@@ -1040,6 +1330,26 @@ paths:
       responses:
         "200":
           description: Company member removed
+  /v1/companies/{companyId}/harness-accounts/{accountId}/probe:
+    parameters:
+      - name: companyId
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: accountId
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      operationId: probeHarnessAccount
+      summary: Read the account's identity, models and exact quota on the device that holds its login and store the snapshot
+      responses:
+        "204":
+          description: Snapshot stored
+        "409":
+          description: The probe failed; the reason is recorded on the account
   /v1/companies/{companyId}/harness-accounts/{accountId}/logins:
     parameters:
       - name: companyId
@@ -1055,17 +1365,18 @@ paths:
     post:
       operationId: startHarnessAccountLogin
       description: >-
-        Start the Harness's own browser sign-in for the account. An account on
+        Resume the account's unexpired in-progress login, or start the Harness's
+        own browser sign-in when none exists. An account on
         a remote runtime host waits in `queued` for the connector; an account on
         the gateway's device is driven in-process and moves to
         `awaiting_browser` once the authorization link is known.
       responses:
+        "200":
+          description: Existing in-progress Harness account login view
         "201":
           description: Harness account login view
         "404":
           description: Harness account not found in this company
-        "409":
-          description: This account already has a login in progress
   /v1/companies/{companyId}/harness-accounts/{accountId}/logins/{loginId}:
     parameters:
       - name: companyId
@@ -1185,9 +1496,39 @@ paths:
   /v1/filesystem/write:
     post:
       operationId: filesystemWrite
+      description: >-
+        Save an existing editable file only when its current content matches
+        original_content. The comparison detects edits before saving; it is
+        not an atomic compare-and-swap against arbitrary external writers.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [path, content, original_content]
+              properties:
+                path:
+                  type: string
+                content:
+                  type: string
+                original_content:
+                  type: string
       responses:
         "200":
           description: File written
+        "409":
+          description: File changed; disk and draft remain unchanged
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [error, current_content]
+                properties:
+                  error:
+                    type: string
+                  current_content:
+                    type: string
   /v1/ssh/hosts:
     get:
       operationId: listSshHosts
@@ -1388,6 +1729,12 @@ paths:
       responses:
         "200":
           description: Runtime host paired
+  /v1/runtime-host-onboarding:
+    post:
+      operationId: onboardRuntimeHostThroughRemoteControl
+      responses:
+        "200":
+          description: Remote computer registered as a persistent Company runtime host
   /v1/runtime-hosts/{hostId}:
     parameters:
       - name: hostId
@@ -1451,6 +1798,97 @@ paths:
       responses:
         "200":
           description: Command lease extended
+  /v1/runtime-hosts/{hostId}/bindings/{bindingId}/outbox:
+    parameters:
+      - name: hostId
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: bindingId
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      operationId: shipBindingOutbox
+      summary: The connector delivers the outbox commands an agent on its device wrote; they land in the binding's controller-side mirror for this host
+      security:
+        - RuntimeHostToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [commands]
+              properties:
+                commands:
+                  type: array
+                  maxItems: 200
+                  description: Command files in helper order; one request carries at most 16 MiB of encoded file content
+                  items:
+                    type: object
+                    required: [name, command]
+                    properties:
+                      name:
+                        type: string
+                        description: The Maildir file name the helper assigned (`cmd-<seq>-<id>.json`)
+                      command:
+                        type: object
+                        description: The command JSON as the agent wrote it
+                      files:
+                        type: array
+                        description: Bytes of a `share_file` target, relative to the workspace, at most 8 MiB each
+                        items:
+                          type: object
+                          required: [path, content]
+                          properties:
+                            path:
+                              type: string
+                            content:
+                              type: string
+                              format: byte
+      responses:
+        "204":
+          description: Commands stored for the outbox watcher
+        "400":
+          description: Too many commands, a file over the cap, a path outside the workspace, or content that is not base64
+        "401":
+          description: Missing or revoked host token
+        "403":
+          description: The binding is not placed on this host
+  /v1/runtime-hosts/{hostId}/commands/{commandId}/attachments/{attachmentId}:
+    parameters:
+      - name: hostId
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: commandId
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: attachmentId
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      operationId: downloadCommandAttachment
+      summary: The bytes of a file attached to a turn the host has claimed, staged into the workspace inbox before the turn runs
+      security:
+        - RuntimeHostToken: []
+      responses:
+        "200":
+          description: Attachment bytes with their content type
+        "401":
+          description: Missing or revoked host token
+        "403":
+          description: The command is not placed on this host, does not name the attachment, or the agent may not read it
+        "404":
+          description: Unknown command or attachment
   /v1/runtime-hosts/{hostId}/harness-account-logins/claim:
     parameters:
       - name: hostId
@@ -1572,6 +2010,19 @@ paths:
       responses:
         "200":
           description: Runtime host heartbeat recorded
+  /v1/runtime-hosts/{hostId}/operations:
+    parameters:
+      - name: hostId
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      operationId: executeRuntimeHostOperation
+      description: Runs a device-owned operation. drivers.inspect without driver_type reports installed harnesses; with driver_type it reads that device's default-profile model catalog.
+      responses:
+        "200":
+          description: Result returned by the selected runtime host
   /v1/runtime/bindings/{bindingId}/host:
     parameters:
       - name: bindingId
@@ -1587,16 +2038,26 @@ paths:
   /v1/workspace-sessions/import:
     post:
       operationId: importWorkspaceSessions
+      description: Imports verified sessions from the selected device and company account stores. Each selection may carry harness_account_id for an isolated profile; the server rescans that owned profile before binding it. The owner of a deleted company may reclaim its idle session after the previous terminal stops; the previous Agent and binding are disabled and their history retained.
       responses:
         "200":
           description: Workspace sessions imported
+        "409":
+          description: Session belongs to another active company or owner, has an in-flight turn, or its previous terminal has not stopped
   /v1/workspace-sessions/scan:
     post:
       operationId: scanWorkspaceSessions
+      description: Scans the device default stores and the selected company's isolated account stores on that device. Results carry harness_account_id for isolated profiles, preserving profile identity through import and resume.
       responses:
         "200":
           description: Workspace session scan result
 components:
+  securitySchemes:
+    RuntimeHostToken:
+      type: apiKey
+      in: header
+      name: x-choruz-host-token
+      description: The token a runtime host received when its pairing code was redeemed
   schemas:
     HostServiceStatus:
       type: object

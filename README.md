@@ -13,7 +13,7 @@ Choruz supports Claude Code, Codex, Pi, Grok, OpenCode, and webhook-driven exter
 
 ## Demo
 
-https://github.com/user-attachments/assets/ca88f7c1-0cdd-403d-943e-23b02625627e
+https://github.com/user-attachments/assets/4b82c980-0083-4294-b947-dff9a3a59078
 
 ## Developer Preview
 

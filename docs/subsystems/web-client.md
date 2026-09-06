@@ -49,7 +49,7 @@ Unit tests sit next to the module they pin (`foo.test.ts` beside `foo.ts`).
 | Auth routes | [`app/auth/logout/route.ts`](../../apps/web/app/auth/logout/route.ts), [`app/auth/session-invalid/route.ts`](../../apps/web/app/auth/session-invalid/route.ts) |
 | Export route | [`app/export/[conversationId]/route.ts`](../../apps/web/app/export/[conversationId]/route.ts) (`GET`, wraps `exportConversation`) |
 | In-app docs | [`app/docs/layout.tsx`](../../apps/web/app/docs/layout.tsx) (sidebar nav, `docs.css`) and one `page.tsx` per topic under `app/docs/{getting-started,concepts,features,agents,api,operations,troubleshooting,reference}` |
-| Next.js API routes | `app/api/agent-config`, `agent-skills`, `agents/provision`, `agents/batch-disable`, `analytics`, `attachments/[id]`, `companies`, `drivers/availability`, `drivers/models`, `filesystem`, `git-graph`, `group-provisioning-jobs` (plus `[jobId]/{run,retry,cancel}`), `harness-accounts` (plus `[id]/probe`, `[id]/login`), `skills/scan` under [`app/api`](../../apps/web/app/api) |
+| Next.js API routes | `app/api/agent-config`, `agent-skills`, `agents/provision`, `agents/batch-disable`, `attachments/[id]`, `companies`, `drivers/availability`, `drivers/models`, `filesystem`, `git-graph`, `group-provisioning-jobs` (plus `[jobId]/{run,retry,cancel}`), `harness-accounts` (plus `[id]/probe`, `[id]/login`), `skills/scan` under [`app/api`](../../apps/web/app/api) |
 | Route auth guard | [`lib/api/api-auth.ts`](../../apps/web/lib/api/api-auth.ts) `requireAuth` verifies the `choruz_session` cookie against `GET /v1/me` on the gateway |
 | Chat shell | [`components/chat/chat-app.tsx`](../../apps/web/components/chat/chat-app.tsx) plus `sidebar.tsx`, `message-list.tsx`, `message-bubble.tsx`, `chat-input.tsx`, `chat-header.tsx`, `chat-modals.tsx`, `detail-panel.tsx`, `terminal-view.tsx`, `thread-panel.tsx` |
 | Gateway client | [`lib/api/choruz-api.ts`](../../apps/web/lib/api/choruz-api.ts) (`apiBaseUrl`, `apiJson`, `apiFetch`, `fetchDashboardBootstrap`, `sendMessage`, `fetchThread`, `markThreadViewed`, `fetchChannelTasks`, `patchChannelTask`, …), types in [`lib/api/choruz-types.ts`](../../apps/web/lib/api/choruz-types.ts) |
@@ -58,7 +58,7 @@ Unit tests sit next to the module they pin (`foo.test.ts` beside `foo.ts`).
 | Threads | [`lib/messages/threads.ts`](../../apps/web/lib/messages/threads.ts), [`lib/messages/thread-unreads.ts`](../../apps/web/lib/messages/thread-unreads.ts); see [threads.md](threads.md) |
 | Hooks delegated from chat-app | [`hooks/use-conversation-flags.ts`](../../apps/web/hooks/use-conversation-flags.ts), [`hooks/use-company-management.ts`](../../apps/web/hooks/use-company-management.ts), [`hooks/use-panel-resize.ts`](../../apps/web/hooks/use-panel-resize.ts), [`hooks/use-message-search.ts`](../../apps/web/hooks/use-message-search.ts), `use-edge-swipe.ts`, `use-thinking-agents.ts`, `use-modal-a11y.ts` |
 | Helpers | [`lib/terminal/terminal-bindings.ts`](../../apps/web/lib/terminal/terminal-bindings.ts), [`lib/messages/mentions.ts`](../../apps/web/lib/messages/mentions.ts), [`lib/api/principals.ts`](../../apps/web/lib/api/principals.ts), [`lib/messages/conversation-flags.ts`](../../apps/web/lib/messages/conversation-flags.ts) |
-| Telemetry | [`lib/api/choruz-trace.ts`](../../apps/web/lib/api/choruz-trace.ts), [`lib/api/telemetry-sanitize.ts`](../../apps/web/lib/api/telemetry-sanitize.ts), [`app/api/analytics/route.ts`](../../apps/web/app/api/analytics/route.ts) |
+| Telemetry | [`lib/api/choruz-trace.ts`](../../apps/web/lib/api/choruz-trace.ts), [`lib/api/telemetry-sanitize.ts`](../../apps/web/lib/api/telemetry-sanitize.ts), [`lib/api/activity-outbox.ts`](../../apps/web/lib/api/activity-outbox.ts) |
 | Modal shell and shared fields | [`components/ui/modal.tsx`](../../apps/web/components/ui/modal.tsx) (`Modal`), [`components/groups/setup-input-field.tsx`](../../apps/web/components/groups/setup-input-field.tsx) (`SetupInputField`), [`components/workspace/path-picker.tsx`](../../apps/web/components/workspace/path-picker.tsx) |
 | Client plugins | [`plugins/registry.ts`](../../apps/web/plugins/registry.ts) (`resolveClientPluginIds`), [`plugins/client-plugin.ts`](../../apps/web/plugins/client-plugin.ts), one `client.tsx` each under `plugins/{kanban,pixel-world,workspace-git,remote-ssh,remote-control,agent-skills}` |
 | Pixel world | [`components/pixel-world`](../../apps/web/components/pixel-world) (`pixel-world.tsx`, `pixel-world-store.ts`, `game/`, `docs/`) behind [`plugins/pixel-world/client.tsx`](../../apps/web/plugins/pixel-world/client.tsx) |
@@ -66,6 +66,11 @@ Unit tests sit next to the module they pin (`foo.test.ts` beside `foo.ts`).
 | Build and test config | [`next.config.ts`](../../apps/web/next.config.ts), [`vitest.config.ts`](../../apps/web/vitest.config.ts), [`playwright.config.ts`](../../apps/web/playwright.config.ts), [`infra/host/web_e2e.sh`](../../infra/host/web_e2e.sh), [`scripts/prepare-next-types.mjs`](../../apps/web/scripts/prepare-next-types.mjs) |
 
 ## Data
+
+FileEditor retains the loaded text as its save precondition. A conflict keeps
+the draft editable and offers Reload (adopt the returned disk snapshot) or
+Overwrite (save against that snapshot, detecting another intervening edit).
+Both local and remote saves use the existing transport and gateway file owner.
 
 `ChatMessage` ([`lib/api/choruz-types.ts`](../../apps/web/lib/api/choruz-types.ts)) is the per-message row the client keeps: `id`, `conversation_id`, `sender_id`, `content`, `content_type`, `metadata`, `server_seq`, `idempotency_key`, `created_at`. `MessagesByConv` in `lib/messages/messages.ts` is `Record<string, ChatMessage[]>`, the in-memory cache keyed by conversation.
 
@@ -81,26 +86,59 @@ Unit tests sit next to the module they pin (`foo.test.ts` beside `foo.ts`).
 
 `TraceEntry` and `Span` in `lib/api/choruz-trace.ts` are the telemetry records; `trace.start(name, data)` returns a span, `trace.event(name, data)` is one-shot, `traceRing()` exposes the in-memory ring, and every payload passes through `sanitizeTelemetryData` before leaving the browser.
 
+Spans persist separate `started` and `finished` events with one span ID. The
+finished event includes duration and outcome. `transportFetch` adds correlated
+HTTP lifecycle events for both transports without consuming response bodies.
+Context carries the selected Company/conversation and, for a terminal binding,
+its device/account IDs. These observations are not authoritative audit records.
+
+Dashboard activity includes actionable clicks, select/toggle changes, selected
+file counts, submit events, command keys, copy/paste intent, settled scroll and
+page visibility. Input values, clipboard contents and arbitrary DOM text are
+not collected. Controls under `data-activity-private` are excluded. Use a stable
+`data-activity` attribute when a control has no distinct accessible name; import
+Harness checkboxes use this to distinguish providers without reading values.
+Dynamic message, attachment and folder labels are omitted. Missing completion
+does not establish abandonment, and HTTP success does not imply AI turn success.
+
 `PixelWorldState` in `components/pixel-world/pixel-world-store.ts` is a zustand store (`usePixelWorldStore`) holding `PixelAgentState`, `HouseInfo`, `PlayerState` and `WalkabilityMask`; `emitPixelWorldEvent` is the bridge chat-app uses to animate agents.
 
 ## Entry points
 
+- Online: the sidebar Actions menu opens `components/online/online-modal.tsx`.
+  Local use remains login-free. The modal calls the authenticated local API for
+  registration, sign-in, account state and sign-out; it never receives the cloud
+  token. `signed_in` means authenticated, not connected to other people. Password
+  fields clear after each submission and are not stored in browser persistence.
+  `online-groups.tsx` creates single-person group invitations and accepts them.
+  Owners open the canonical group; guests read and send shared text in the Online
+  dialog using the shared message renderer. Connection state is separate from
+  login state. Queued messages survive a closed browser through server storage.
+  Leaving or removal disables sending; saved history remains readable. Files,
+  terminal output and private chats are not included in the shared projection.
+
 - Browser: `/` → `/dashboard`; the server component renders `ChatApp` with the bootstrap snapshot, then the client opens `/v1/ws/sync?device_id=…&cursor=…` through `useChatWebSocket` and re-fetches `/v1/unreads` on demand.
 - Gateway traffic: `next.config.ts` rewrites `/api/v1/:path*` to the gateway resolved from `CHORUZ_API_BASE_URL`, `CHORUZ_API_URL` or `CHORUZ_API_PORT` (default `http://127.0.0.1:3000`); `apiBaseUrl()` in `lib/api/choruz-api.ts` uses the same precedence server-side, and `NEXT_PUBLIC_CHORUZ_API_PORT` is exposed to the browser.
-- Telemetry: `choruz-trace.ts` POSTs entries to `/api/v1/telemetry` (the rewrite forwards to the gateway); `POST /api/analytics` is log-only after `sanitizeTelemetryValue`.
+- Telemetry: `choruz-trace.ts` stores sanitized entries in the IndexedDB outbox before POSTing to `/api/v1/telemetry`. The gateway commits each batch atomically and deduplicates event IDs within the authenticated actor and workspace. HTTP 204 removes only the acknowledged IDs; failed delivery retries, including after reload. Client occurrence time is separate from server receipt time. These are client-reported observations, not authoritative audit evidence.
 - Next.js API routes call `requireAuth` first, then use `CHORUZ_RUNTIME_DIR`, `CHORUZ_GIT_REPO_PATH`, `CHORUZ_INTERNAL_PROVISION_TOKEN`, `CHORUZ_DATABASE_URL` / `CHORUZ_PG_*` and the `CHORUZ_{CLAUDE,CODEX,PI,GROK,OPENCODE}_BINARY` variables for provisioning and filesystem work.
 - Docs: `/docs` and the nested topic pages are static App Router pages with no gateway dependency.
 - Tests: `pnpm --dir apps/web test` (vitest), `pnpm --dir apps/web e2e` (Playwright), `bash infra/host/web_e2e.sh [spec…]` (full stack), `pnpm --dir apps/web check` (`prepare-next-types.mjs` then `tsc --noEmit`).
 
 ## Invariants
 
+- Search results load in bounded pages through `useMessageSearch`; one lookahead result controls the Load more action. A failed continuation retains loaded matches and offers Retry. Query or identity changes invalidate the prior continuation without replacing the selected-message navigation owner.
+
+- Message search selection retains its message ID. `MessageList` uses the existing older-history loader until the target is present, then scrolls and highlights it; Cancel and conversation/view changes stop continuation. History errors use the same Retry action as scrolling. Quiet replies open their existing thread panel after history reaches the root. Search does not merge isolated messages across pagination gaps.
+
+
+- Remote attachment DOM resources use [`hooks/use-transport-url.ts`](../../apps/web/hooks/use-transport-url.ts): media previews fetch through the active transport, ordinary files fetch on click, and unmount revokes blob URLs and discards late responses. Local resources retain native URLs. `remote-file-transport.spec.ts` checks B's bytes while hosted A refuses API calls.
 - A sync page is applied to state and persisted before its cursor is acknowledged (`useChatWebSocket` sends `sync_ack` with `frame.next_cursor` after `onChanges` resolves), so a crash during apply replays the page; pinned by `tests/e2e/websocket.spec.ts` ("converges on one message in two tabs", "deduplicates optimistic messages with sync confirmations").
 - Optimistic rows never reach IndexedDB: `persistMessages` filters `server_seq < OPTIMISTIC_SERVER_SEQ`; pinned by `lib/messages/message-db.test.ts` and `lib/messages/messages.test.ts`.
 - `mentionedAgentIds` mirrors the router's `@all` / `@name` rules so the thinking indicator matches which agents wake; pinned by `lib/messages/mentions.test.ts`.
 - A terminal binding stays mounted for every open tab (`openTerminalBindings`), so switching tabs never drops the PTY WebSocket; pinned by `lib/terminal/terminal-bindings.test.ts`.
 - Every Next.js API route that acts on a principal goes through `requireAuth`, which round-trips to `GET /v1/me` rather than trusting `decodeSessionClaims`; pinned by the `route.test.ts` files beside each route.
 - A client plugin renders only when the host manifest satisfies `requiredHostCapabilities` (`hostSupportsClientPlugin`); pinned by `plugins/registry.test.ts` and `tests/e2e/plugins.spec.ts`.
-- Telemetry payloads are redacted before send: `sanitizeTelemetryData` / `sanitizeTelemetryValue`; pinned by `lib/api/telemetry-sanitize.test.ts` and `tests/e2e/telemetry.spec.ts` ("should not include session token in analytics payload").
+- Telemetry payloads are redacted before local persistence and again at the gateway. `lib/api/telemetry-sanitize.test.ts` and the gateway observability tests check sensitive fields. `tests/e2e/telemetry.spec.ts` verifies replay after a lost commit acknowledgement without duplicate database rows.
 - Role templates never require a prose "Assignments" section; coordinator roles require `BOARD_TASKS_CREATED_SECTION`; pinned by `lib/groups/team-templates.test.ts` and `lib/groups/team-template-renderer.test.ts`.
 
 ## Failure modes
@@ -110,13 +148,14 @@ Unit tests sit next to the module they pin (`foo.test.ts` beside `foo.ts`).
 - Bootstrap or bindings fetch failure on `/dashboard`: `DashboardPage` logs `[dashboard] fetch failed source=…` and renders with empty companies and bindings instead of failing the page.
 - Gateway unreachable from `requireAuth`: the route answers `503 Auth service unavailable` (3 s timeout) rather than `401`.
 - Unknown sync change types trigger a full bootstrap refresh (`refreshBootstrap = true` in `chat-app.tsx`), visible as an extra `GET /v1/bootstrap`.
-- Telemetry endpoint failures are swallowed inside `choruz-trace.ts`; `tests/e2e/telemetry.spec.ts` pins "should not crash when analytics endpoint is unavailable".
+- Telemetry delivery failure retains pending events and logs a content-free warning; retries back off to one minute. Storage denial, browser eviction or quota exhaustion can still lose observations. Credentials never enter the outbox. Data over 16 KiB is replaced with an omission marker.
 
 ## Tests
 
 - Unit (vitest, `environment: "node"`, include `lib/**/*.test.ts`, `components/**/*.test.ts`, `app/**/*.test.ts`, `plugins/**/*.test.ts`): [`lib/messages/messages.test.ts`](../../apps/web/lib/messages/messages.test.ts), [`lib/messages/messages.integration.test.ts`](../../apps/web/lib/messages/messages.integration.test.ts), [`lib/messages/message-db.test.ts`](../../apps/web/lib/messages/message-db.test.ts) (uses `fake-indexeddb`), [`lib/api/choruz-api.test.ts`](../../apps/web/lib/api/choruz-api.test.ts), `choruz-api-fetch.test.ts`, `choruz-api-runtime.test.ts`, [`lib/api/choruz-trace.test.ts`](../../apps/web/lib/api/choruz-trace.test.ts), `telemetry-sanitize.test.ts`, `mentions.test.ts`, `terminal-bindings.test.ts`, `conversation-flags.test.ts`, `sidebar-conversations.test.ts`, `team-templates.test.ts`, `team-template-renderer.test.ts`, `team-template-validation.test.ts`, `create-agent-template-flow.test.ts`, `create-group-template-flow.test.ts`, `group-provisioning-*.test.ts`, `pixel-world-logic.test.ts`, `pixel-world-pathfinding.test.ts`, `pixel-animations.test.ts`, `pixel-houses.test.ts`, `pixel-recolorer.test.ts`, `pixel-tiles.test.ts`, [`components/chat/message-list.test.ts`](../../apps/web/components/chat/message-list.test.ts), `components/chat/message-bubble.test.ts`, [`plugins/registry.test.ts`](../../apps/web/plugins/registry.test.ts), `plugins/server-plugin.test.ts`, and the `route.test.ts` files under `app/api/*` and `app/auth/session-invalid`.
 - E2E (Playwright, `testDir: ./tests`, project `chromium`, plus `chromium-reduced-motion` when `CHORUZ_E2E_EXTENDED=1`): [`tests/e2e/app-smoke.spec.ts`](../../apps/web/tests/e2e/app-smoke.spec.ts) (the default spec for `web_e2e.sh`), [`tests/e2e/dashboard.spec.ts`](../../apps/web/tests/e2e/dashboard.spec.ts), `messaging.spec.ts`, `websocket.spec.ts`, `indexeddb.spec.ts`, `telemetry.spec.ts`, `docs.spec.ts`, `api-routes.spec.ts`, `plugins.spec.ts`, `modals.spec.ts`, `sidebar.spec.ts`, `search.spec.ts`, `terminal.spec.ts`, `pixel-world.spec.ts`, `team-collaboration.spec.ts`, `user-journeys.spec.ts`, `responsive.spec.ts`, `theme.spec.ts`, `keyboard.spec.ts`, plus `tests/e2e/message-dedup.spec.ts`, `tests/e2e/outbox-reply.spec.ts`, `tests/pixel-world-*.spec.ts`, `tests/e2e/quotes.spec.ts`, `tests/e2e/threads.spec.ts` and the the `tests/e2e/sweep-*.spec.ts` sweeps.
 - Fixtures: [`tests/fixtures/auth.ts`](../../apps/web/tests/fixtures/auth.ts) (`API_BASE`, `WEB_BASE`, `CREDENTIALS` from `CHORUZ_OPERATOR_USER` / `CHORUZ_OPERATOR_PASSWORD`) and [`tests/fixtures/api.ts`](../../apps/web/tests/fixtures/api.ts).
+- Remote fixture: `infra/host/web_e2e.sh` dispatches `remote_web_e2e.mjs` when `remote-file-transport.spec.ts` or `online.spec.ts` is selected, or `CHORUZ_WEB_E2E_FULL=1`. The wrapper owns a loopback Worker with private temporary Durable Object/D1 state, applies the account schema, waits on health, and stops it before removing the state directory. `tests/fixtures/remote-dashboard.ts` serves a separate dashboard origin with no API.
 - Harness: `infra/host/web_e2e.sh` starts Postgres via `infra/host/start.sh`, runs `migrate.sh reset` and `up`, builds and starts `choruz-api-gateway` and `choruz-pipeline`, starts `pnpm dev` on `CHORUZ_WEB_PORT` (default 3100), then runs `pnpm e2e "$@"`; with no arguments and without `CHORUZ_WEB_E2E_FULL=1` it runs only `tests/e2e/app-smoke.spec.ts`. CI (`.github/workflows/ci.yml`) runs `vitest related` on changed files and sharded `web_e2e.sh` invocations.
 
 ## Related

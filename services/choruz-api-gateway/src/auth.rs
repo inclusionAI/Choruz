@@ -35,11 +35,25 @@ impl IntoResponse for ApiError {
                 StatusCode::INTERNAL_SERVER_ERROR
             }
         };
-        (
+        let retry_seconds = match &error {
+            AppError::RateLimited { retry_after_ms } => Some(retry_after_ms.div_ceil(1000).max(1)),
+            _ => None,
+        };
+        let detail = retry_seconds.map_or_else(
+            || error.to_string(),
+            |seconds| format!("Too many requests. Try again in {seconds} seconds."),
+        );
+        let mut response = (
             status,
-            Json(json!({"error": {"status": status.as_u16(), "detail": error.to_string()}})),
+            Json(json!({"error": {"status": status.as_u16(), "detail": detail}})),
         )
-            .into_response()
+            .into_response();
+        if let Some(seconds) = retry_seconds {
+            response
+                .headers_mut()
+                .insert(axum::http::header::RETRY_AFTER, seconds.into());
+        }
+        response
     }
 }
 

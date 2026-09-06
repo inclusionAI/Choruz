@@ -8,7 +8,9 @@ Codex accounts used device-code login while the Harness's normal experience used
 
 ## Decision
 
-Codex uses the app-server `chatgpt` browser login on every device. Local login completes through the browser's loopback redirect. For a remote host, the user opens that authorization link on the controlling computer and pastes the complete localhost callback URL; the connector verifies that its state matches the authorization request, reconstructs the callback from code and state only, and sends it only to the loopback listener from the original request. It never requests an arbitrary URL.
+Codex uses the app-server `chatgpt` browser login on every device. One waiter accepts automatic completion and an optional pasted localhost callback, whether the gateway or connector owns the account. Account placement does not locate the browser: a Remote Dashboard can show a gateway-local account on another computer. The sign-in panel therefore offers the optional callback for every Codex account. The shared driver verifies its state, reconstructs the callback from code and state only, and sends it only to the loopback listener from the original authorization request. It never requests an arbitrary URL.
+
+`gateway_codex_login_accepts_a_callback_from_another_browser_device` exercises the real login/callback routes and database runner with a gateway-local account, a substituted app-server and an owned loopback listener. The automatic-completion regression remains separate. These tests verify protocol integration, not an external OAuth login.
 
 The authentication-versus-catalog decision in this note is superseded by [Authenticated Harness accounts survive catalog failures](2026-09-03-harness-authentication-snapshot-separation.md). Codex quota parsing keeps a non-default bucket's `limitName`, labels each duration within that bucket, and removes only windows with identical duration, reset time and used percentage. Removing a Harness account locks it, disables all runtime bindings that reference it, and then disables the account in the same database transaction.
 

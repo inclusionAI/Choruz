@@ -176,6 +176,56 @@ async fn uuid_shaped_member_name_resolves_before_raw_id_fallback() {
 }
 
 #[tokio::test]
+async fn online_guest_display_names_do_not_resolve_as_local_members() {
+    let Ok(db_url) =
+        std::env::var("CHORUZ_TEST_DATABASE_URL").or_else(|_| std::env::var("CHORUZ_DATABASE_URL"))
+    else {
+        assert!(std::env::var("CHORUZ_REQUIRE_TEST_DATABASE").is_err());
+        return;
+    };
+    let workspace = choruz_common::new_id();
+    let guest = choruz_common::new_id();
+    let local = choruz_common::new_id();
+    let name = format!("online-member-{}", choruz_common::new_id());
+    let (client, connection) = tokio_postgres::connect(&db_url, NoTls).await.unwrap();
+    let connection = tokio::spawn(connection);
+    client
+        .execute(
+            "INSERT INTO principal (id, workspace_id, type, name, online_guest)
+         VALUES ($1, $2, 'human', $3, TRUE)",
+            &[&guest, &workspace, &name],
+        )
+        .await
+        .unwrap();
+    let store = EventStore::new(&db_url);
+    let guest_only =
+        resolve_names_to_ids(Some(&store), &workspace, std::slice::from_ref(&name)).await;
+    client
+        .execute(
+            "INSERT INTO principal (id, workspace_id, type, name)
+         VALUES ($1, $2, 'human', $3)",
+            &[&local, &workspace, &name],
+        )
+        .await
+        .unwrap();
+    let same_name = resolve_names_to_ids(Some(&store), &workspace, &[format!("@{name}")]).await;
+    client
+        .execute(
+            "DELETE FROM principal WHERE workspace_id = $1",
+            &[&workspace],
+        )
+        .await
+        .unwrap();
+    drop(client);
+    connection.await.unwrap().unwrap();
+    assert!(
+        guest_only.is_empty(),
+        "an invited display name must not reserve a local member name"
+    );
+    assert_eq!(same_name, vec![local]);
+}
+
+#[tokio::test]
 async fn send_to_missing_group_returns_visible_error() {
     let Ok(db_url) = std::env::var("CHORUZ_DATABASE_URL") else {
         return;
@@ -262,6 +312,44 @@ async fn process_outbox_commands_claims_maildir_files_once() {
             .count(),
         1
     );
+}
+
+#[tokio::test]
+async fn a_remote_command_waits_until_its_shipment_is_accepted() {
+    let tmp = tempdir().expect("temp remote mirror");
+    let outbox = tmp.path().join(".choruz-outbox");
+    let maildir_new = outbox.join("new");
+    let pending = outbox.join("receipts/pending");
+    std::fs::create_dir_all(&maildir_new).expect("maildir new");
+    std::fs::create_dir_all(&pending).expect("pending receipts");
+    std::fs::write(
+        maildir_new.join("cmd.json"),
+        r#"{"type":"send","content":"not before acceptance"}"#,
+    )
+    .expect("write command");
+    std::fs::write(pending.join("cmd.json"), "shipment digest").expect("write pending receipt");
+
+    let before_acceptance = super::process_outbox_commands(
+        "watcher:test",
+        "agent-1",
+        tmp.path(),
+        "http://127.0.0.1:3000",
+        None,
+    )
+    .await;
+    assert!(before_acceptance.is_empty());
+    assert!(maildir_new.join("cmd.json").exists());
+
+    std::fs::remove_file(pending.join("cmd.json")).expect("accept shipment");
+    let after_acceptance = super::process_outbox_commands(
+        "watcher:test",
+        "agent-1",
+        tmp.path(),
+        "http://127.0.0.1:3000",
+        None,
+    )
+    .await;
+    assert_eq!(after_acceptance, "not before acceptance");
 }
 
 #[tokio::test]
@@ -2283,6 +2371,7 @@ fn provision_agent_payload_defaults_durable_teammates_to_visible() {
         "codex_terminal",
         "Lead the shared research methodology.",
         Some("workspace-1"),
+        None,
         false,
         Some("gpt-5.6-codex"),
     );
@@ -2292,6 +2381,25 @@ fn provision_agent_payload_defaults_durable_teammates_to_visible() {
     assert_eq!(payload["workspace_id"].as_str(), Some("workspace-1"));
     assert_eq!(payload["model"].as_str(), Some("gpt-5.6-codex"));
     assert!(payload.get("channel_visibility").is_none());
+    assert!(
+        payload.get("runtime_host_id").is_none(),
+        "an agent on the gateway's device provisions locally"
+    );
+}
+
+#[test]
+fn provision_agent_payload_places_the_teammate_on_the_requesting_agents_device() {
+    let payload = super::provision_agent_payload(
+        "Remote Helper",
+        "claude_terminal",
+        "Help on the build server.",
+        Some("workspace-1"),
+        Some("host-west"),
+        false,
+        None,
+    );
+
+    assert_eq!(payload["runtime_host_id"].as_str(), Some("host-west"));
 }
 
 #[test]
@@ -2301,6 +2409,7 @@ fn provision_agent_payload_can_request_private_internal_helper() {
         "codex_terminal",
         "Help with private local planning.",
         Some("workspace-1"),
+        None,
         true,
         None,
     );
@@ -2473,6 +2582,69 @@ async fn process_outbox_commands_delivers_group_send_to_named_group() {
         .await
         .expect("count human membership");
     assert_eq!(visible_member.get::<_, i64>(0), 1);
+
+    let host_id = choruz_common::new_id();
+    client
+        .execute(
+            "INSERT INTO company (id, name, slug, owner_id) VALUES ($1, 'Outbox Company', $1, $2)",
+            &[&workspace_id, &human_id],
+        )
+        .await
+        .unwrap();
+    client.execute(
+        "INSERT INTO runtime_host (id, company_id, name, token_hash) VALUES ($1, $2, 'Remote file host', $1)",
+        &[&host_id, &workspace_id],
+    ).await.unwrap();
+    client.execute(
+        "INSERT INTO agent_runtime_bindings (id, conversation_id, agent_principal_id, driver_type, workspace_path, config_json)
+         VALUES ($1, $2, $3, 'claude_terminal', '/tmp/outbox-test', $4)",
+        &[&choruz_common::new_id(), &conv_id, &agent_id, &serde_json::json!({"runtime_host_id":host_id})],
+    ).await.unwrap();
+    std::fs::write(tmp.path().join("proof.txt"), "group-file-proof").unwrap();
+    std::fs::write(
+        maildir_new.join("share.json"),
+        serde_json::json!({"type": "share_file", "group": group_name, "path": "proof.txt"})
+            .to_string(),
+    )
+    .unwrap();
+    let reply = super::process_outbox_commands(
+        "watcher:test",
+        &agent_id,
+        tmp.path(),
+        "http://127.0.0.1:3000",
+        Some(&store),
+    )
+    .await;
+    assert!(
+        reply.is_empty(),
+        "group file must not leak into the bound DM: {reply}"
+    );
+    let files = client.query_one(
+        "SELECT COUNT(*)::BIGINT FROM conversation_events WHERE conversation_id = $1 AND content LIKE '%group-file-proof%'",
+        &[&conv_id],
+    ).await.unwrap();
+    assert_eq!(files.get::<_, i64>(0), 1);
+    super::send_to_group(
+        "watcher:test",
+        &agent_id,
+        &store,
+        &group_name,
+        "binary proof",
+        "attachment",
+        serde_json::json!({"filename":"proof.png", "runtime_host_name":"forged host"}),
+    )
+    .await
+    .unwrap();
+    let events = client.query(
+        "SELECT metadata FROM conversation_events WHERE conversation_id=$1 AND (content LIKE '%group-file-proof%' OR content='binary proof')",
+        &[&conv_id],
+    ).await.unwrap();
+    assert_eq!(events.len(), 2);
+    for event in events {
+        let metadata: serde_json::Value = event.get(0);
+        assert_eq!(metadata["runtime_host_id"], host_id);
+        assert_eq!(metadata["runtime_host_name"], "Remote file host");
+    }
 }
 
 #[tokio::test]
@@ -2984,7 +3156,7 @@ async fn watcher_session_key_set_cron_uses_binding_conversation_id() {
         &serde_json::json!({
             "type": "set_cron",
             "name": "daily summary",
-            "schedule": "1h",
+            "schedule": "0 10 * * MON",
             "message": "summarize",
         }),
     )
@@ -2993,12 +3165,16 @@ async fn watcher_session_key_set_cron_uses_binding_conversation_id() {
 
     let row = client
         .query_one(
-            "SELECT conversation_id FROM agent_cron_job WHERE agent_id = $1",
+            "SELECT conversation_id, next_run_at FROM agent_cron_job WHERE agent_id = $1",
             &[&agent_id],
         )
         .await
         .expect("cron job exists");
     assert_eq!(row.get::<_, String>("conversation_id"), conversation_id);
+    use chrono::{Datelike, Timelike};
+    let next: chrono::DateTime<chrono::Utc> = row.get("next_run_at");
+    assert_eq!(next.weekday(), chrono::Weekday::Mon);
+    assert_eq!((next.hour(), next.minute(), next.second()), (10, 0, 0));
 }
 
 /// 9.11: prove the documented non-chat feedback path produces well-formed

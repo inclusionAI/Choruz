@@ -14,7 +14,7 @@ use axum::{
 /// execute under our origin.
 const HDR_NOSNIFF: HeaderName = HeaderName::from_static("x-content-type-options");
 use choruz_common::AppError;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 use crate::{
     ApiError, ApiState,
@@ -23,6 +23,37 @@ use crate::{
 };
 
 // ── Send message ──────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct InteractionQuery {
+    before_seq: Option<i64>,
+    limit: Option<i64>,
+    #[serde(default)]
+    include_content: bool,
+}
+
+pub(crate) async fn list_interactions(
+    headers: HeaderMap,
+    State(state): State<ApiState>,
+    Path(conversation_id): Path<String>,
+    Query(query): Query<InteractionQuery>,
+) -> Result<Json<choruz_application::db_service::InteractionPage>, ApiError> {
+    let principal = crate::require_human_operator(&headers, &state).await?;
+    crate::handlers_threads::require_conversation_read_access(&state, &principal, &conversation_id)
+        .await?;
+    let page = state
+        .db
+        .list_interactions(
+            &conversation_id,
+            query.before_seq,
+            query.limit.unwrap_or(50),
+            query.include_content,
+        )
+        .await?;
+    state.db.record_audit(&principal.workspace_id, &principal.id, "interaction.read", "conversation", &conversation_id,
+        serde_json::json!({"include_content": query.include_content, "record_count": page.records.len()})).await?;
+    Ok(Json(page))
+}
 
 pub(crate) async fn send_message(
     headers: HeaderMap,
@@ -35,7 +66,6 @@ pub(crate) async fn send_message(
         )));
     }
     require_actor(&headers, &state, &payload.actor_id).await?;
-    state.db.check_rate_limit(&payload.actor_id)?;
 
     // Thread the FE trace id into the application layer so `send_message`,
     // `app_mention` outbox rows, and downstream pipeline stages can all
@@ -48,16 +78,20 @@ pub(crate) async fn send_message(
             .map(|s| s.to_string());
     }
 
-    // DB-first: write directly to PostgreSQL (Phase 2D)
-    let message = state.db.send_message(payload).await?;
-
-    // Announce it to the in-process event consumers (SSE, webhooks). The body
-    // is not retained — reads go to Postgres.
-    state.app.inject_message_with_event(message.clone());
-
-    let _ = flush_webhooks_all(&state.app, &state.db).await;
-
+    let message = publish_message(&state.app, &state.db, payload).await?;
     Ok((StatusCode::CREATED, Json(message)))
+}
+
+pub(crate) async fn publish_message(
+    app: &choruz_application::ChatApp,
+    db: &choruz_application::DbService,
+    payload: choruz_application::SendMessageRequest,
+) -> Result<choruz_domain::Message, AppError> {
+    db.check_rate_limit(&payload.actor_id)?;
+    let message = db.send_message(payload).await?;
+    app.inject_message_with_event(message.clone());
+    let _ = flush_webhooks_all(app, db).await;
+    Ok(message)
 }
 
 fn is_legacy_channel_task_media_type(content_type: &str) -> bool {
@@ -95,111 +129,44 @@ pub(crate) struct SearchMessagesQuery {
     /// Search tab). When omitted, searches across every conversation the
     /// principal is an active member of.
     conversation_id: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-pub(crate) struct SearchResult {
-    message_id: String,
-    conversation_id: String,
-    conversation_name: Option<String>,
-    sender_id: String,
-    content: String,
-    created_at: chrono::DateTime<chrono::Utc>,
+    before_created_at: Option<chrono::DateTime<chrono::Utc>>,
+    before_message_id: Option<String>,
 }
 
 pub(crate) async fn search_messages(
     headers: HeaderMap,
     State(state): State<ApiState>,
     Query(query): Query<SearchMessagesQuery>,
-) -> Result<Json<Vec<SearchResult>>, ApiError> {
+) -> Result<Json<Vec<choruz_application::MessageSearchResult>>, ApiError> {
     let principal = require_self(&headers, &state, &query.principal_id).await?;
-    let limit = query.limit.unwrap_or(50).min(100);
-
-    // An empty `q` would expand to `ILIKE '%%'` which matches every message
-    // the caller is authorized to see.  Reject it explicitly — empty search
-    // is a client bug, not a valid "dump everything" request.
-    if query.q.trim().is_empty() {
-        return Err(ApiError::from(AppError::Validation(
-            "search query `q` must not be empty".into(),
-        )));
-    }
-
+    let before = match (query.before_created_at, query.before_message_id.as_deref()) {
+        (None, None) => None,
+        (Some(timestamp), Some(id)) if !id.trim().is_empty() => Some((timestamp, id)),
+        _ => {
+            return Err(ApiError::from(AppError::Validation(
+                "search cursor requires before_created_at and before_message_id".into(),
+            )));
+        }
+    };
     let conv_filter = query
         .conversation_id
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty());
 
-    let client = state.event_store.connect().await.map_err(ApiError::from)?;
-
-    let rows = if let Some(conv_id) = conv_filter {
-        client
-            .query(
-                "SELECT ce.event_id, ce.conversation_id, ce.sender_id, ce.content, ce.created_at,
-                        c.name AS conv_name
-                 FROM conversation_events ce
-                 JOIN conversation c ON c.id = ce.conversation_id
-                 LEFT JOIN company co ON co.id = c.workspace_id
-                 LEFT JOIN company_member com
-                   ON com.company_id = co.id AND com.principal_id = $3
-                 JOIN conversation_member cm ON cm.conv_id = ce.conversation_id
-                 WHERE ce.content ILIKE '%' || $1 || '%'
-                   AND ce.event_type IN ('message', 'message.created', 'reply')
-                   AND cm.principal_id = $3
-                   AND cm.removed_at IS NULL
-                   AND ce.conversation_id = $4
-                   AND ((co.id IS NULL AND c.workspace_id = $5) OR (co.deleted_at IS NULL
-                        AND (c.workspace_id = $5 OR com.principal_id IS NOT NULL)))
-                 ORDER BY ce.created_at DESC
-                 LIMIT $2",
-                &[
-                    &query.q,
-                    &limit,
-                    &principal.id,
-                    &conv_id,
-                    &principal.workspace_id,
-                ],
+    Ok(Json(
+        state
+            .db
+            .search_messages(
+                &principal.id,
+                &query.q,
+                query.limit.unwrap_or(50),
+                conv_filter,
+                before,
             )
             .await
-    } else {
-        // Search across every conversation the principal is in.
-        client
-            .query(
-                "SELECT ce.event_id, ce.conversation_id, ce.sender_id, ce.content, ce.created_at,
-                        c.name AS conv_name
-                 FROM conversation_events ce
-                 JOIN conversation c ON c.id = ce.conversation_id
-                 LEFT JOIN company co ON co.id = c.workspace_id
-                 LEFT JOIN company_member com
-                   ON com.company_id = co.id AND com.principal_id = $3
-                 JOIN conversation_member cm ON cm.conv_id = ce.conversation_id
-                 WHERE ce.content ILIKE '%' || $1 || '%'
-                   AND ce.event_type IN ('message', 'message.created', 'reply')
-                   AND cm.principal_id = $3
-                   AND cm.removed_at IS NULL
-                   AND ((co.id IS NULL AND c.workspace_id = $4) OR (co.deleted_at IS NULL
-                        AND (c.workspace_id = $4 OR com.principal_id IS NOT NULL)))
-                 ORDER BY ce.created_at DESC
-                 LIMIT $2",
-                &[&query.q, &limit, &principal.id, &principal.workspace_id],
-            )
-            .await
-    }
-    .map_err(|e| ApiError::from(AppError::Internal(format!("search: {e}"))))?;
-
-    let results: Vec<SearchResult> = rows
-        .iter()
-        .map(|r| SearchResult {
-            message_id: r.get("event_id"),
-            conversation_id: r.get("conversation_id"),
-            conversation_name: r.get("conv_name"),
-            sender_id: r.get("sender_id"),
-            content: r.get("content"),
-            created_at: r.get("created_at"),
-        })
-        .collect();
-
-    Ok(Json(results))
+            .map_err(ApiError::from)?,
+    ))
 }
 
 // ── Attachments ───────────────────────────────────────────────────────
@@ -213,8 +180,16 @@ pub(crate) async fn upload_attachment(
     state.db.check_rate_limit(&actor.id)?;
     let attachment = state.attachments.put(&actor, payload).await?;
     state
-        .app
-        .audit_attachment_upload(&actor.id, &attachment.id, &attachment.filename)?;
+        .db
+        .record_audit(
+            &actor.workspace_id,
+            &actor.id,
+            "attachment.uploaded",
+            "attachment",
+            &attachment.id,
+            serde_json::json!({ "filename": attachment.filename }),
+        )
+        .await?;
 
     Ok((StatusCode::CREATED, Json(attachment)))
 }

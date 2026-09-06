@@ -49,6 +49,10 @@ impl DriverType {
             Self::WebhookAgent => "webhook_agent",
         }
     }
+}
+
+impl std::str::FromStr for DriverType {
+    type Err = AppError;
 
     fn from_str(value: &str) -> AppResult<Self> {
         match value {
@@ -437,6 +441,13 @@ fn build_pool(database_url: &str) -> Pool {
 pub struct RuntimeStore {
     pub(crate) pool: Pool,
     pub(crate) clock: Arc<dyn Clock>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SessionSyncTarget {
+    pub workspace_path: String,
+    pub driver_type: String,
+    pub binding_updated_at: chrono::DateTime<chrono::Utc>,
 }
 
 impl RuntimeStore {
@@ -1492,9 +1503,13 @@ impl RuntimeStore {
     /// no pipeline writeback path, so binding rows stay NULL forever and
     /// resume flags can never fire. This method bridges that gap using each
     /// CLI's workspace-scoped session registry.
-    pub async fn sync_session_id_from_disk(&self, binding_id: &str) -> AppResult<Option<String>> {
+    /// The binding identity a discovered native session is recorded against;
+    /// `None` when the binding no longer exists.
+    pub async fn session_sync_target(
+        &self,
+        binding_id: &str,
+    ) -> AppResult<Option<SessionSyncTarget>> {
         let client = self.connect().await?;
-
         let row = client
             .query_opt(
                 "SELECT workspace_path, driver_type, updated_at
@@ -1503,19 +1518,21 @@ impl RuntimeStore {
             )
             .await
             .map_err(map_db_error)?;
-        let Some(row) = row else {
-            return Ok(None);
-        };
-        let workspace_path: String = row.get("workspace_path");
-        let driver_type: String = row.get("driver_type");
-        let binding_updated_at: chrono::DateTime<chrono::Utc> = row.get("updated_at");
-        drop(client);
+        Ok(row.map(|row| SessionSyncTarget {
+            workspace_path: row.get("workspace_path"),
+            driver_type: row.get("driver_type"),
+            binding_updated_at: row.get("updated_at"),
+        }))
+    }
 
-        let session_id = find_latest_session_for_driver(&workspace_path, &driver_type).await;
-        let Some(session_id) = session_id else {
-            return Ok(None);
-        };
-
+    /// Store a native session id the device found for `target`; returns false
+    /// when the binding identity changed since the target was read.
+    pub async fn record_discovered_session_id(
+        &self,
+        binding_id: &str,
+        target: &SessionSyncTarget,
+        session_id: &str,
+    ) -> AppResult<bool> {
         let client = self.connect().await?;
         let updated = client
             .execute(
@@ -1535,9 +1552,9 @@ impl RuntimeStore {
                 &[
                     &session_id,
                     &binding_id,
-                    &workspace_path,
-                    &driver_type,
-                    &binding_updated_at,
+                    &target.workspace_path,
+                    &target.driver_type,
+                    &target.binding_updated_at,
                 ],
             )
             .await
@@ -1547,9 +1564,29 @@ impl RuntimeStore {
                 binding_id,
                 "discarded discovered session because binding identity changed"
             );
-            return Ok(None);
         }
-        Ok(Some(session_id))
+        Ok(updated > 0)
+    }
+
+    /// Discover the newest native session for a binding on this device and
+    /// record it.
+    pub async fn sync_session_id_from_disk(&self, binding_id: &str) -> AppResult<Option<String>> {
+        let Some(target) = self.session_sync_target(binding_id).await? else {
+            return Ok(None);
+        };
+        let Some(session_id) =
+            latest_native_session(&target.workspace_path, &target.driver_type).await
+        else {
+            return Ok(None);
+        };
+        if self
+            .record_discovered_session_id(binding_id, &target, &session_id)
+            .await?
+        {
+            Ok(Some(session_id))
+        } else {
+            Ok(None)
+        }
     }
 
     pub async fn backfill_session_ids(&self) -> AppResult<u64> {
@@ -1572,11 +1609,10 @@ impl RuntimeStore {
             let driver_type: String = row.get("driver_type");
             let binding_updated_at: chrono::DateTime<chrono::Utc> = row.get("updated_at");
 
-            let session_id =
-                match find_latest_session_for_driver(&workspace_path, &driver_type).await {
-                    Some(sid) => sid,
-                    None => continue,
-                };
+            let session_id = match latest_native_session(&workspace_path, &driver_type).await {
+                Some(sid) => sid,
+                None => continue,
+            };
 
             let client = self.connect().await?;
             let n = client
@@ -1657,7 +1693,7 @@ fn binding_from_row(row: &Row) -> AppResult<RuntimeBinding> {
         id: row.get("id"),
         conversation_id: row.get("conversation_id"),
         agent_principal_id: row.get("agent_principal_id"),
-        driver_type: DriverType::from_str(row.get::<_, &str>("driver_type"))?,
+        driver_type: row.get::<_, &str>("driver_type").parse()?,
         workspace_path: row.get("workspace_path"),
         git_worktree_path: row.get("git_worktree_path"),
         external_session_id: row.get("external_session_id"),
@@ -1705,7 +1741,10 @@ fn find_latest_session_on_disk(workspace_path: &str, driver_type: &str) -> Optio
     }
 }
 
-async fn find_latest_session_for_driver(workspace_path: &str, driver_type: &str) -> Option<String> {
+/// The newest native session the CLI for `driver_type` stored for a
+/// workspace on this device. Codex sessions carry no binding identity and are
+/// never guessed; OpenCode is asked through its own session registry.
+pub async fn latest_native_session(workspace_path: &str, driver_type: &str) -> Option<String> {
     if driver_type == "opencode_terminal" {
         find_latest_opencode_session(workspace_path).await
     } else {

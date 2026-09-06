@@ -492,6 +492,7 @@ export function CreateGroupModal({
   );
 
   const handleCreateGroup = useCallback(async () => {
+    if (launchingGroup) return;
     if (!groupName.trim()) {
       setCreateGroupError("Group name is required");
       requestAnimationFrame(() => groupNameRef.current?.focus());
@@ -502,6 +503,7 @@ export function CreateGroupModal({
       return;
     }
     setCreateGroupError(null);
+    setLaunchingGroup(true);
     const span = trace.start("create_group", { name: groupName.trim(), memberCount: groupSelectedIds.size });
     try {
       const conv = await apiFetch<Conversation>("/v1/groups", sessionToken, {
@@ -543,8 +545,11 @@ export function CreateGroupModal({
       setCreateGroupError(
         err instanceof Error ? err.message : "Failed to create group",
       );
+    } finally {
+      setLaunchingGroup(false);
     }
   }, [
+    launchingGroup,
     groupName,
     groupSelectedIds,
     sessionToken,
@@ -589,6 +594,7 @@ export function CreateGroupModal({
               <input
                 ref={groupNameRef}
                 value={groupName}
+                disabled={launchingGroup}
                 onChange={(e) => {
                   setGroupName(e.target.value);
                   if (createGroupError === "Group name is required") {
@@ -612,6 +618,7 @@ export function CreateGroupModal({
                       type="button"
                       key={id}
                       className="chip"
+                      disabled={launchingGroup}
                       onClick={() => toggleGroupMember(id)}
                       aria-label={`Remove ${c?.name ?? id.slice(0, 8)}`}
                     >
@@ -641,6 +648,7 @@ export function CreateGroupModal({
                       type="button"
                       key={c.id}
                       className={`picker-item${selected ? " selected" : ""}`}
+                      disabled={launchingGroup}
                       onClick={() => toggleGroupMember(c.id)}
                       aria-pressed={selected}
                     >
@@ -667,11 +675,11 @@ export function CreateGroupModal({
               <p id="create-group-error" className="modal-form-error" role="alert" aria-live="polite">{createGroupError}</p>
             )}
             <div className="modal-actions">
-              <button className="btn-cancel" onClick={onClose}>
+              <button className="btn-cancel" onClick={onClose} disabled={launchingGroup}>
                 Cancel
               </button>
-              <button className="btn-primary" onClick={handleCreateGroup}>
-                Create ({groupSelectedIds.size} selected)
+              <button className="btn-primary" onClick={handleCreateGroup} disabled={launchingGroup}>
+                {launchingGroup ? "Creating…" : `Create (${groupSelectedIds.size} selected)`}
               </button>
             </div>
           </>

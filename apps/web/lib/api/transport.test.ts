@@ -4,12 +4,14 @@ import {
   gatewaySocketUrl,
   localTransport,
   setActiveTransport,
+  setRequestObserver,
   transportFetch,
   type ChoruzTransport,
 } from "./transport";
 
 afterEach(() => {
   setActiveTransport(null);
+  setRequestObserver(null);
   vi.unstubAllGlobals();
 });
 
@@ -31,6 +33,20 @@ describe("gatewaySocketUrl", () => {
 });
 
 describe("active transport", () => {
+  it("correlates responses and cancellation without consuming the response body", async () => {
+    vi.stubGlobal("window", {});
+    const finish = vi.fn();
+    setRequestObserver(() => ({ traceId: "owned-trace", finish }));
+    const response = new Response("original body", { status: 503 });
+    const fetch = vi.fn().mockResolvedValueOnce(response).mockRejectedValueOnce(new DOMException("aborted", "AbortError"));
+    setActiveTransport({ fetch, socket: vi.fn() });
+    const result = await transportFetch("/api/v1/me");
+    expect(await result.text()).toBe("original body");
+    expect(new Headers(fetch.mock.calls[0][1].headers).get("x-trace-id")).toBe("owned-trace");
+    expect(finish).toHaveBeenLastCalledWith({ status: 503, outcome: "failed" });
+    await expect(transportFetch("/api/v1/me")).rejects.toThrow("aborted");
+    expect(finish).toHaveBeenLastCalledWith({ outcome: "cancelled" });
+  });
   it("is the local one until another is installed, and again after reset", () => {
     expect(activeTransport()).toBe(localTransport);
     const fake: ChoruzTransport = { fetch: vi.fn(), socket: vi.fn() };

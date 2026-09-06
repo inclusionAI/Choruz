@@ -1,15 +1,11 @@
-import { spawn } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 
-import { query, type ModelInfo } from "@anthropic-ai/claude-agent-sdk";
-
-import { resolveDriverBinary } from "../drivers/driver-availability";
+import { apiBaseUrl } from "../api/choruz-api";
 import { postgresQueryClient, withPostgresTransaction } from "../groups/group-provisioning-db";
 import type { DriverModel } from "../drivers/driver-models";
-import { canonicalUsageLabel } from "./harness-account-display";
 
 export type AccountDriver = "claude_terminal" | "codex_terminal";
 export type HarnessAccountStatus = "pending" | "active" | "reauth_required" | "error" | "disabled";
@@ -240,20 +236,19 @@ export async function defaultHarnessAccountWasRemoved(input: {
 /**
  * The account an agent launches under when none was chosen: the device's
  * default account once it verifies, else none (the agent inherits the
- * device's login without quota or model data). A local account that has
- * not verified yet is probed here; a remote one verifies through its own
- * sign-in.
+ * device's login without quota or model data). An account that has not
+ * verified yet is probed here on the device that holds its login.
  */
-export async function defaultHarnessAccountForLaunch(input: {
+export async function defaultHarnessAccountForLaunch(sessionToken: string, input: {
   companyId: string;
   runtimeHostId: string | null;
   driverType: AccountDriver;
   model?: string;
 }): Promise<HarnessAccount | null> {
   let account = await ensureDefaultHarnessAccount(input);
-  if (account.status !== "active" && !account.runtimeHostId) {
+  if (account.status !== "active") {
     try {
-      account = await probeHarnessAccount(account);
+      account = await probeHarnessAccount(sessionToken, account);
     } catch {
       return null;
     }
@@ -263,266 +258,30 @@ export async function defaultHarnessAccountForLaunch(input: {
   return account;
 }
 
-export async function probeHarnessAccount(account: HarnessAccount): Promise<HarnessAccount> {
-  if (account.runtimeHostId) throw new Error("Remote account probing must run on its runtime host");
-  const env = { ...process.env, ...harnessAccountEnv(account) } as Record<string, string>;
-  const binary = resolveDriverBinary(account.driverType, env);
-  if (!binary) throw new Error("Harness binary is not configured on this device");
-  try {
-    const probe = account.driverType === "claude_terminal"
-      ? await probeClaude(binary, env)
-      : await probeCodex(binary, env);
-    if (!probe.models.length) throw new Error("Harness returned no selectable models for this account");
-    const client = await postgresQueryClient();
-    const result = await client.query<AccountRow>(
-      `UPDATE harness_account
-          SET account_fingerprint = $2, subscription_type = $3, status = 'active',
-              models_json = $4::jsonb, usage_json = $5::jsonb, last_error = NULL,
-              probed_at = NOW(), updated_at = NOW()
-        WHERE id = $1 AND disabled_at IS NULL
-      RETURNING ${ACCOUNT_COLUMNS}`,
-      [account.id, accountFingerprint(probe.identifier), probe.subscriptionType, JSON.stringify(probe.models), JSON.stringify({ windows: probe.windows })],
-    );
-    if (!result.rows[0]) throw new Error("Harness account no longer exists");
-    return mapAccount(result.rows[0]);
-  } catch (error) {
-    const message = safeProbeError(error);
-    const status: HarnessAccountStatus = /auth|login|credential|unauthorized/i.test(message)
-      ? "reauth_required"
-      : "error";
-    const client = await postgresQueryClient();
-    await client.query(
-      `UPDATE harness_account SET status = $2, last_error = $3, updated_at = NOW()
-        WHERE id = $1 AND disabled_at IS NULL`,
-      [account.id, status, message],
-    );
+/**
+ * Read the account's identity, models and exact quota on the device that
+ * holds its login, then return the stored account. The gateway runs the
+ * probe on its own device or over the runtime host's link and records a
+ * failure on the account before answering 409.
+ */
+export async function probeHarnessAccount(sessionToken: string, account: HarnessAccount): Promise<HarnessAccount> {
+  const response = await fetch(
+    `${apiBaseUrl()}/v1/companies/${encodeURIComponent(account.companyId)}/harness-accounts/${encodeURIComponent(account.id)}/probe`,
+    { method: "POST", headers: { Authorization: `Bearer ${sessionToken}` }, cache: "no-store" },
+  );
+  if (!response.ok) {
+    let message = "Harness account probe failed";
+    try {
+      const body = (await response.json()) as { error?: string };
+      if (typeof body.error === "string" && body.error.trim()) message = body.error.replace(/^conflict: /, "");
+    } catch {
+      // A non-JSON failure keeps the generic message.
+    }
     throw new Error(message);
   }
-}
-
-type ProbeResult = {
-  identifier: string;
-  subscriptionType: string | null;
-  models: DriverModel[];
-  windows: UsageWindow[];
-};
-
-async function probeClaude(binary: string, env: Record<string, string>): Promise<ProbeResult> {
-  let finishInput: ((result: IteratorResult<never>) => void) | undefined;
-  const input: AsyncIterable<never> & AsyncIterator<never> = {
-    [Symbol.asyncIterator]() { return this; },
-    next() { return new Promise((resolve) => { finishInput = resolve; }); },
-    return() {
-      finishInput?.({ done: true, value: undefined as never });
-      return Promise.resolve({ done: true, value: undefined as never });
-    },
-  };
-  const session = query({
-    prompt: input,
-    options: {
-      pathToClaudeCodeExecutable: binary,
-      cwd: process.cwd(),
-      env,
-      settingSources: ["user", "project", "local"],
-    },
-  });
-  try {
-    const [account, models, usage] = await Promise.all([
-      withTimeout(session.accountInfo(), 20_000),
-      withTimeout(session.supportedModels(), 20_000),
-      withTimeout(session.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET(), 20_000),
-    ]);
-    if (!account.email && !account.organization) throw new Error("Claude account identity is unavailable; run /login for this profile");
-    if (!usage.rate_limits_available || !usage.rate_limits) throw new Error("Claude did not return exact plan rate limits for this account");
-    const windows = claudeUsageWindows(usage.rate_limits);
-    if (!windows.length) throw new Error("Claude returned no exact rate-limit windows for this account");
-    return {
-      identifier: account.email || account.organization || "Claude account",
-      subscriptionType: usage.subscription_type || account.subscriptionType || null,
-      models: models.map(claudeModel),
-      windows,
-    };
-  } finally {
-    await input.return?.();
-    session.close();
-  }
-}
-
-export function claudeUsageWindows(rateLimits: unknown): UsageWindow[] {
-  const rawLimits = asRecord(rateLimits);
-  return Object.entries(rawLimits).flatMap(([id, raw]) => {
-      if (id === "model_scoped" && Array.isArray(raw)) {
-        return raw.flatMap((entry) => {
-          const value = asRecord(entry);
-          return typeof value.utilization === "number"
-            ? [usageWindow(
-                `${id}:${String(value.display_name ?? "model")}`,
-                String(value.display_name ?? "model weekly"),
-                value.utilization,
-                typeof value.resets_at === "string" ? value.resets_at : null,
-                null,
-              )]
-            : [];
-        });
-      }
-      const value = asRecord(raw);
-      if (typeof value.utilization !== "number") return [];
-      return [usageWindow(
-        id,
-        canonicalUsageLabel("claude_terminal", id, id.replaceAll("_", " ")),
-        value.utilization,
-        typeof value.resets_at === "string" ? value.resets_at : null,
-        null,
-      )];
-  });
-}
-
-export async function probeCodex(binary: string, env: Record<string, string>): Promise<ProbeResult> {
-  const results = await codexRequests(binary, env, [
-    { id: 1, method: "account/read", params: { refreshToken: true } },
-    { id: 2, method: "account/rateLimits/read" },
-    { id: 3, method: "model/list", params: { limit: 100, includeHidden: false } },
-  ]);
-  return parseCodexProbeResults(results);
-}
-
-export function parseCodexProbeResults(results: Map<number, unknown>): ProbeResult {
-  const accountResult = asRecord(results.get(1));
-  const account = asRecord(accountResult.account);
-  if (!Object.keys(account).length) throw new Error("Codex account is unavailable; run codex login for this profile");
-  const identifier = typeof account.email === "string"
-    ? account.email
-    : typeof account.type === "string" ? `${account.type} account` : "Codex account";
-  const rateResult = asRecord(results.get(2));
-  const snapshots: Array<[string, unknown]> = rateResult.rateLimitsByLimitId && typeof rateResult.rateLimitsByLimitId === "object"
-    ? Object.entries(rateResult.rateLimitsByLimitId as Record<string, unknown>)
-    : [["default", rateResult.rateLimits]];
-  const seenWindows = new Set<string>();
-  const windows = snapshots.flatMap(([limitId, raw]) => {
-    const snapshot = asRecord(raw);
-    const limitName = typeof snapshot.limitName === "string" && snapshot.limitName.trim()
-      ? snapshot.limitName.trim()
-      : limitId === "codex" || limitId === "default"
-        ? ""
-        : limitId.replaceAll("_", " ");
-    return (["primary", "secondary"] as const).flatMap((kind) => {
-      const window = asRecord(snapshot[kind]);
-      if (typeof window.usedPercent !== "number") return [];
-      const duration = typeof window.windowDurationMins === "number" ? window.windowDurationMins : null;
-      const reset = typeof window.resetsAt === "number" ? new Date(window.resetsAt * 1000).toISOString() : null;
-      const signature = `${duration ?? "unknown"}:${reset ?? "unknown"}:${window.usedPercent}`;
-      if (seenWindows.has(signature)) return [];
-      seenWindows.add(signature);
-      const period = duration === 10_080 ? "Weekly" : duration === 300 ? "5-hour" : kind;
-      return [usageWindow(
-        `${limitId}:${kind}`,
-        limitName ? `${limitName} ${period}` : period,
-        window.usedPercent,
-        reset,
-        duration,
-      )];
-    });
-  });
-  if (!windows.length) throw new Error("Codex returned no exact rate-limit windows for this account");
-  const modelResult = asRecord(results.get(3));
-  const models = Array.isArray(modelResult.data) ? modelResult.data : [];
-  return {
-    identifier,
-    subscriptionType: typeof account.planType === "string" ? account.planType : null,
-    models: models.flatMap((raw) => {
-      const model = asRecord(raw);
-      if (typeof model.id !== "string") return [];
-      return [{ id: model.id, label: typeof model.displayName === "string" ? model.displayName : model.id }];
-    }),
-    windows,
-  };
-}
-
-function codexRequests(binary: string, env: Record<string, string>, requests: Array<Record<string, unknown>>): Promise<Map<number, unknown>> {
-  return new Promise((resolve, reject) => {
-    const nodeEnv = env.NODE_ENV === "development" || env.NODE_ENV === "test"
-      ? env.NODE_ENV
-      : "production";
-    const child = spawn(binary, ["app-server"], {
-      stdio: ["pipe", "pipe", "pipe"] as const,
-      env: {
-        ...env,
-        NODE_ENV: nodeEnv,
-        CODEX_DISABLE_UPDATE_CHECK: "1",
-      },
-    });
-    const results = new Map<number, unknown>();
-    let stdout = "";
-    let stderr = "";
-    let settled = false;
-    let killTimer: ReturnType<typeof setTimeout> | undefined;
-    const timer = setTimeout(() => finish(new Error("Codex account probe timed out")), 25_000);
-    const finish = (error?: Error) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      child.stdin.destroy();
-      if (child.exitCode === null && child.signalCode === null) {
-        child.kill("SIGTERM");
-        killTimer = setTimeout(() => {
-          if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
-        }, 1_000);
-        killTimer.unref?.();
-      }
-      error ? reject(error) : resolve(results);
-    };
-    const send = (message: Record<string, unknown>) => child.stdin.write(
-      `${JSON.stringify({ jsonrpc: "2.0", ...message })}\n`,
-      (error) => error && finish(error),
-    );
-    const consume = (line: string) => {
-      if (!line.trim()) return;
-      let message: Record<string, unknown>;
-      try { message = JSON.parse(line) as Record<string, unknown>; } catch { return; }
-      if (message.id === 0) {
-        if (message.error) return finish(new Error("Codex app-server initialization failed"));
-        send({ method: "initialized" });
-        requests.forEach(send);
-        return;
-      }
-      if (typeof message.id !== "number" || message.id <= 0) return;
-      if (message.error) return finish(new Error(`Codex ${requests.find((item) => item.id === message.id)?.method ?? "request"} failed`));
-      results.set(message.id, message.result);
-      if (results.size === requests.length) finish();
-    };
-    child.stdout.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string) => {
-      stdout += chunk;
-      const lines = stdout.split(/\r?\n/);
-      stdout = lines.pop() ?? "";
-      lines.forEach(consume);
-    });
-    child.stderr.setEncoding("utf8");
-    child.stderr.on("data", (chunk: string) => { stderr = `${stderr}${chunk}`.slice(-4096); });
-    child.stdin.on("error", finish);
-    child.on("error", finish);
-    child.on("exit", () => {
-      if (killTimer) clearTimeout(killTimer);
-      if (!settled) finish(new Error(stderr || "Codex app-server exited during account probe"));
-    });
-    send({
-      method: "initialize",
-      id: 0,
-      params: {
-        clientInfo: { name: "choruz", title: "Choruz", version: "1.0.0" },
-        capabilities: { experimentalApi: true },
-      },
-    });
-  });
-}
-
-function claudeModel(model: ModelInfo): DriverModel {
-  return { id: model.value, label: model.displayName, description: model.description, ...(model.resolvedModel ? { resolvedModel: model.resolvedModel } : {}) };
-}
-
-function usageWindow(id: string, label: string, usedPercent: number, resetsAt: string | null, duration: number | null): UsageWindow {
-  const bounded = Math.max(0, Math.min(100, usedPercent));
-  return { id, label, usedPercent: bounded, remainingPercent: 100 - bounded, resetsAt, windowDurationMinutes: duration };
+  const probed = await getHarnessAccount(account.id, account.companyId);
+  if (!probed) throw new Error("Harness account no longer exists");
+  return probed;
 }
 
 function mapAccount(row: AccountRow): HarnessAccount {
@@ -545,33 +304,3 @@ function mapAccount(row: AccountRow): HarnessAccount {
   };
 }
 
-function accountFingerprint(identifier: string): string {
-  return createHash("sha256").update(identifier.trim().toLowerCase()).digest("hex");
-}
-
-function asRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
-}
-
-function safeProbeError(error: unknown): string {
-  const message = error instanceof Error ? error.message : "";
-  if (/no selectable models/i.test(message)) return "This account returned no selectable models; sign in again and verify it";
-  if (/auth|login|credential|unauthorized/i.test(message)) return "Harness login is invalid; sign in to this profile and verify again";
-  if (/timed out/i.test(message)) return "Harness account probe timed out";
-  if (/binary|ENOENT|not configured/i.test(message)) return "Harness binary is not configured on this device";
-  if (/no exact rate-limit|exact plan rate limits/i.test(message)) return "Harness did not return exact quota data for this account";
-  if (/identity is unavailable|account is unavailable/i.test(message)) return "Harness account identity is unavailable; sign in and verify again";
-  return "Harness account probe failed";
-}
-
-async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      promise,
-      new Promise<T>((_, reject) => { timer = setTimeout(() => reject(new Error("Harness account probe timed out")), timeoutMs); }),
-    ]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
-}

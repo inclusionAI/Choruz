@@ -30,6 +30,41 @@ add gates, never remove them.**
 | `ci` / `build` / `deps` | Policy tests for CI scripts; nothing else | Full e2e suite (any change under `.github/**`), static checks, and whatever the touched paths select |
 | `docs` / `chore` | None | Nothing: only `Detect changes` and the aggregator, about 30 seconds |
 
+## Behaviour acceptance evidence
+
+Before implementing a behaviour change, identify the user's starting state, action, observable result and the boundary that owns the result. Select evidence for that contract, not just the edited files. Pure refactors retain the affected contract; prose-only changes need no invented product scenario. Changes to behavioural instructions, including skills, need a scoped example showing how the instructions guide the intended decision.
+
+### Assertions that can reject a broken implementation
+
+A test must distinguish the intended result from a plausible failure. A boolean type check does not prove visibility; a nonempty colour string does not prove a theme; an HTTP success or an Agent's claim does not prove a file was saved. Such assertions may support diagnostics but cannot be the sole acceptance evidence. Fixtures must make the missing behaviour observable: a search-navigation test starts with the target outside the visible history, not as the only message on screen.
+
+For a bugfix or a new guard, run the focused regression against the unfixed behaviour or a representative negative control, observe the intended assertion fail, then restore the implementation and observe it pass. A setup error, missing dependency or unrelated failure is not the required red result. Use disposable fixtures or an isolated checkout; never mutate a live service or overwrite another contributor's changes to create a negative control. If reproducing the red state is unsafe or unavailable, record why, the substitute evidence and the unverified contract instead of claiming red/green proof.
+
+### The entry path and the world it changes
+
+Keep focused unit tests, but a change crossing UI, HTTP, transport, process or storage boundaries also needs an assembled test through the affected production entry path. Calling the internal provisioning function does not cover its HTTP validation; a source-only runner does not cover a packaged binary. Mock only the expensive or nondeterministic boundary needed by the test, and state what that replacement cannot prove. Do not replace the route, device dispatch, binding or persistence whose correctness the scenario claims to establish.
+
+Verify the result at its owner: re-read the target file, message or binding; observe the terminal output or process outcome. Check important absence guarantees too, such as no duplicate delivery or no write on the controller. A UI-only scenario may use an isolated component fixture when no server behaviour is part of its claim.
+
+### Select the relevant ordinary scenarios
+
+Apply the rows the change affects. This is not a Cartesian product of every device, driver, theme and failure mode, and it does not require live credentials for unrelated changes.
+
+| Affected behaviour | Required distinguishing scenario |
+| --- | --- |
+| Device selection, remote dispatch or device-local paths | Controller A and target B have distinct home/workspace roots and the relevant differing capability or account state. Exercise the shipped dispatch and prove the result belongs to B, not A. Separate processes on one CI host are sufficient when they preserve that boundary; a fake B handler that merely returns success is not. |
+| Account selection, session discovery or resume | Default and isolated accounts have distinct profile stores and owned sessions. Verify the selected identity/profile is used and every in-scope store is considered; do not infer success from the account label alone. |
+| Drafts, cached views, terminal state or navigation | Exercise the affected normal transition, such as switching away and back, reopening or resizing. Assert the promised retained state and visible layout, not only the initial mount. |
+| Multi-item send/import or retry | Include partial success followed by failure and retry. Verify completed items are not duplicated, unsent work is retained and failure is not represented as an empty success. |
+| Terminal/editor rendering or theme | Use stable representative output, including relevant ANSI sequences, and assert the affected content-area geometry, foreground/background or visibility in supported affected themes. Add screenshot/recorded-output evidence when DOM assertions cannot capture the defect; inspect expected-output changes rather than blindly updating them. |
+| Harness protocol, login or actual model execution | Keep deterministic protocol fixtures and use the relevant [real-Harness smoke](real-harness-platform-smoke.md) or focused live check in an authorised test environment. A static smoke check or fake CLI run is not a live PASS. Missing credentials or devices are reported as blocked evidence, not silently substituted or counted as passing. |
+
+### Evidence at handoff
+
+The PR's Tests section links each affected contract to its owning scenario and assertion. Ran locally records the command, tested revision or working-tree scope, observed result and negative-control result where required. Risk names substitutions, blocked evidence and affected paths not exercised. Keep acceptance pending and do not declare the PR ready while required evidence is missing, unless the user explicitly accepts the limitation or narrows the scope. Even then, the untested path is not verified and the required CI check still applies. This policy does not grant access to accounts, spend or deployment authority.
+
+The author checks this evidence before declaring the PR ready; the review procedure checks it when review is performed. These semantic requirements are not automatically enforced by the CI aggregator. A green required check is necessary for merge, but cannot justify a known broken acceptance contract. Code-review bots remain advisory; no additional bot wait or approval gate is introduced.
+
 ## What CI runs for which paths
 
 | Changed path | Jobs |
@@ -82,17 +117,6 @@ you add a feature with its own spec.
 
 ## Before you push
 
-A documentation-only pull request such as this one runs no test job at all.
+Use [choruz-pre-push-checks](../../.agents/skills/choruz-pre-push-checks/SKILL.md) to select commands for the complete outgoing scope. The CI selectors choose existing jobs and tests; they do not establish that those tests cover the acceptance contract. Add the owning scenario when it is missing, rather than rerunning a larger suite of insufficient assertions.
 
-Run what CI will run, it is faster than a CI round trip:
-
-```bash
-cargo fmt --check && cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
-pnpm web:test && pnpm web:check && pnpm web:build
-pnpm web:e2e -- tests/e2e/<the spec for your feature>.spec.ts
-```
-
-Pull requests written with an AI agent follow the same rules: the person who
-opens the PR has read every line, has run the relevant tests, and says so in
-the template.
+Human and AI authors follow the same evidence requirements. Report only checks actually executed, with blocked and untested paths distinguished from passing ones.

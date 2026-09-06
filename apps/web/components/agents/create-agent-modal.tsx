@@ -95,9 +95,9 @@ export function CreateAgentModal({
   const [showInstructions, setShowInstructions] = useState(false);
   const [createAgentError, setCreateAgentError] = useState<string | null>(null);
   const [provisioningAgent, setProvisioningAgent] = useState(false);
-  const { availability: driverAvailability } = useDriverAvailability();
   const [runtimeHosts, setRuntimeHosts] = useState<RuntimeHost[]>([]);
   const [runtimeHostId, setRuntimeHostId] = useState("");
+  const { availability: driverAvailability, loaded: availabilityLoaded, error: availabilityError } = useDriverAvailability(runtimeHostId);
   const [harnessAccount, setHarnessAccount] = useState<HarnessAccount | null>(null);
   const runtimeHostsCompanyIdRef = useRef(activeCompanyId);
 
@@ -393,6 +393,10 @@ export function CreateAgentModal({
   }, [skillsDir]);
 
   const handleCreateAgent = useCallback(async () => {
+    if (!availabilityLoaded && newAgentDriver !== "webhook_agent") {
+      setCreateAgentError(availabilityError || "Checking harnesses on the selected device…");
+      return;
+    }
     if (!newAgentName.trim()) {
       setCreateAgentError("Agent name is required");
       return;
@@ -497,6 +501,8 @@ export function CreateAgentModal({
     setupInputValues,
     instructionStatus,
     blockingTemplateIssues,
+    availabilityLoaded,
+    availabilityError,
     refreshSnapshot,
     onCreated,
   ]);
@@ -610,6 +616,7 @@ export function CreateAgentModal({
                   setRuntimeHostId(event.target.value);
                   setHarnessAccount(null);
                   setNewAgentModel("");
+                  setNewAgentWorkspacePath("");
                 }}
               >
                 <option value="">This computer</option>
@@ -643,6 +650,7 @@ export function CreateAgentModal({
           {newAgentDriver !== "mathcode_terminal" && (
             <DriverModelPicker
               driver={newAgentDriver}
+              runtimeHostId={runtimeHostId}
               model={newAgentModel}
               onChange={(model) => {
                 setNewAgentModel(model);
@@ -727,6 +735,8 @@ export function CreateAgentModal({
                   value={newAgentWorkspacePath}
                   onChange={handleWorkspacePathChange}
                   placeholder="/path/to/workspace"
+                  runtimeHostId={runtimeHostId}
+                  sessionToken={sessionToken}
                 />
                 <button type="button" className="server-manager-btn" onClick={() => setShowWorkspacePicker(true)}>
                   Browse
@@ -911,7 +921,7 @@ export function CreateAgentModal({
                 <button
                   className="btn-primary"
                   onClick={handleCreateAgent}
-                  disabled={provisioningAgent}
+                  disabled={provisioningAgent || (!availabilityLoaded && !availabilityError && newAgentDriver !== "webhook_agent")}
                 >
                   {provisioningAgent ? "Creating…" : "Create Agent"}
                 </button>
@@ -922,7 +932,10 @@ export function CreateAgentModal({
       </Modal>
       {showWorkspacePicker ? (
         <FolderPickerModal
+          key={runtimeHostId || "local"}
           initialPath={newAgentWorkspacePath || undefined}
+          runtimeHostId={runtimeHostId}
+          sessionToken={sessionToken}
           onSelect={(path) => {
             handleWorkspacePathChange(path);
             setShowWorkspacePicker(false);

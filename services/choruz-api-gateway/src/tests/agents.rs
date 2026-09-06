@@ -1,6 +1,65 @@
 use super::*;
 
 #[tokio::test]
+async fn cron_creation_and_timezone_only_update_store_calendar_occurrences() {
+    use chrono::Timelike;
+    let database = TestDatabase::create().await;
+    let db =
+        choruz_application::DbService::new(choruz_store::EventStore::new(&database.database_url));
+    let human = db
+        .create_human_user("cron-owner", "password-123")
+        .await
+        .unwrap();
+    let agent = db
+        .create_agent(CreateAgentRequest {
+            actor_id: human.id.clone(),
+            name: "Scheduled Agent".into(),
+            scopes: vec![],
+            workspace_id: None,
+            channel_visibility: None,
+        })
+        .await
+        .unwrap()
+        .principal;
+    let router = router_with_db(choruz_application::ChatApp::new(), &database.database_url);
+    let uri = format!("/v1/agents/{}/cron", agent.id);
+    let (status, created) = api_json_payload_request(router.clone(), &human, Method::POST, uri.clone(),
+        json!({"name":"Calendar task", "message":"Run", "schedule_type":"cron", "schedule_value":"0 10 * * *", "schedule_timezone":"Asia/Shanghai"}),
+    ).await;
+    assert_eq!(status, StatusCode::OK, "{created}");
+    let first = created["next_run_at"]
+        .as_str()
+        .unwrap()
+        .parse::<chrono::DateTime<chrono::Utc>>()
+        .unwrap();
+    assert_eq!((first.hour(), first.minute(), first.second()), (2, 0, 0));
+    let job_uri = format!("{uri}/{}", created["id"].as_str().unwrap());
+    let (status, updated) = api_json_payload_request(
+        router.clone(),
+        &human,
+        Method::PATCH,
+        job_uri,
+        json!({"schedule_timezone":"UTC"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{updated}");
+    let (status, listed) = api_json_request(router.clone(), &human, Method::GET, uri.clone()).await;
+    assert_eq!(status, StatusCode::OK);
+    let next = listed.as_array().unwrap()[0]["next_run_at"]
+        .as_str()
+        .unwrap()
+        .parse::<chrono::DateTime<chrono::Utc>>()
+        .unwrap();
+    assert_eq!((next.hour(), next.minute(), next.second()), (10, 0, 0));
+    for (value, zone) in [("not cron", "UTC"), ("* * * * *", "wrong-zone")] {
+        let (status, _) = api_json_payload_request(router.clone(), &human, Method::POST, uri.clone(),
+            json!({"name":"Invalid", "message":"Run", "schedule_type":"cron", "schedule_value":value, "schedule_timezone":zone}),
+        ).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+}
+
+#[tokio::test]
 async fn db_create_agent_allows_human_in_own_company_but_denies_other_company() {
     let database = TestDatabase::create().await;
     let app = choruz_application::ChatApp::new();

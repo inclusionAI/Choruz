@@ -1,6 +1,289 @@
 use super::*;
 
 #[tokio::test]
+async fn interaction_records_are_paged_private_and_link_real_commands() {
+    let database = TestDatabase::create().await;
+    let app = choruz_application::ChatApp::new();
+    let operator = LocalAuthConfig::from_env()
+        .ensure_operator_sync(&app)
+        .unwrap();
+    let outsider = app
+        .create_principal(CreatePrincipalRequest {
+            workspace_id: operator.workspace_id.clone(),
+            principal_type: PrincipalType::Human,
+            name: "interaction outsider".into(),
+            avatar_url: None,
+        })
+        .unwrap();
+    seed_principal_to_db(&database.database_url, &operator).await;
+    seed_principal_to_db(&database.database_url, &outsider).await;
+    let agent = app
+        .create_agent(CreateAgentRequest {
+            actor_id: operator.id.clone(),
+            name: "interaction agent".into(),
+            scopes: vec!["messages:read".into()],
+            workspace_id: None,
+            channel_visibility: None,
+        })
+        .unwrap()
+        .principal;
+    seed_principal_to_db(&database.database_url, &agent).await;
+    let group = app
+        .create_group(CreateGroupRequest {
+            actor_id: operator.id.clone(),
+            name: "interaction fixture".into(),
+            description: None,
+            avatar_url: None,
+            member_ids: vec![agent.id.clone()],
+            workspace_id: None,
+        })
+        .unwrap();
+    seed_conversation_to_db(&database.database_url, &group).await;
+    let router = router_with_db(app, &database.database_url);
+    for index in 0..3 {
+        assert_eq!(
+            api_send_text_message(
+                router.clone(),
+                &operator,
+                &group.id,
+                &format!("interaction-{index}"),
+                &format!("committed-{index}")
+            )
+            .await,
+            StatusCode::CREATED
+        );
+    }
+    let uri = format!("/v1/conversations/{}/interactions?limit=2", group.id);
+    let (status, first) =
+        api_json_request(router.clone(), &operator, Method::GET, uri.clone()).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(first["records"].as_array().unwrap().len(), 2);
+    assert_eq!(first["records"][0]["sender_role"], "human");
+    assert!(first["records"][0].get("content").is_none());
+    let message_id = first["records"][0]["event_id"].as_str().unwrap();
+    let store = choruz_store::EventStore::new(&database.database_url);
+    let client = store.connect().await.unwrap();
+    client.execute("INSERT INTO agent_commands (command_id,route_id,session_key,agent_id,conversation_id,message_id,turn_id,status,attempt_count,prompt) VALUES ('interaction-command','interaction-route','session',$1,$2,$3,'interaction-turn','succeeded',2,'private prompt')", &[&operator.id,&group.id,&message_id]).await.unwrap();
+    for (attempt, status) in [("first", "failed"), ("second", "succeeded")] {
+        client.execute("INSERT INTO agent_results (turn_id,attempt_id,command_id,session_key,conversation_id,agent_id,status,content,error,tool_calls_count,execution_duration_ms) VALUES ('interaction-turn',$1,'interaction-command','session',$2,$3,$4,'private execution content','private diagnostic',3,125)", &[&attempt,&group.id,&operator.id,&status]).await.unwrap();
+    }
+    let (_, rich) = api_json_request(
+        router.clone(),
+        &operator,
+        Method::GET,
+        format!("{uri}&include_content=true"),
+    )
+    .await;
+    assert_eq!(rich["records"][0]["content"], "committed-2");
+    let execution = &rich["records"][0]["executions"][0];
+    assert_eq!(execution["command_id"], "interaction-command");
+    assert_eq!(execution["attempt_count"], 2);
+    assert_eq!(execution["attempts"].as_array().unwrap().len(), 2);
+    assert_eq!(execution["attempts"][0]["status"], "failed");
+    assert_eq!(execution["attempts"][1]["status"], "succeeded");
+    assert_eq!(execution["attempts"][1]["execution_duration_ms"], 125);
+    assert!(!rich.to_string().contains("private"));
+    let (_, last) = api_json_request(
+        router.clone(),
+        &operator,
+        Method::GET,
+        format!("{uri}&before_seq={}", first["next_before_seq"]),
+    )
+    .await;
+    assert_eq!(last["records"].as_array().unwrap().len(), 1);
+    assert!(last["next_before_seq"].is_null());
+    assert_ne!(
+        last["records"][0]["event_id"],
+        first["records"][0]["event_id"]
+    );
+    assert_eq!(
+        api_json_request(router.clone(), &outsider, Method::GET, uri.clone())
+            .await
+            .0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        api_json_request(router.clone(), &agent, Method::GET, uri.clone())
+            .await
+            .0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        api_json_request(
+            router.clone(),
+            &operator,
+            Method::GET,
+            format!("/v1/conversations/{}/interactions?limit=0", group.id)
+        )
+        .await
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+    let audits = client.query("SELECT metadata FROM audit_log WHERE action='interaction.read' AND target_id=$1 AND actor_id=$2", &[&group.id,&operator.id]).await.unwrap();
+    assert_eq!(audits.len(), 3);
+    assert!(
+        audits
+            .iter()
+            .any(|row| row.get::<_, serde_json::Value>("metadata")["include_content"] == true)
+    );
+}
+
+#[tokio::test]
+async fn search_pages_are_stable_and_authorized() {
+    let database = TestDatabase::create().await;
+    let app = choruz_application::ChatApp::new();
+    let operator = LocalAuthConfig::from_env()
+        .ensure_operator_sync(&app)
+        .unwrap();
+    let outsider = app
+        .create_principal(CreatePrincipalRequest {
+            workspace_id: operator.workspace_id.clone(),
+            principal_type: PrincipalType::Human,
+            name: "search outsider".into(),
+            avatar_url: None,
+        })
+        .unwrap();
+    seed_principal_to_db(&database.database_url, &operator).await;
+    seed_principal_to_db(&database.database_url, &outsider).await;
+    let mut groups = Vec::new();
+    for name in ["search first", "search second"] {
+        let group = app
+            .create_group(CreateGroupRequest {
+                actor_id: operator.id.clone(),
+                name: name.into(),
+                description: None,
+                avatar_url: None,
+                member_ids: vec![],
+                workspace_id: None,
+            })
+            .unwrap();
+        seed_conversation_to_db(&database.database_url, &group).await;
+        groups.push(group);
+    }
+    let router = router_with_db(app, &database.database_url);
+    for index in 0..7 {
+        assert_eq!(
+            api_send_text_message(
+                router.clone(),
+                &operator,
+                &groups[index % 2].id,
+                &format!("search-page-{index}"),
+                "owned pagination match"
+            )
+            .await,
+            StatusCode::CREATED
+        );
+    }
+    let store = choruz_store::EventStore::new(&database.database_url);
+    let client = store.connect().await.unwrap();
+    let group_ids: Vec<String> = groups.iter().map(|group| group.id.clone()).collect();
+    client
+        .execute(
+            "UPDATE conversation_events SET created_at = '2020-01-01T00:00:00Z'
+                    WHERE conversation_id = ANY($1)",
+            &[&group_ids],
+        )
+        .await
+        .unwrap();
+    let (_, all) = api_search_messages(router.clone(), &operator, "pagination", None).await;
+    let mut expected: Vec<String> = all
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["message_id"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(expected.len(), 7);
+    expected.sort();
+    expected.reverse();
+    let uri = format!(
+        "/v1/messages/search?principal_id={}&q=pagination&limit=2",
+        operator.id
+    );
+    let (status, first) =
+        api_json_request(router.clone(), &operator, Method::GET, uri.clone()).await;
+    assert_eq!(status, StatusCode::OK);
+    let first = first.as_array().unwrap();
+    assert_eq!(first.len(), 2);
+    let mut found: Vec<String> = first
+        .iter()
+        .map(|row| row["message_id"].as_str().unwrap().to_owned())
+        .collect();
+    let mut cursor = first.last().unwrap().clone();
+    assert_eq!(
+        api_send_text_message(
+            router.clone(),
+            &operator,
+            &groups[0].id,
+            "newer-search-match",
+            "new pagination match"
+        )
+        .await,
+        StatusCode::CREATED
+    );
+    for _ in 0..3 {
+        let page_uri = format!(
+            "{uri}&before_created_at={}&before_message_id={}",
+            cursor["created_at"].as_str().unwrap(),
+            cursor["message_id"].as_str().unwrap()
+        );
+        let (status, page) =
+            api_json_request(router.clone(), &operator, Method::GET, page_uri.clone()).await;
+        assert_eq!(status, StatusCode::OK);
+        let page = page.as_array().unwrap();
+        assert!(!page.is_empty());
+        found.extend(
+            page.iter()
+                .map(|row| row["message_id"].as_str().unwrap().to_owned()),
+        );
+        cursor = page.last().unwrap().clone();
+        let (forged_status, _) =
+            api_json_request(router.clone(), &outsider, Method::GET, page_uri).await;
+        assert_eq!(forged_status, StatusCode::UNAUTHORIZED);
+    }
+    assert_eq!(
+        found, expected,
+        "ties and a concurrent newer insert must not skip or repeat results"
+    );
+    let cursor_params = format!(
+        "&before_created_at={}&before_message_id={}",
+        first[1]["created_at"].as_str().unwrap(),
+        first[1]["message_id"].as_str().unwrap()
+    );
+    let scoped_uri = format!("{uri}{cursor_params}&conversation_id={}", groups[0].id);
+    let (_, scoped) = api_json_request(router.clone(), &operator, Method::GET, scoped_uri).await;
+    assert!(!scoped.as_array().unwrap().is_empty());
+    assert!(
+        scoped
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|row| row["conversation_id"] == groups[0].id)
+    );
+    let outsider_uri = format!(
+        "/v1/messages/search?principal_id={}&q=pagination{cursor_params}",
+        outsider.id
+    );
+    let (status, denied) =
+        api_json_request(router.clone(), &outsider, Method::GET, outsider_uri).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(denied, json!([]));
+    for invalid in [
+        "&before_message_id=missing-time",
+        "&before_created_at=2020-01-01T00:00:00Z",
+        "&before_created_at=invalid&before_message_id=invalid",
+    ] {
+        let (status, _) = api_json_request(
+            router.clone(),
+            &operator,
+            Method::GET,
+            format!("{uri}{invalid}"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+}
+
+#[tokio::test]
 async fn health_and_direct_message_flow_work() {
     let database = TestDatabase::create().await;
     let app = choruz_application::ChatApp::new();
@@ -145,7 +428,8 @@ async fn attachments_upload_download_and_enforce_workspace_boundaries() {
     let attachment_root =
         std::env::temp_dir().join(format!("choruz-attachment-{}", choruz_common::new_id()));
     let router = router_with_runtime(
-        app.clone(),
+        // Production signup persists principals after the startup shell is built.
+        choruz_application::ChatApp::new(),
         &attachment_root,
         LocalAuthConfig::from_env(),
         RuntimeStore::new(&database.database_url),
@@ -178,6 +462,18 @@ async fn attachments_upload_download_and_enforce_workspace_boundaries() {
     let upload_body = to_bytes(upload.into_body(), usize::MAX).await.unwrap();
     let attachment: AttachmentRecord = serde_json::from_slice(&upload_body).unwrap();
     assert_eq!(attachment.workspace_id, "ws-acme");
+    let audits =
+        choruz_application::DbService::new(choruz_store::EventStore::new(&database.database_url))
+            .list_audit_logs(&alice.workspace_id)
+            .await
+            .unwrap();
+    let audit = audits
+        .iter()
+        .find(|audit| audit.target_id == attachment.id)
+        .unwrap();
+    assert_eq!(audit.actor_id, alice.id);
+    assert_eq!(audit.action, "attachment.uploaded");
+    assert_eq!(audit.metadata["filename"], "brief.txt");
     assert_eq!(
         attachment.download_path,
         format!("/v1/attachments/{}", attachment.id)

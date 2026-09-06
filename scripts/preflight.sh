@@ -62,7 +62,6 @@ echo "branch: $(git branch --show-current 2>/dev/null || echo unknown)"
 
 run_step pnpm install --frozen-lockfile
 run_step cargo fmt --check
-run_step python3 -m unittest scripts/test_choruz_ui_bridge.py
 
 if [ "$MODE" = "quick" ]; then
   echo ""
