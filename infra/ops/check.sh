@@ -9,11 +9,10 @@ bash -n \
   "${ROOT_DIR}/infra/ops/bin/release.sh" \
   "${ROOT_DIR}/infra/ops/bin/restore.sh" \
   "${ROOT_DIR}/infra/ops/bin/rollback.sh" \
-  "${ROOT_DIR}/infra/ops/test-rollback-links.sh" \
   "${ROOT_DIR}/infra/ops/test-selectors.sh"
 
 bash "${ROOT_DIR}/infra/ops/test-selectors.sh"
-bash "${ROOT_DIR}/infra/ops/test-rollback-links.sh"
+python3 -m unittest discover "${ROOT_DIR}/infra/ops/tests"
 
 for plist in "${ROOT_DIR}"/infra/ops/launchd/*.plist; do
   if command -v plutil >/dev/null 2>&1; then

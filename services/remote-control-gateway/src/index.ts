@@ -15,6 +15,8 @@ import {
 } from "./control";
 
 export interface Env extends OnlineAuthEnv, OnlineTransportEnv {
+  CF_VERSION_METADATA?: { id: string; tag?: string; timestamp?: string };
+  CHORUZ_RELEASE_SHA?: string;
   ROOMS: DurableObjectNamespace<GatewayRoom>;
   RATE_LIMITERS: DurableObjectNamespace<PairingRateLimiter>;
   CAPABILITIES: DurableObjectNamespace<CapabilityStore>;
@@ -61,7 +63,11 @@ async function readOpaqueTicket(env: Env, ticket: string): Promise<GatewayTicket
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
-    if (url.pathname === "/healthz") return Response.json({ ok: true });
+    if (url.pathname === "/healthz") {
+      return Response.json({ ok: true, version: env.CF_VERSION_METADATA ?? null, revision: env.CHORUZ_RELEASE_SHA ?? null }, {
+        headers: { "cache-control": "no-store" },
+      });
+    }
     if (url.pathname.startsWith("/v1/online/auth/")) return onlineAuthResponse(request, env);
     if (url.pathname.startsWith("/v1/online/")) return onlineTransportResponse(request, env);
     if (url.pathname === "/v1/capabilities" && request.method === "POST") {

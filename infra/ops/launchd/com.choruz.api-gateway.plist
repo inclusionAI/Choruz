@@ -15,14 +15,14 @@
     </dict>
     <key>ProgramArguments</key>
     <array>
-      <string>/Users/Shared/choruz/releases/current/bin/api-gateway</string>
+      <string>/Users/Shared/choruz/releases/current/bin/choruz-api-gateway</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
     <true/>
     <key>WorkingDirectory</key>
-    <string>/Users/Shared/choruz/releases/current</string>
+    <string>/Users/Shared/choruz</string>
     <key>StandardOutPath</key>
     <string>/Users/Shared/choruz/logs/api-gateway.log</string>
     <key>StandardErrorPath</key>

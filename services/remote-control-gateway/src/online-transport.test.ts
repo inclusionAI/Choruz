@@ -22,13 +22,24 @@ beforeAll(async () => {
     }
   } finally { await platform.dispose(); }
   const secret = Buffer.from(randomBytes(32)).toString("hex");
-  worker = await unstable_dev(join(root, "src/index.ts"), { config: join(root, "wrangler.toml"), ip: "127.0.0.1", port: 0, inspectorPort: 0, persist: true, persistTo: state, vars: { ONLINE_AUTH_SECRET: secret, GATEWAY_AUTH_SECRET: secret }, logLevel: "error", experimental: { disableExperimentalWarning: true, disableDevRegistry: true, watch: false } });
+  worker = await unstable_dev(join(root, "src/index.ts"), { config: join(root, "wrangler.toml"), ip: "127.0.0.1", port: 0, inspectorPort: 0, persist: true, persistTo: state, vars: { CHORUZ_RELEASE_SHA: "e".repeat(40), ONLINE_AUTH_SECRET: secret, GATEWAY_AUTH_SECRET: secret }, logLevel: "error", experimental: { disableExperimentalWarning: true, disableDevRegistry: true, watch: false } });
   origin = `http://127.0.0.1:${worker.port}`;
 }, 60_000);
 afterAll(async () => {
   for (const socket of sockets) socket.terminate();
   await worker?.stop();
   if (state) await rm(state, { recursive: true, force: true });
+});
+
+it("reports the serving release without caching or exposing authentication secrets", async () => {
+  const response = await fetch(`${origin}/healthz`);
+  expect(response.status).toBe(200);
+  expect(response.headers.get("cache-control")).toBe("no-store");
+  const health = await response.json() as { ok: boolean; revision: string; version: { id: string } };
+  expect(health.ok).toBe(true);
+  expect(health.revision).toBe("e".repeat(40));
+  expect(health.version.id).toMatch(/^[a-f0-9-]{36}$/u);
+  expect(Object.keys(health).sort()).toEqual(["ok", "revision", "version"]);
 });
 
 type Account = { token: string; user: { id: string } };
