@@ -36,22 +36,6 @@ if grep -En 'RUNTIME_DIR.*(\*.*\.pid|-i?name([[:space:]]|=).*\*.*\.pid)' "${REST
   exit 1
 fi
 
-grep -Fq 'for service in choruz-api-gateway pipeline web-app; do' "${ROLLBACK}" || {
-  echo "rollback must restart every managed Choruz service" >&2
-  exit 1
-}
-awk '/^SERVICES=\(/, /^\)/' "${RELEASE}" | grep -Fxq '  choruz-api-gateway' && \
-  awk '/^SERVICES=\(/, /^\)/' "${RELEASE}" | grep -Fxq '  pipeline' && \
-  awk '/^SERVICES=\(/, /^\)/' "${RELEASE}" | grep -Fxq '  web-app' && \
-  ! awk '/^SERVICES=\(/, /^\)/' "${RELEASE}" | grep -Fq 'choruz-pipeline' || {
-  echo "release must expand pipeline to the exact service identity once" >&2
-  exit 1
-}
-grep -Fq 'gui/$(id -u)/com.choruz.${service}' "${RELEASE}" && \
-  grep -Fq 'gui/$(id -u)/com.choruz.${service}' "${ROLLBACK}" || {
-  echo "managed LaunchAgents must restart in the user launchd domain" >&2
-  exit 1
-}
 if grep -Eq '(^|[[:space:];])(/bin/)?kill([[:space:]]|$)' "${RESTORE}"; then
   echo "restore must not invoke kill directly; it must use exact service controls" >&2
   exit 1
@@ -78,11 +62,4 @@ if (( database_validation_line >= drop_database_line \
   echo "restore validation must precede every destructive database operation" >&2
   exit 1
 fi
-for expected in 'preflight_target()' 'services_healthy()' 'KNOWN_GOOD=' 'rollback restart or health check failed' 'rm -f "${CURRENT_LINK}"'; do
-  grep -Fq "${expected}" "${ROLLBACK}" || {
-    echo "rollback must restore the known-good target after a failed restart" >&2
-    exit 1
-  }
-done
-
 echo "operations selectors are exact and Choruz-only"

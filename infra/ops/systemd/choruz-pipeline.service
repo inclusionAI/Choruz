@@ -9,7 +9,7 @@ User=choruz
 Group=choruz
 LogsDirectory=choruz
 LogsDirectoryMode=0750
-WorkingDirectory=/srv/choruz/releases/current
+WorkingDirectory=/srv/choruz
 Environment=CHORUZ_DATABASE_URL=postgres://choruz@127.0.0.1:5432/choruz
 Environment=CHORUZ_PIPELINE_METRICS_HOST=127.0.0.1
 Environment=CHORUZ_PIPELINE_METRICS_PORT=3020

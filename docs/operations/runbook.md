@@ -29,8 +29,8 @@ Set `CHORUZ_LOG_FORMAT=json` for structured service stderr and use the process s
 
 1. Check `launchctl print system/com.choruz.api-gateway` on macOS or `systemctl status choruz-api-gateway` on Linux.
 2. Review `/Users/Shared/choruz/logs/api-gateway.log` or `/var/log/choruz/api-gateway.log`.
-3. If the binary is missing or stale, run `infra/ops/bin/release.sh deploy`.
-4. If the newest release is bad, run `infra/ops/bin/rollback.sh`.
+3. If the binary is missing or stale, activate a verified package using [the deployment procedure](deploy.md#managed-device-upgrades).
+4. If the newest release is bad, use that procedure's verified rollback with the installation's readiness URLs.
 
 ## Incident: Event Backlog Growing
 
@@ -54,11 +54,11 @@ Set `CHORUZ_LOG_FORMAT=json` for structured service stderr and use the process s
 4. `pnpm host:smoke`
 5. `pnpm api:smoke`
 6. `infra/ops/check.sh`
-7. `infra/ops/bin/release.sh deploy`
+7. Activate the verified CI artifact using [the deployment procedure](deploy.md#managed-device-upgrades).
 
 ## Rollback Checklist
 
 1. Confirm the current failure is release-induced rather than dependency-induced.
-2. Run `infra/ops/bin/rollback.sh`.
+2. Run the [verified rollback](deploy.md#managed-device-upgrades) with explicit service readiness URLs.
 3. Re-run `pnpm api:smoke`.
 4. Verify `/metrics` and the alert panel return to green.

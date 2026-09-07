@@ -1,0 +1,109 @@
+name: cd
+
+on:
+  workflow_run:
+    workflows: [ci]
+    branches: [main]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      ci_run_id:
+        description: Successful push-to-main CI run to deliver
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+# A running activation must finish or recover; a newer push cannot cancel it.
+concurrency:
+  group: production-delivery
+  cancel-in-progress: false
+
+jobs:
+  authorize:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      sha: ${{ steps.verified.outputs.sha }}
+      run_id: ${{ steps.verified.outputs.run_id }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with: { persist-credentials: false }
+      - id: verified
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CI_RUN_ID: ${{ github.event.workflow_run.id || inputs.ci_run_id }}
+        run: python3 .github/scripts/verified_release.py
+
+  publish:
+    needs: authorize
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REVISION: ${{ needs.authorize.outputs.sha }}
+      CI_RUN_ID: ${{ needs.authorize.outputs.run_id }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.authorize.outputs.sha }}
+          persist-credentials: false
+      - name: Download the verified run's immutable package
+        run: |
+          gh run download "$CI_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "release-$REVISION" --dir "$RUNNER_TEMP/delivery"
+          cd "$RUNNER_TEMP/delivery"
+          sha256sum --check ./*.sha256
+          python3 "$GITHUB_WORKSPACE/infra/ops/verify-archive.py" ./*.tar.gz "$REVISION"
+      - name: Publish a commit-addressed prerelease without replacing assets
+        run: |
+          tag="build-$REVISION"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            mkdir "$RUNNER_TEMP/published"
+            gh release download "$tag" --repo "$GITHUB_REPOSITORY" --dir "$RUNNER_TEMP/published"
+            diff -r "$RUNNER_TEMP/delivery" "$RUNNER_TEMP/published"
+          else
+            gh release create "$tag" "$RUNNER_TEMP/delivery/"* --repo "$GITHUB_REPOSITORY" \
+              --target "$REVISION" --prerelease --title "Choruz $REVISION" \
+              --notes "Built and verified by https://github.com/$GITHUB_REPOSITORY/actions/runs/$CI_RUN_ID. Linux x86_64, Ubuntu 24.04 runtime baseline; Node 24 and PostgreSQL are external prerequisites. SHA-256 checksums and the package manifest identify the exact build. Device upgrades are opt-in."
+          fi
+
+  gateway:
+    needs: [authorize, publish]
+    if: vars.CHORUZ_CLOUD_DEPLOY_ENABLED == 'true'
+    environment: cloud-production
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REVISION: ${{ needs.authorize.outputs.sha }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      CHORUZ_GATEWAY_URL: ${{ vars.CHORUZ_GATEWAY_URL }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.authorize.outputs.sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with: { node: "true" }
+      - name: Reject a superseded deployment before accessing Cloudflare
+        run: test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)" = "$REVISION"
+      - name: Deploy and verify the gateway, restoring its prior version on failure
+        run: python3 infra/ops/deploy-gateway.py "$REVISION"
+      - name: Retain the deployment and recovery record
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: gateway-delivery-${{ github.run_id }}
+          path: gateway-delivery.json
+          if-no-files-found: warn
