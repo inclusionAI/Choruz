@@ -336,6 +336,9 @@ test.describe("Search", () => {
       try {
         await page.locator(".detail-search-result", { hasText: content }).click();
         await started;
+        // Opening the panel can prefetch history before this held navigation.
+        // Cancellation must prevent further requests, not erase that earlier work.
+        const cursorsAtNavigation = [...historyCursors];
         if (scenario === "cancel") {
           await page.getByRole("status").getByRole("button", { name: "Cancel", exact: true }).click();
         } else if (replacement) {
@@ -362,7 +365,7 @@ test.describe("Search", () => {
         await finished;
         await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
         await expect(page.getByText("Finding message…", { exact: true })).toHaveCount(0);
-        expect(historyCursors).toHaveLength(1);
+        expect(historyCursors).toEqual(cursorsAtNavigation);
         await expect(page.locator(`[data-msg-id="${target.id}"]`)).toHaveCount(0);
         if (replacement && scenario !== "cancel replacement") {
           await expect(page.locator(`[data-msg-id="${replacement.id}"]`)).toBeInViewport();
