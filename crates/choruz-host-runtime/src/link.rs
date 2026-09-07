@@ -407,7 +407,7 @@ mod tests {
         controller_rx: &mut mpsc::Receiver<String>,
         id: &str,
         request: LinkRequest,
-    ) -> DeviceFrame {
+    ) -> (DeviceFrame, Vec<DeviceFrame>) {
         controller_tx
             .send(
                 serde_json::to_string(&ControllerFrame::Call {
@@ -418,20 +418,64 @@ mod tests {
             )
             .await
             .unwrap();
+        let mut events = Vec::new();
         loop {
             let frame: DeviceFrame =
                 serde_json::from_str(&controller_rx.recv().await.expect("reply")).unwrap();
             if matches!(&frame, DeviceFrame::Result { id: reply_id, .. } if reply_id == id) {
-                return frame;
+                return (frame, events);
             }
+            // Terminal events can precede a call's reply on the same link.
+            events.push(frame);
         }
+    }
+
+    #[tokio::test]
+    async fn call_preserves_terminal_events_queued_before_its_reply() {
+        let (controller_tx, _device_rx) = mpsc::channel(1);
+        let (device_tx, mut controller_rx) = mpsc::channel(3);
+        for frame in [
+            DeviceFrame::TerminalOutput {
+                terminal_id: "binding-link".into(),
+                data: encode_bytes(b"READY"),
+            },
+            DeviceFrame::TerminalExit {
+                terminal_id: "binding-link".into(),
+            },
+            DeviceFrame::Result {
+                id: "alive".into(),
+                ok: Some(json!(false)),
+                error: None,
+            },
+        ] {
+            device_tx
+                .send(serde_json::to_string(&frame).unwrap())
+                .await
+                .unwrap();
+        }
+        let (reply, events) = call(
+            &controller_tx,
+            &mut controller_rx,
+            "alive",
+            LinkRequest::TerminalAlive {
+                terminal_id: "binding-link".into(),
+            },
+        )
+        .await;
+        assert!(
+            matches!(reply, DeviceFrame::Result { ok: Some(value), error: None, .. } if value == json!(false))
+        );
+        assert!(matches!(events.as_slice(), [
+            DeviceFrame::TerminalOutput { terminal_id, data },
+            DeviceFrame::TerminalExit { terminal_id: exit_id },
+        ] if terminal_id == "binding-link" && exit_id == terminal_id && decode_bytes(data).unwrap() == b"READY"));
     }
 
     #[tokio::test]
     async fn device_link_greets_answers_host_requests_and_reports_errors() {
         let (controller_tx, mut controller_rx, link) = welcomed_link().await;
 
-        let reply = call(
+        let (reply, _) = call(
             &controller_tx,
             &mut controller_rx,
             "home",
@@ -445,7 +489,7 @@ mod tests {
         };
         assert!(ok["home"].is_string());
 
-        let reply = call(
+        let (reply, _) = call(
             &controller_tx,
             &mut controller_rx,
             "missing",
@@ -500,7 +544,7 @@ mod tests {
             model: None,
             harness_account: json!({}),
         };
-        let reply = call(
+        let (reply, _) = call(
             &controller_tx,
             &mut controller_rx,
             "ensure",
@@ -511,7 +555,7 @@ mod tests {
             matches!(&reply, DeviceFrame::Result { ok: Some(ok), .. } if ok["newly_created"] == true),
             "{reply:?}"
         );
-        let reply = call(
+        let (reply, mut events) = call(
             &controller_tx,
             &mut controller_rx,
             "attach",
@@ -530,7 +574,7 @@ mod tests {
             .flat_map(|frame| decode_bytes(frame.as_str().unwrap()).unwrap())
             .collect::<Vec<u8>>();
 
-        let reply = call(
+        let (reply, write_events) = call(
             &controller_tx,
             &mut controller_rx,
             "write",
@@ -541,12 +585,18 @@ mod tests {
         )
         .await;
         assert!(matches!(reply, DeviceFrame::Result { error: None, .. }));
+        events.extend(write_events);
+        let mut events = events.into_iter();
 
         let mut exited = false;
         tokio::time::timeout(Duration::from_secs(5), async {
             while !exited {
-                let frame: DeviceFrame =
-                    serde_json::from_str(&controller_rx.recv().await.expect("frame")).unwrap();
+                let frame = match events.next() {
+                    Some(frame) => frame,
+                    None => {
+                        serde_json::from_str(&controller_rx.recv().await.expect("frame")).unwrap()
+                    }
+                };
                 match frame {
                     DeviceFrame::TerminalOutput { terminal_id, data } => {
                         assert_eq!(terminal_id, "binding-link");

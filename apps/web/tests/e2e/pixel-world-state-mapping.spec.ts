@@ -52,6 +52,11 @@ async function openPixelAndWaitForStore(page: Page): Promise<{
     { timeout: 15_000 },
   );
 
+  // These state-machine scenarios advance ticks explicitly. Stop Phaser's
+  // concurrent frame loop so it cannot complete a walk between assertions.
+  await page.waitForFunction(() => (window as any).__PHASER_READY === true);
+  await page.evaluate(() => (window as any).__PHASER_SCENE.game.loop.sleep());
+
   // Grab an agent id and two house ids: one the agent isn't currently in
   // (for walk tests), and preferably one that has a desk-type interaction
   // point (for typing/talking/resumeState tests).
