@@ -537,7 +537,7 @@ async fn import_one_session(
             .insert("runtime_host_id".into(), json!(runtime_host_id));
     }
     if session.harness == choruz_agent_runtime::HarnessKind::Codex {
-        let anchor = import_codex_terminal_session(
+        let mut anchor = import_codex_terminal_session(
             host,
             &binding_id,
             &conversation_id,
@@ -549,6 +549,7 @@ async fn import_one_session(
             config.clone(),
         )
         .await?;
+        anchor["runtime_host_id"] = config["runtime_host_id"].clone();
         let config = config
             .as_object_mut()
             .expect("native session import configuration is an object");

@@ -147,7 +147,9 @@ describe("ChannelTaskBoard", () => {
 
     expect(html).toContain('aria-busy="true"');
     expect(html).toContain('aria-label="Move TASK-1 status"');
-    expect(html).toContain("disabled");
+    const selects = html.match(/<select\b[^>]*>/g) ?? [];
+    expect(selects).toHaveLength(2);
+    for (const select of selects) expect(select).toContain('disabled=""');
   });
 
   it("maps adjacent status movement without wrapping past fixed board edges", () => {

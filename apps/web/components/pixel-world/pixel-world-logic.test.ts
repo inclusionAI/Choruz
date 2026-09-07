@@ -2,10 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import agentAtlas from "../../public/sprites/agents/agent_atlas.json";
 import { hashStr } from "./pixel-sprites";
-import { getAgentVisualDescriptor, COLOR_PALETTE, isChoruzRosterAsset, MASTER_ASSETS } from "./agent-catalog";
+import { getAgentVisualDescriptor, isChoruzRosterAsset, MASTER_ASSETS } from "./agent-catalog";
 import { generateColors, darken } from "./pixel-houses";
-import { appendIncrementalMessages, mergePreviewIntoMessages, type MessagesByConv } from "../../lib/messages/messages";
-import type { ChatMessage } from "../../lib/api/choruz-types";
 import { REMOTE_SERVER_INSTALL_COMMAND } from "../../lib/remote/remote-server-install";
 
 describe("REMOTE_SERVER_INSTALL_COMMAND", () => {
@@ -14,32 +12,6 @@ describe("REMOTE_SERVER_INSTALL_COMMAND", () => {
     expect(REMOTE_SERVER_INSTALL_COMMAND).not.toContain("#");
   });
 });
-
-// ---------------------------------------------------------------------------
-// Test helpers
-// ---------------------------------------------------------------------------
-
-function msg(
-  id: string,
-  conv: string,
-  seq: number,
-  content = id,
-): ChatMessage {
-  return {
-    id,
-    workspace_id: "ws-1",
-    conversation_id: conv,
-    sender_id: "user-1",
-    content,
-    content_type: "text",
-    metadata: {},
-    edited_at: null,
-    edited_by: null,
-    server_seq: seq,
-    idempotency_key: id,
-    created_at: "2026-04-09T00:00:00Z",
-  };
-}
 
 // ===========================================================================
 // 1. hashStr — never produces negative modulo indexes
@@ -209,110 +181,5 @@ describe("generateColors / darken", () => {
         expect(() => darken(hex, amt)).not.toThrow();
       }
     }
-  });
-});
-
-// ===========================================================================
-// 4. appendIncrementalMessages — deduplication
-// ===========================================================================
-
-describe("appendIncrementalMessages (dedup)", () => {
-  it("deduplicates by id when incoming messages overlap with cache", () => {
-    const existing: MessagesByConv = {
-      c1: [msg("m1", "c1", 1), msg("m2", "c1", 2)],
-    };
-    const result = appendIncrementalMessages(existing, "c1", [
-      msg("m2", "c1", 2), // already exists
-      msg("m3", "c1", 3),
-    ]);
-    expect(result.c1.map((m) => m.id)).toEqual(["m1", "m2", "m3"]);
-  });
-
-  it("returns same reference when all incoming are duplicates", () => {
-    const existing: MessagesByConv = {
-      c1: [msg("m1", "c1", 1), msg("m2", "c1", 2)],
-    };
-    const result = appendIncrementalMessages(existing, "c1", [
-      msg("m1", "c1", 1),
-      msg("m2", "c1", 2),
-    ]);
-    expect(result).toBe(existing);
-  });
-
-  it("handles empty incoming array", () => {
-    const existing: MessagesByConv = { c1: [msg("m1", "c1", 1)] };
-    const result = appendIncrementalMessages(existing, "c1", []);
-    expect(result).toBe(existing);
-  });
-
-  it("handles seeding a new conversation", () => {
-    const existing: MessagesByConv = {};
-    const result = appendIncrementalMessages(existing, "c1", [
-      msg("m1", "c1", 1),
-      msg("m2", "c1", 2),
-    ]);
-    expect(result.c1).toHaveLength(2);
-    expect(result.c1.map((m) => m.id)).toEqual(["m1", "m2"]);
-  });
-});
-
-// ===========================================================================
-// 5. mergePreviewIntoMessages — does not truncate existing messages
-// ===========================================================================
-
-describe("mergePreviewIntoMessages (no truncation)", () => {
-  it("does NOT truncate existing 20-message history when preview has only 1 msg", () => {
-    const history: ChatMessage[] = Array.from({ length: 20 }, (_, i) =>
-      msg(`m${i + 1}`, "c1", i + 1),
-    );
-    const existing: MessagesByConv = { c1: history };
-    // preview with only the last message
-    const preview = { c1: [history[19]] };
-
-    const result = mergePreviewIntoMessages(existing, preview);
-
-    expect(result.c1).toHaveLength(20);
-    expect(result.c1[0].id).toBe("m1");
-    expect(result.c1[19].id).toBe("m20");
-  });
-
-  it("appends newer messages without removing older ones", () => {
-    const existing: MessagesByConv = {
-      c1: [msg("m1", "c1", 1), msg("m2", "c1", 2), msg("m3", "c1", 3)],
-    };
-    const preview = { c1: [msg("m4", "c1", 4), msg("m5", "c1", 5)] };
-
-    const result = mergePreviewIntoMessages(existing, preview);
-
-    expect(result.c1).toHaveLength(5);
-    expect(result.c1[0].id).toBe("m1");
-    expect(result.c1[4].id).toBe("m5");
-  });
-
-  it("returns same reference when preview is stale", () => {
-    const existing: MessagesByConv = {
-      c1: [msg("m1", "c1", 1), msg("m2", "c1", 2)],
-    };
-    const preview = { c1: [msg("m1", "c1", 1)] };
-
-    const result = mergePreviewIntoMessages(existing, preview);
-    expect(result).toBe(existing);
-    expect(result.c1).toHaveLength(2);
-  });
-
-  it("does not lose messages from other conversations", () => {
-    const existing: MessagesByConv = {
-      c1: [msg("a1", "c1", 1), msg("a2", "c1", 2)],
-      c2: [msg("b1", "c2", 1), msg("b2", "c2", 2), msg("b3", "c2", 3)],
-    };
-    const preview = { c1: [msg("a3", "c1", 3)] };
-
-    const result = mergePreviewIntoMessages(existing, preview);
-
-    // c1 gained one
-    expect(result.c1).toHaveLength(3);
-    // c2 untouched
-    expect(result.c2).toHaveLength(3);
-    expect(result.c2).toBe(existing.c2);
   });
 });

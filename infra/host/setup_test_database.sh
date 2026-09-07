@@ -46,6 +46,15 @@ setup_temp_test_database() {
   echo "==> creating temporary test database $PREFLIGHT_TEST_DB_NAME"
   psql "${admin_args[@]}" -v ON_ERROR_STOP=1 -c "CREATE DATABASE $PREFLIGHT_TEST_DB_NAME"
 
+  cleanup_temp_test_database() {
+    echo ""
+    echo "==> dropping temporary test database $PREFLIGHT_TEST_DB_NAME"
+    psql -h "$PREFLIGHT_TEST_DB_HOST" -p "$PREFLIGHT_TEST_DB_PORT" -U "$PREFLIGHT_TEST_DB_USER" -d postgres -v ON_ERROR_STOP=1 -c \
+      "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '$PREFLIGHT_TEST_DB_NAME' AND pid <> pg_backend_pid();" >/dev/null || true
+    psql -h "$PREFLIGHT_TEST_DB_HOST" -p "$PREFLIGHT_TEST_DB_PORT" -U "$PREFLIGHT_TEST_DB_USER" -d postgres -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS $PREFLIGHT_TEST_DB_NAME" >/dev/null || true
+  }
+  trap cleanup_temp_test_database EXIT
+
   local test_args=(-h "$host" -p "$port" -U "$user" -d "$PREFLIGHT_TEST_DB_NAME")
   for migration in migrations/*.sql; do
     psql "${test_args[@]}" -v ON_ERROR_STOP=1 -f "$migration" >/dev/null
@@ -56,15 +65,6 @@ setup_temp_test_database() {
     url="$url password=$password"
   fi
   export CHORUZ_TEST_DATABASE_URL="$url"
-
-  cleanup_temp_test_database() {
-    echo ""
-    echo "==> dropping temporary test database $PREFLIGHT_TEST_DB_NAME"
-    psql -h "$PREFLIGHT_TEST_DB_HOST" -p "$PREFLIGHT_TEST_DB_PORT" -U "$PREFLIGHT_TEST_DB_USER" -d postgres -v ON_ERROR_STOP=1 -c \
-      "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '$PREFLIGHT_TEST_DB_NAME' AND pid <> pg_backend_pid();" >/dev/null || true
-    psql -h "$PREFLIGHT_TEST_DB_HOST" -p "$PREFLIGHT_TEST_DB_PORT" -U "$PREFLIGHT_TEST_DB_USER" -d postgres -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS $PREFLIGHT_TEST_DB_NAME" >/dev/null || true
-  }
-  trap cleanup_temp_test_database EXIT
 }
 
 setup_temp_test_database

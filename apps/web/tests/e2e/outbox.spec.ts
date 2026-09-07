@@ -37,8 +37,7 @@ async function waitForConsoleCondition<T>(
 /**
  * Outbox / agent message pipeline tests.
  *
- * NOTE: The existing tests/outbox-reply.spec.ts covers simulated agent
- * replies and CHORUZ_REPLY tag checks.  This file adds complementary tests.
+ * The opt-in outbox-reply.spec.ts exercises a live agent separately.
  */
 
 test.describe("Outbox / agent message pipeline", () => {
@@ -96,80 +95,6 @@ test.describe("Outbox / agent message pipeline", () => {
     const matching = msgs.filter((m) => m.content.startsWith(uniqueKey));
     expect(matching.length).toBe(2);
   });
-
-  /* ---------------------------------------------------------------------- */
-  /*  Idempotency                                                            */
-  /* ---------------------------------------------------------------------- */
-
-  test("should enforce idempotency key (same key = same message)", async ({
-    page,
-  }) => {
-    const { token, principal } = await login(page);
-    const group = await createGroup(page, token, principal.id, uniqueName("outbox-owned"));
-    const idempotencyKey = `idem-${Date.now()}`;
-    const data = {
-      actor_id: principal.id,
-      conversation_id: group.id,
-      content: "idempotency test",
-      content_type: "text/plain",
-      idempotency_key: idempotencyKey,
-      metadata: {},
-    };
-    const res1 = await page.request.post(`${API_BASE}/v1/messages`, {
-      headers: { Authorization: `Bearer ${token}` },
-      data,
-    });
-    const res2 = await page.request.post(`${API_BASE}/v1/messages`, {
-      headers: { Authorization: `Bearer ${token}` },
-      data,
-    });
-    expect(res1.ok()).toBeTruthy();
-    // Second call should either succeed (idempotent) or be rejected
-    // Either way, there should only be ONE message with that key
-    const msgs = await getMessages(page, token, principal.id, group.id);
-    const matches = msgs.filter(
-      (m) => m.content === "idempotency test",
-    );
-    expect(matches.length).toBeGreaterThanOrEqual(1);
-  });
-
-  /* ---------------------------------------------------------------------- */
-  /*  No tag residue                                                         */
-  /* ---------------------------------------------------------------------- */
-
-  test("should never contain CHORUZ_REPLY tags in any message", async ({
-    page,
-  }) => {
-    const { token, principal } = await login(page);
-    const snap = await getConsoleSnapshot(page, token);
-    for (const conv of snap.conversations) {
-      const msgs = await getMessages(page, token, principal.id, conv.id, 20);
-      for (const m of msgs) {
-        expect(m.content).not.toContain("{{CHORUZ_REPLY}}");
-        expect(m.content).not.toContain("{{/CHORUZ_REPLY}}");
-      }
-    }
-  });
-
-  test("should not contain ANSI escape sequences in messages", async ({
-    page,
-  }) => {
-    const { token, principal } = await login(page);
-    const snap = await getConsoleSnapshot(page, token);
-    const group = snap.conversations.find(
-      (c) => c.conversation_type === "group",
-    );
-    if (!group) {
-      test.skip();
-      return;
-    }
-    const msgs = await getMessages(page, token, principal.id, group.id, 20);
-    for (const m of msgs) {
-      // ANSI escape pattern
-      expect(m.content).not.toMatch(/\x1b\[/);
-    }
-  });
-
   /* ---------------------------------------------------------------------- */
   /*  Agent provisioning + messaging                                         */
   /* ---------------------------------------------------------------------- */

@@ -105,6 +105,13 @@ assert_notification() {
     grep -Fq "LISTEN" "${listener_output}" && break
     sleep 0.05
   done
+  if ! grep -Fq "LISTEN" "${listener_output}"; then
+    wait "${listener_pid}" || true
+    cat "${listener_output}" >&2
+    rm -f "${listener_output}"
+    echo "listener did not become ready before notification injection" >&2
+    exit 1
+  fi
   pg_exec -d "${TEMP_DB}" -c "${statement}" >/dev/null
   wait "${listener_pid}"
 
@@ -145,6 +152,13 @@ assert_no_notification() {
     grep -Fq "LISTEN" "${listener_output}" && break
     sleep 0.05
   done
+  if ! grep -Fq "LISTEN" "${listener_output}"; then
+    wait "${listener_pid}" || true
+    cat "${listener_output}" >&2
+    rm -f "${listener_output}"
+    echo "listener did not become ready before notification injection" >&2
+    exit 1
+  fi
   pg_exec -d "${TEMP_DB}" -c "${statement}" >/dev/null
   wait "${listener_pid}"
   if grep -Fq "Asynchronous notification" "${listener_output}"; then

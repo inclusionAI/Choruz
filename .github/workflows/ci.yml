@@ -49,6 +49,7 @@ jobs:
       gateway: ${{ steps.filter.outputs.gateway }}
       ops: ${{ steps.filter.outputs.ops }}
       lifecycle: ${{ steps.filter.outputs.lifecycle }}
+      notes: ${{ steps.filter.outputs.notes }}
       docs_only: ${{ steps.e2e.outputs.docs_only }}
       vitest: ${{ steps.e2e.outputs.vitest }}
       vitest_files: ${{ steps.e2e.outputs.vitest_files }}
@@ -309,7 +310,9 @@ jobs:
           python3 scripts/verify_agent_notes.py
       - name: Bridge build
         if: env.PUSH == 'true' || needs.changes.outputs.bridge == 'true'
-        run: pnpm --dir services/choruz-bridge build
+        run: |
+          pnpm --dir services/choruz-bridge build
+          pnpm --dir services/choruz-bridge test
       - name: Remote Control Gateway checks
         if: env.PUSH == 'true' || needs.changes.outputs.gateway == 'true'
         run: |
@@ -336,6 +339,10 @@ jobs:
         run: pnpm db:migration:smoke
       - name: API smoke
         run: pnpm api:smoke
+      - name: Owned process and database recovery
+        run: |
+          python3 infra/host/tests/isolated_smoke.test.py
+          bash infra/host/recovery_smoke.sh
 
   e2e:
     name: Web E2E (${{ matrix.shard }}/${{ needs.changes.outputs.e2e_shard_count }})
@@ -358,7 +365,7 @@ jobs:
         run: |
           bash ./infra/host/web_e2e.sh ${{ needs.changes.outputs.e2e_specs }} --shard=${{ matrix.shard }}/${{ needs.changes.outputs.e2e_shard_count }}
       - name: Upload Playwright report
-        if: failure()
+        if: ${{ !cancelled() && (failure() || hashFiles('apps/web/test-results/**/trace.zip') != '') }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: playwright-e2e-${{ matrix.shard }}
@@ -385,7 +392,7 @@ jobs:
       - name: Web E2E full
         run: CHORUZ_WEB_E2E_FULL=1 bash ./infra/host/web_e2e.sh --shard=${{ matrix.shard }}/4
       - name: Upload Playwright report
-        if: failure()
+        if: ${{ !cancelled() && (failure() || hashFiles('apps/web/test-results/**/trace.zip') != '') }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: playwright-full-${{ matrix.shard }}

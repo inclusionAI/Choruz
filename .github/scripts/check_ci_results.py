@@ -4,8 +4,8 @@
 
 The workflow's `changes` job lists the jobs a run must pass in REQUIRED_NEEDS
 (comma-separated; empty for a documentation-only change, which needs none).
-A job on that list that was skipped, cancelled, failed or never reported
-fails the gate; a job the list leaves out may do anything.
+Change detection must succeed even when its selection is empty. A selected
+job that was skipped, cancelled, failed or never reported fails the gate.
 """
 
 import json
@@ -29,7 +29,7 @@ def applicable_needs(required_needs: str) -> tuple[str, ...]:
 def main() -> None:
     needs = json.loads(os.environ["NEEDS"])
     required = applicable_needs(os.environ["REQUIRED_NEEDS"])
-    failed = failures({name: needs.get(name, {}) for name in required})
+    failed = failures({name: needs.get(name, {}) for name in ("changes", *required)})
     if failed:
         print("CI dependencies did not succeed:")
         for name, result in failed:

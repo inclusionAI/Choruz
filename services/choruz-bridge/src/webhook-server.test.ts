@@ -20,7 +20,7 @@ describe('isValidChoruzWebhookSignature', () => {
 });
 
 describe('WebhookServer', () => {
-  it('delivers each signed event ID only once', async () => {
+  it('retries failed channels without duplicating completed or in-flight delivery', async () => {
     const secret = 'test-secret';
     const timestamp = String(Math.floor(Date.now() / 1000));
     const body = JSON.stringify({
@@ -42,7 +42,12 @@ describe('WebhookServer', () => {
       .update('.')
       .update(body)
       .digest('hex')}`;
-    const deliveries: Array<{ content: string; senderName: string }> = [];
+    const deliveries: Array<{ channel: string; content: string; senderName: string }> = [];
+    let failSecond = true;
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    let finish!: () => void;
+    const held = new Promise<void>((resolve) => { finish = resolve; });
     const server = new WebhookServer({
       port: 0,
       secret,
@@ -51,11 +56,13 @@ describe('WebhookServer', () => {
           platform: 'slack',
           platform_channel_id: 'channel-1',
           platform_channel_name: null,
-        }],
+        }, { platform: 'slack', platform_channel_id: 'channel-2', platform_channel_name: null }],
       } as never,
       slack: {
-        pushToSlack: async (_channel, content, senderName) => {
-          deliveries.push({ content, senderName });
+        pushToSlack: async (channel: string, content: string, senderName: string) => {
+          if (channel === 'channel-1') { entered(); await held; }
+          if (channel === 'channel-2' && failSecond) { failSecond = false; throw new Error('temporary platform outage'); }
+          deliveries.push({ channel, content, senderName });
         },
       } as never,
     });
@@ -71,15 +78,30 @@ describe('WebhookServer', () => {
       },
     };
 
-    expect((await server.inject(request)).statusCode).toBe(200);
-    expect((await server.inject({
-      ...request,
-      headers: { ...request.headers, 'x-choruz-event-id': 'tampered-event-id' },
-    })).statusCode).toBe(400);
-    expect((await server.inject(request)).json()).toMatchObject({
-      status: 'ignored', reason: 'duplicate_event',
-    });
-    expect(deliveries).toEqual([{ content: 'hello', senderName: 'Ada' }]);
-    await server.stop();
+    const first = server.inject(request);
+    try {
+      await started;
+      expect((await server.inject(request)).statusCode).toBe(503);
+      finish();
+      const partial = await first;
+      expect(partial.statusCode).toBe(503);
+      expect(partial.json()).toMatchObject({ status: 'partial_failure' });
+      expect((await server.inject(request)).statusCode).toBe(200);
+      expect((await server.inject({
+        ...request,
+        headers: { ...request.headers, 'x-choruz-event-id': 'tampered-event-id' },
+      })).statusCode).toBe(400);
+      expect((await server.inject(request)).json()).toMatchObject({
+        status: 'ignored', reason: 'duplicate_event',
+      });
+      expect(deliveries).toEqual([
+        { channel: 'channel-1', content: 'hello', senderName: 'Ada' },
+        { channel: 'channel-2', content: 'hello', senderName: 'Ada' },
+      ]);
+    } finally {
+      finish();
+      await first;
+      await server.stop();
+    }
   });
 });

@@ -451,6 +451,27 @@ async fn metrics_endpoint_reports_prometheus_text() {
 }
 
 #[tokio::test]
+async fn rate_limit_response_preserves_the_window_wait() {
+    let limiter = choruz_application::RateLimiter::new(1);
+    limiter.check("owned-principal").unwrap();
+    let error = limiter.check("owned-principal").unwrap_err();
+    let response = ApiError(error).into_response();
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    let seconds = response.headers()["retry-after"]
+        .to_str()
+        .unwrap()
+        .parse::<u64>()
+        .unwrap();
+    assert!((2..=60).contains(&seconds));
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let payload: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        payload["error"]["detail"],
+        format!("Too many requests. Try again in {seconds} seconds.")
+    );
+}
+
+#[tokio::test]
 async fn api_error_responses_redact_secrets() {
     let response = ApiError(AppError::Internal(
         "secret=sk-live-123 Bearer token-456".into(),

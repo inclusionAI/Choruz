@@ -1173,6 +1173,49 @@ paths:
       responses:
         "200":
           description: Pending event webhooks flushed
+  /v1/runtime/bindings/{bindingId}/session:
+    get:
+      operationId: readStructuredSession
+      parameters:
+        - {name: bindingId, in: path, required: true, schema: {type: string}}
+        - {name: after, in: query, schema: {type: integer, minimum: 0, default: 0}}
+      responses:
+        "200":
+          description: Authorized direct conversation state on the binding's execution device
+    post:
+      operationId: openStructuredSession
+      parameters:
+        - {name: bindingId, in: path, required: true, schema: {type: string}}
+      responses:
+        "200":
+          description: Reattached or started the binding's structured Harness process
+        "409":
+          description: The binding is owned by an interactive terminal or another active turn
+  /v1/runtime/bindings/{bindingId}/session/commands:
+    post:
+      operationId: commandStructuredSession
+      parameters:
+        - {name: bindingId, in: path, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action, instance]
+              properties:
+                action: {type: string, enum: [send, respond, interrupt, close]}
+                instance: {type: string, description: Process instance returned by the current session snapshot}
+                text: {type: string, maxLength: 131072}
+                submission_id: {type: string, maxLength: 128}
+                request_id: {}
+                allow: {type: boolean}
+                answers: {type: object, additionalProperties: {type: array, items: {type: string}}}
+      responses:
+        "200":
+          description: Accepted command and current structured conversation state
+        "409":
+          description: Active turn, stale approval or conflicting submission
   /v1/ws/terminals/{bindingId}:
     get:
       operationId: streamTerminalWebSocket

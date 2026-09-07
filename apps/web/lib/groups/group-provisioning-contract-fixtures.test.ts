@@ -15,14 +15,14 @@ import {
   groupProvisioningContractFixtures,
 } from "./group-provisioning-contract-fixtures";
 
-describe("group provisioning contract fixtures", () => {
+describe("synthetic group provisioning schema examples", () => {
   it("validates every fixture with runtime guards and sensitive-key checks", () => {
     for (const fixture of groupProvisioningContractFixtureList) {
       expect(validateGroupProvisioningContractFixture(fixture)).toBe(fixture);
     }
   });
 
-  it("covers all required contract scenarios", () => {
+  it("names each schema example", () => {
     expect(Object.keys(groupProvisioningContractFixtures).sort()).toEqual([
       "cancellationAfterSideEffects",
       "cancellationBeforeSideEffects",

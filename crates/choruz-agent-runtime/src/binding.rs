@@ -190,6 +190,8 @@ pub struct TerminalSessionAnchorInput {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TerminalSessionAnchor {
+    #[serde(default)]
+    pub runtime_host_id: Option<String>,
     pub driver_type: String,
     pub session_id: String,
     pub source: String,
@@ -246,6 +248,19 @@ pub struct CodexTerminalCaptureMetadata {
 
 impl RuntimeBinding {
     fn terminal_session_provenance_matches(&self, anchor: &TerminalSessionAnchor) -> bool {
+        if anchor.runtime_host_id.as_deref()
+            != self
+                .config_json
+                .get("runtime_host_id")
+                .and_then(Value::as_str)
+        {
+            return false;
+        }
+        if anchor.provenance == "direct_session_reserved"
+            && self.driver_type == DriverType::ClaudeTerminal
+        {
+            return true;
+        }
         if anchor.provenance == "terminal_process_captured" {
             return true;
         }
@@ -1079,6 +1094,26 @@ impl RuntimeStore {
         binding_id: &str,
         input: TerminalSessionAnchorInput,
     ) -> AppResult<RuntimeBinding> {
+        self.write_session_anchor(binding_id, input, None).await
+    }
+
+    /// Direct sessions may race a headless completion, but not a change to
+    /// their account, device, generation, or previously captured identity.
+    pub async fn write_direct_session_anchor(
+        &self,
+        binding: &RuntimeBinding,
+        input: TerminalSessionAnchorInput,
+    ) -> AppResult<RuntimeBinding> {
+        self.write_session_anchor(&binding.id, input, Some(&binding.config_json))
+            .await
+    }
+
+    async fn write_session_anchor(
+        &self,
+        binding_id: &str,
+        input: TerminalSessionAnchorInput,
+        expected_config: Option<&Value>,
+    ) -> AppResult<RuntimeBinding> {
         if binding_id != input.binding_id {
             return Err(AppError::Validation(
                 "terminal session anchor binding mismatch".into(),
@@ -1107,14 +1142,41 @@ impl RuntimeStore {
             .query_opt(
                 "UPDATE agent_runtime_bindings
                  SET config_json = (config_json - 'terminal_capture')
-                       || jsonb_build_object('terminal_session', $2::jsonb),
+                       || jsonb_build_object('terminal_session', $2::jsonb
+                            || jsonb_build_object('runtime_host_id', config_json->'runtime_host_id')),
                      updated_at = $3
                  WHERE id = $1
                    AND conversation_id = $4
                    AND agent_principal_id = $5
                    AND driver_type = $6
                    AND workspace_path = $7
-                   AND updated_at = $8
+                   AND CASE WHEN $11::jsonb IS NULL THEN updated_at = $8 ELSE (
+                     config_json - ARRAY['external_session_provenance',
+                       'external_session_driver_type', 'external_session_binding_id',
+                       'external_session_mode', 'external_session_captured_at',
+                       'agent_workspace_id', 'conversation_workspace_id']::text[]
+                     = $11::jsonb - ARRAY['external_session_provenance',
+                       'external_session_driver_type', 'external_session_binding_id',
+                       'external_session_mode', 'external_session_captured_at',
+                       'agent_workspace_id', 'conversation_workspace_id']::text[]
+                     OR (
+                       config_json - ARRAY['terminal_session',
+                         'external_session_provenance', 'external_session_driver_type',
+                         'external_session_binding_id', 'external_session_mode',
+                         'external_session_captured_at', 'agent_workspace_id',
+                         'conversation_workspace_id']::text[]
+                       = $11::jsonb - ARRAY['terminal_session',
+                         'external_session_provenance', 'external_session_driver_type',
+                         'external_session_binding_id', 'external_session_mode',
+                         'external_session_captured_at', 'agent_workspace_id',
+                         'conversation_workspace_id']::text[]
+                       AND (config_json->'terminal_session')
+                         - ARRAY['captured_at', 'last_verified_at', 'runtime_host_id']::text[]
+                         = $2::jsonb - ARRAY['captured_at', 'last_verified_at']::text[]
+                       AND config_json->'terminal_session'->'runtime_host_id'
+                         IS NOT DISTINCT FROM COALESCE(config_json->'runtime_host_id', 'null'::jsonb)
+                     ))
+                   END
                    AND COALESCE((config_json->>'terminal_generation')::bigint, 0) = $9
                    AND NOT EXISTS (
                      SELECT 1
@@ -1152,6 +1214,7 @@ impl RuntimeStore {
                     &input.binding_updated_at,
                     &input.binding_generation,
                     &input.session_id,
+                    &expected_config,
                 ],
             )
             .await

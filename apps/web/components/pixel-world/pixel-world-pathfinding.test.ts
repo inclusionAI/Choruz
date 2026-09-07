@@ -34,9 +34,7 @@ describe("findPath (TileGrid)", () => {
   it("finds a corridor path on a 5×1 walkable grid (tile=1)", () => {
     const grid = makeTileGrid(1, 0, [[true, true, true, true, true]]);
     const path = findPath(grid, 8, 8, 72, 8);
-    expect(path.length).toBeGreaterThan(0);
-    // Final waypoint must land on cell-centre (col*16 + 8) for col=4 → x=72.
-    expect(path[path.length - 1]).toEqual({ x: 72, y: 8 });
+    expect(path).toEqual([24, 40, 56, 72].map(x => ({ x, y: 8 })));
   });
 
   it("falls back to a single dest waypoint when no path exists", () => {
@@ -51,16 +49,17 @@ describe("findPath (TileGrid)", () => {
     expect(path).toEqual([{ x: 24, y: 24 }]);
   });
 
-  it("treats DOOR (7) and HALLWAY (4) as walkable, WALL (5) as blocked", () => {
-    // Layout: [HALLWAY, WALL, DOOR] — col0 reachable to col2 only via going
-    // around, but on 1 row the wall blocks everything → fallback.
+  it("walks through a door around a wall instead of returning the fallback", () => {
     const grid: TileGrid = {
       cols: 3,
-      rows: 1,
-      layers: [new Int8Array([4, 5, 7])],
+      rows: 2,
+      layers: [new Int8Array([4, 5, 7, 4, 4, 7])],
     };
     const path = findPath(grid, 8, 8, 40, 8);
-    expect(path).toEqual([{ x: 40, y: 8 }]); // wall blocks → fallback
+    expect(path).toEqual([
+      { x: 8, y: 24 }, { x: 24, y: 24 },
+      { x: 40, y: 24 }, { x: 40, y: 8 },
+    ]);
   });
 });
 

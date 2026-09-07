@@ -153,11 +153,10 @@ describe("partitionThreadMessages", () => {
 describe("mergeThreadReplies", () => {
   it("appends only unseen messages and re-sorts by server_seq", () => {
     const a = msg("a");
-    const c = msg("c");
     const b = msg("b");
-    // a.seq < c.seq < b.seq by construction order; fetched contains a dup + b
+    const c = msg("c");
     const merged = mergeThreadReplies([a, c], [a, b]);
-    expect(merged.map((m) => m.id)).toEqual(["a", "c", "b"]);
+    expect(merged.map((m) => m.id)).toEqual(["a", "b", "c"]);
   });
 
   it("returns the same array reference when nothing is new", () => {

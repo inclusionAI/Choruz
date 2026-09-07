@@ -2,6 +2,9 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ "${CHORUZ_SMOKE_ENTRY:-}" != "${SCRIPT_DIR}/backup_smoke.sh" ]]; then
+  exec node "${SCRIPT_DIR}/isolated-smoke.mjs" "${SCRIPT_DIR}/backup_smoke.sh" "$@"
+fi
 # shellcheck disable=SC1091
 source "${SCRIPT_DIR}/common.sh"
 

@@ -70,6 +70,9 @@ pub enum ControllerFrame {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "call", rename_all = "snake_case")]
 pub enum LinkRequest {
+    Session {
+        request: crate::session::SessionRequest,
+    },
     Host {
         request: HostRequest,
     },
@@ -251,6 +254,9 @@ async fn handle_call(
     attachments: &Attachments,
 ) -> Result<Value, AppError> {
     match request {
+        LinkRequest::Session { request } => crate::session::execute(pool.clone(), request)
+            .await
+            .map(|state| json!(state)),
         LinkRequest::Host { request } => crate::execute(request).await,
         LinkRequest::TerminalEnsure { spec } => {
             let pool = pool.clone();

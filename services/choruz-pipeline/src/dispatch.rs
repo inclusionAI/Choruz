@@ -28,11 +28,18 @@ fn should_retry_failed_command(cmd: &AgentCommand, auto_retriable: bool) -> bool
     auto_retriable && !choruz_session::is_exhausted(cmd.attempt_count, cmd.max_attempts)
 }
 
-/// Build the prompt for a batched dispatch of N >= 2 messages for the
-/// same agent. For N == 1 the single command's prompt is returned unchanged.
-///
-/// Format: numbered brackets per message so the agent can address each
-/// sender separately without losing that they arrived as one inbox sweep.
+fn group_commands(commands: Vec<AgentCommand>) -> HashMap<String, Vec<AgentCommand>> {
+    let mut groups: HashMap<String, Vec<AgentCommand>> = HashMap::new();
+    for command in commands {
+        groups
+            .entry(command.agent_id.clone())
+            .or_default()
+            .push(command);
+    }
+    groups
+}
+
+/// A single command stays unchanged; a batch preserves each sender's order.
 fn build_batched_prompt(group: &[AgentCommand]) -> String {
     if group.len() == 1 {
         return group[0].prompt.clone();
@@ -96,10 +103,7 @@ pub async fn run_dispatch_loop(
 
         // Group by agent_id, preserving FIFO order within each group
         // (SQL already orders by created_at ASC).
-        let mut groups: HashMap<String, Vec<AgentCommand>> = HashMap::new();
-        for cmd in commands {
-            groups.entry(cmd.agent_id.clone()).or_default().push(cmd);
-        }
+        let groups = group_commands(commands);
 
         for (agent_id, group) in groups {
             // Pick the oldest command as the "primary" — its session_key,
@@ -601,9 +605,11 @@ mod tests {
         let big = build_batched_prompt(&group);
         // 10× content + header overhead; the wrapper is bounded constant.
         assert!(big.len() > small.len() * 9);
+        assert!(
+            big.len() < small.len() * 20,
+            "batch wrapper must not duplicate the group per command"
+        );
     }
-
-    // grouping logic (matches what the dispatcher does inline) -----------
 
     #[test]
     fn grouping_by_agent_id_distributes_commands_correctly() {
@@ -616,10 +622,7 @@ mod tests {
             mk_cmd("c6", "B", "msg-B2"),
         ];
 
-        let mut groups: HashMap<String, Vec<AgentCommand>> = HashMap::new();
-        for cmd in commands {
-            groups.entry(cmd.agent_id.clone()).or_default().push(cmd);
-        }
+        let groups = group_commands(commands);
 
         assert_eq!(groups.len(), 3);
         assert_eq!(groups["A"].len(), 3);

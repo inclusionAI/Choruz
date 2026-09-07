@@ -103,7 +103,7 @@ describe("pairWithHost", () => {
     const hostSecret = await derivePairingSecret(host.keys.privateKey, devicePublicKey, PAIRING_SECRET);
     socket.receive({ kind: "pair.reveal", host_public_key: host.publicKey, host_nonce: host.nonce,
       host_proof: await derivePairingProof(hostSecret, "host", host.publicKey, devicePublicKey) });
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await vi.waitFor(() => expect(socket.sent).toHaveLength(3));
     socket.receive({
       kind: "pair.complete",
       ...await encryptWithSessionKey(hostSecret, {

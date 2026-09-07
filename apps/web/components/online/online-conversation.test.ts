@@ -5,7 +5,10 @@ import { ChatInput } from "../chat/chat-input";
 import {
   onlineConversation,
   onlineConversationId,
+  sameOnlineGroups,
+  onlineRetryDelay,
 } from "./online-conversation";
+import { ApiRequestError } from "../../lib/api/choruz-api";
 import type { Principal } from "../../lib/api/choruz-types";
 
 const principal: Principal = {
@@ -31,6 +34,31 @@ const conversation = onlineConversation(
 );
 
 describe("Online workspace presentation", () => {
+  it("retains equivalent group projections but notices visible fields and ordering", () => {
+    const group = { id: "one", role: "guest" as const, status: "active" as const,
+      name: "Design", conversation_id: "host", message_count: 1, latest_seq: 2,
+      last_message: { content: "Ready", created_at: "2026-09-07T00:00:00Z" } };
+    expect(sameOnlineGroups([], [])).toBe(true);
+    expect(sameOnlineGroups([group], [structuredClone(group)])).toBe(true);
+    for (const change of [{ id: "two" }, { role: "host" as const }, { status: "revoked" as const },
+      { name: "Review" }, { conversation_id: "other" }, { message_count: 2 }, { latest_seq: 3 },
+      { last_message: null }, { last_message: { ...group.last_message, content: "Changed" } },
+      { last_message: { ...group.last_message, created_at: "2026-09-08T00:00:00Z" } }]) {
+      expect(sameOnlineGroups([group], [{ ...group, ...change }])).toBe(false);
+    }
+    expect(sameOnlineGroups([group], [])).toBe(false);
+    expect(sameOnlineGroups([group, { ...group, id: "two" }], [{ ...group, id: "two" }, group])).toBe(false);
+  });
+
+  it("backs off transient failures without retrying before Retry-After", () => {
+    expect(onlineRetryDelay(new Error("offline"), 1)).toBe(6000);
+    expect(onlineRetryDelay(new Error("offline"), 10)).toBe(60_000);
+    expect(onlineRetryDelay(new ApiRequestError(429, "Wait", "90"), 1)).toBe(90_000);
+    const now = Date.parse("2026-09-07T00:00:00Z");
+    expect(onlineRetryDelay(new ApiRequestError(429, "Wait", "Mon, 07 Sep 2026 00:02:00 GMT"), 1, now)).toBe(120_000);
+    expect(onlineRetryDelay(new ApiRequestError(503, "Unavailable", "invalid"), 1)).toBe(6000);
+  });
+
   it("namespaces navigation and drafts without impersonating a local conversation owner", () => {
     expect(conversation.id).toBe(onlineConversationId("local-link"));
     expect(conversation.id).not.toBe("owner-conversation");

@@ -117,6 +117,7 @@ async fn main() -> Result<(), std::io::Error> {
             _ = sigterm.recv() => {},
         }
         tracing::info!("shutdown signal received, draining connections...");
+        let _ = tokio::task::spawn_blocking(choruz_host_runtime::session::shutdown).await;
     };
     let router = router_with_runtime(
         app,

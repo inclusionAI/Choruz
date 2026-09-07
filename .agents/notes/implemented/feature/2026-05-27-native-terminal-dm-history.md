@@ -8,6 +8,10 @@ A direct chat with a terminal-driver agent is a live PTY bridged over `/v1/ws/te
 
 ## Decision
 
+The [structured direct conversation decision](2026-09-06-structured-agent-dm.md)
+supersedes the Claude/Codex presentation and Claude shared-session choice below.
+The raw-terminal recovery and exact native-identity safeguards remain applicable.
+
 Terminal DM history is restored by resuming the exact native CLI session, never by parsing native files into chat. `ensure_terminal` in `crates/choruz-host-runtime/src/terminal.rs` spawns the driver with `terminal_cli_args`: Claude `--resume <id>`, Pi `--session <id>`, Grok `--resume <id>`, OpenCode `--session <id>`, Codex `resume <id>`; the CLI repaints its own history into the existing xterm surface. On WebSocket disconnect the `TerminalSession` is removed from the pool and its `ProcessContainer` kills the process tree; continuity lives in the native session store plus the id Choruz keeps on the binding. No terminal route writes `conversation_events`, and there is no terminal-history API.
 
 For every driver except Codex the resume id is `agent_runtime_bindings.external_session_id`, backfilled when empty by `HostRequest::LatestSession` on the binding's device (`latest_native_session` in `crates/choruz-agent-runtime/src/binding.rs`) and `RuntimeStore::record_discovered_session_id`, which reads the CLI's workspace-scoped session registry and stamps `external_session_provenance = workspace_scan_verified`; the same sync runs before disconnect cleanup so the id is captured while the process context is intact. For Codex, `terminal_resume_session_id` deliberately returns nothing: the Codex path resumes only from the binding-owned terminal anchor described below, so a headless or scanned id is never interpreted as terminal history.

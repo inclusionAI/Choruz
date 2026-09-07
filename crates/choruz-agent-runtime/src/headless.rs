@@ -22,6 +22,28 @@ pub const CLAUDE_PARENT_SESSION_ENV: &[&str] = &[
     "CLAUDE_CODE_BRIDGE_SESSION_ID",
 ];
 
+/// A verified direct transcript can seed the first routed Claude turn, but
+/// an empty reservation cannot be resumed before Claude creates its file.
+pub fn claude_direct_seed(
+    config: &serde_json::Value,
+    binding_id: &str,
+    driver_type: &str,
+    workspace_path: &str,
+) -> Option<String> {
+    let anchor: crate::TerminalSessionAnchor =
+        serde_json::from_value(config.get("terminal_session")?.clone()).ok()?;
+    (driver_type == "claude_terminal"
+        && anchor.driver_type == driver_type
+        && anchor.binding_id == binding_id
+        && anchor.workspace_path == workspace_path
+        && anchor.runtime_host_id.as_deref() == config["runtime_host_id"].as_str()
+        && anchor.binding_generation == Some(config["terminal_generation"].as_i64().unwrap_or(0))
+        && anchor.provenance == "terminal_process_captured"
+        && !anchor.native_session_path.is_empty()
+        && !anchor.session_id.is_empty())
+    .then_some(anchor.session_id)
+}
+
 /// Apply the binding workspace to a headless CLI command.
 ///
 /// OpenCode additionally resolves `--dir .` through `PWD`. Other Harnesses
@@ -199,6 +221,21 @@ impl HeadlessDriver {
             Self::OpenCode => "opencode",
             Self::MathCode => "mathcode",
         }
+    }
+
+    /// Preserve imported context without writing into the direct-chat session.
+    pub fn args_with_session_fork(
+        self,
+        resume_session_id: Option<&str>,
+        model: Option<&str>,
+        prompt: &str,
+        fork: bool,
+    ) -> Vec<String> {
+        let mut args = self.args(resume_session_id, model, prompt);
+        if self == Self::Claude && fork && resume_session_id.is_some_and(|id| !id.is_empty()) {
+            args.insert(0, "--fork-session".into());
+        }
+        args
     }
 
     pub fn args(
@@ -444,6 +481,25 @@ pub fn validate_model(value: &str) -> Result<&str, &'static str> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn claude_forks_only_when_resuming_a_direct_seed() {
+        use super::HeadlessDriver;
+        let fork =
+            HeadlessDriver::Claude.args_with_session_fork(Some("source"), None, "hello", true);
+        assert!(fork.contains(&"--fork-session".into()));
+        assert!(fork.windows(2).any(|pair| pair == ["--resume", "source"]));
+        for (driver, resume, should_fork) in [
+            (HeadlessDriver::Claude, None, true),
+            (HeadlessDriver::Claude, Some("source"), false),
+            (HeadlessDriver::Codex, Some("source"), true),
+        ] {
+            assert!(
+                !driver
+                    .args_with_session_fork(resume, None, "hello", should_fork)
+                    .contains(&"--fork-session".into())
+            );
+        }
+    }
     use super::*;
 
     #[test]

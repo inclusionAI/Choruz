@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { requireAuth } from "../../../../lib/api/api-auth";
+import { ApiRequestError } from "../../../../lib/api/choruz-api";
 import {
   AgentProvisioningError,
   defaultRoleTemplateProvenanceWriter,
@@ -86,7 +87,13 @@ export async function POST(request: NextRequest) {
         : error instanceof Error
           ? error.message
           : "Provisioning failed";
-    return NextResponse.json({ error: detail }, { status: 500 });
+    const upstream = error instanceof AgentProvisioningError ? error.cause : error;
+    return NextResponse.json({ error: detail }, {
+      status: upstream instanceof ApiRequestError ? upstream.status : 500,
+      headers: upstream instanceof ApiRequestError && upstream.retryAfter
+        ? { "Retry-After": upstream.retryAfter }
+        : undefined,
+    });
   }
 }
 

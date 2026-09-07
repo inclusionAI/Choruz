@@ -478,9 +478,8 @@ mod tests {
 
     #[tokio::test]
     async fn watcher_reply_is_written_to_bound_conversation() {
-        let Ok(db_url) = std::env::var("CHORUZ_DATABASE_URL") else {
-            return;
-        };
+        let db_url = std::env::var("CHORUZ_TEST_DATABASE_URL")
+            .expect("source infra/host/setup_test_database.sh before database tests");
 
         let workspace_id = choruz_common::new_id();
         let agent_id = choruz_common::new_id();
@@ -550,9 +549,8 @@ mod tests {
 
     #[tokio::test]
     async fn watcher_reply_requires_active_membership() {
-        let Ok(db_url) = std::env::var("CHORUZ_DATABASE_URL") else {
-            return;
-        };
+        let db_url = std::env::var("CHORUZ_TEST_DATABASE_URL")
+            .expect("source infra/host/setup_test_database.sh before database tests");
 
         let workspace_id = choruz_common::new_id();
         let agent_id = choruz_common::new_id();

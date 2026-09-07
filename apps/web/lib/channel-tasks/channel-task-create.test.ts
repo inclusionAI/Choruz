@@ -177,7 +177,7 @@ describe("channel task create-from-message helpers", () => {
       }),
     );
     const hiddenHtml = renderToStaticMarkup(
-      createElement(MessageBubble, commonProps),
+      createElement(MessageBubble, { ...commonProps, initialActionsOpen: true }),
     );
 
     expect(visibleHtml).toContain('aria-label="Message actions"');

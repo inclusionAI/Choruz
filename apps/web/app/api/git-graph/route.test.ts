@@ -1,4 +1,4 @@
-import { mkdtemp } from "fs/promises";
+import { mkdtemp, rm } from "fs/promises";
 import { tmpdir } from "os";
 import * as path from "path";
 import { NextRequest } from "next/server";
@@ -12,14 +12,21 @@ vi.mock("../../../lib/api/api-auth", () => ({
 }));
 
 describe("/api/git-graph workspace path guard", () => {
-  afterEach(() => {
+  const roots: string[] = [];
+  async function tempRoot(prefix: string) {
+    const root = await mkdtemp(path.join(tmpdir(), prefix));
+    roots.push(root);
+    return root;
+  }
+  afterEach(async () => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
+    await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
   });
 
   it("rejects repositories outside the requested workspace before invoking git", async () => {
-    const root = await mkdtemp(path.join(tmpdir(), "echat-git-root-"));
-    const outside = await mkdtemp(path.join(tmpdir(), "echat-git-outside-"));
+    const root = await tempRoot("echat-git-root-");
+    const outside = await tempRoot("echat-git-outside-");
     vi.mocked(requireAuth).mockResolvedValue({
       token: "session-token",
       claims: {

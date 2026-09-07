@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, symlink, writeFile } from "fs/promises";
+import { mkdtemp, mkdir, rm, symlink, writeFile } from "fs/promises";
 import { tmpdir } from "os";
 import * as path from "path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -10,8 +10,15 @@ import {
 } from "./workspace-path-guard";
 
 describe("workspace path guard", () => {
-  afterEach(() => {
+  const roots: string[] = [];
+  async function tempRoot(prefix: string) {
+    const root = await mkdtemp(path.join(tmpdir(), prefix));
+    roots.push(root);
+    return root;
+  }
+  afterEach(async () => {
     vi.restoreAllMocks();
+    await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
   });
 
   it("matches paths by path component, not string prefix", () => {
@@ -34,8 +41,8 @@ describe("workspace path guard", () => {
   });
 
   it("rejects a real path that escapes the workspace through a symlink", async () => {
-    const root = await mkdtemp(path.join(tmpdir(), "echat-ws-root-"));
-    const outside = await mkdtemp(path.join(tmpdir(), "echat-ws-outside-"));
+    const root = await tempRoot("echat-ws-root-");
+    const outside = await tempRoot("echat-ws-outside-");
     await writeFile(path.join(outside, "secret.txt"), "nope");
     await symlink(outside, path.join(root, "link"));
 
@@ -59,7 +66,7 @@ describe("workspace path guard", () => {
   });
 
   it("allows files inside the requested workspace root", async () => {
-    const root = await mkdtemp(path.join(tmpdir(), "echat-ws-allowed-"));
+    const root = await tempRoot("echat-ws-allowed-");
     await mkdir(path.join(root, "src"));
     const file = path.join(root, "src", "index.ts");
     await writeFile(file, "export {};\n");

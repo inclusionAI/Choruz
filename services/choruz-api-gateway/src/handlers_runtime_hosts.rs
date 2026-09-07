@@ -16,6 +16,8 @@ use crate::{
     ApiError, ApiState, authenticated_principal,
     handlers_companies::require_company_access,
     handlers_remote_control::{generate_pairing_code, keyed_hash},
+    handlers_terminals::lock_terminal_launch,
+    host_runtime::RuntimeHost,
 };
 
 const PAIRING_TTL_MINUTES: i64 = 10;
@@ -75,6 +77,7 @@ pub(crate) struct ClaimedCommand {
     workspace_path: String,
     model: Option<String>,
     external_session_id: Option<String>,
+    fork_session: bool,
     harness_account: Option<ClaimedHarnessAccount>,
     metadata: Value,
 }
@@ -687,6 +690,25 @@ pub(crate) async fn revoke_host(
         .transaction()
         .await
         .map_err(internal("begin runtime host revocation"))?;
+    tx.query_opt(
+        "SELECT id FROM runtime_host WHERE id = $1 AND revoked_at IS NULL FOR UPDATE",
+        &[&host_id],
+    )
+    .await
+    .map_err(internal("lock runtime host revocation"))?
+    .ok_or_else(|| ApiError(AppError::NotFound(format!("runtime host {host_id}"))))?;
+    let bindings = tx
+        .query("SELECT id FROM agent_runtime_bindings WHERE config_json->>'runtime_host_id' = $1 ORDER BY id", &[&host_id])
+        .await.map_err(internal("find revoked host sessions"))?;
+    for row in bindings {
+        let id: String = row.get("id");
+        lock_terminal_launch(&tx, &id).await?;
+        let binding = state.runtime.get_binding(&id).await?;
+        if binding.config_json["runtime_host_id"].as_str() != Some(host_id.as_str()) {
+            continue;
+        }
+        close_direct_session_before_move(&state, &binding).await?;
+    }
     tx.execute(
         "UPDATE runtime_host SET status = 'revoked', revoked_at = NOW(), updated_at = NOW()
              WHERE id = $1",
@@ -696,7 +718,10 @@ pub(crate) async fn revoke_host(
     .map_err(internal("revoke runtime host"))?;
     tx.execute(
         "UPDATE agent_runtime_bindings
-         SET config_json = config_json - 'runtime_host_id',
+         SET config_json = jsonb_set(
+               config_json - 'runtime_host_id' - 'terminal_session' - 'terminal_capture',
+               '{terminal_generation}',
+               to_jsonb(COALESCE((config_json->>'terminal_generation')::bigint, 0) + 1)),
              external_session_id = NULL, external_thread_id = NULL,
              state = 'idle', updated_at = NOW()
          WHERE config_json->>'runtime_host_id' = $1",
@@ -775,11 +800,15 @@ pub(crate) async fn assign_binding_host(
         )));
     }
     let mut client = state.event_store.connect().await.map_err(ApiError::from)?;
+    let tx = client
+        .transaction()
+        .await
+        .map_err(internal("begin runtime host assignment"))?;
     if let Some(host_id) = target_host_id.as_deref() {
-        let valid = client
+        let valid = tx
             .query_opt(
                 "SELECT 1 FROM runtime_host
-                 WHERE id = $1 AND company_id = $2 AND revoked_at IS NULL",
+                 WHERE id = $1 AND company_id = $2 AND revoked_at IS NULL FOR UPDATE",
                 &[&host_id, &agent.workspace_id],
             )
             .await
@@ -791,10 +820,17 @@ pub(crate) async fn assign_binding_host(
             )));
         }
     }
-    let tx = client
-        .transaction()
-        .await
-        .map_err(internal("begin runtime host assignment"))?;
+    lock_terminal_launch(&tx, &binding_id).await?;
+    let current = state.runtime.get_binding(&binding_id).await?;
+    if current
+        .config_json
+        .get("runtime_host_id")
+        .and_then(Value::as_str)
+        == target_host_id.as_deref()
+    {
+        return Ok(StatusCode::NO_CONTENT);
+    }
+    close_direct_session_before_move(&state, &current).await?;
     tx.execute(
         "UPDATE session_registry sr
          SET epoch = epoch + 1, status = 'idle', executor_node_id = NULL,
@@ -824,10 +860,12 @@ pub(crate) async fn assign_binding_host(
     .map_err(internal("requeue commands during runtime host assignment"))?;
     tx.execute(
         "UPDATE agent_runtime_bindings
-             SET config_json = CASE
+             SET config_json = jsonb_set((CASE
                    WHEN $2::text IS NULL THEN config_json - 'runtime_host_id'
                    ELSE jsonb_set(config_json, '{runtime_host_id}', to_jsonb($2::text), true)
-                 END,
+                 END) - 'terminal_session' - 'terminal_capture',
+                 '{terminal_generation}',
+                 to_jsonb(COALESCE((config_json->>'terminal_generation')::bigint, 0) + 1)),
                  external_session_id = NULL,
                  external_thread_id = NULL,
                  state = 'idle',
@@ -841,6 +879,18 @@ pub(crate) async fn assign_binding_host(
         .await
         .map_err(internal("commit runtime host assignment"))?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn close_direct_session_before_move(
+    state: &ApiState,
+    binding: &choruz_agent_runtime::RuntimeBinding,
+) -> Result<(), ApiError> {
+    match RuntimeHost::for_binding(state, binding) {
+        Ok(host) => host.close_terminal(&binding.id).await.map_err(ApiError::from),
+        Err(_) => Err(AppError::Conflict(
+            "Reconnect the current device before moving or removing its Agents so their sessions can be stopped safely".into(),
+        ).into()),
+    }
 }
 
 pub(crate) async fn claim_command(
@@ -889,7 +939,45 @@ pub(crate) async fn claim_command(
         .get("model")
         .and_then(Value::as_str)
         .map(str::to_owned);
-    let external_session_id = binding.external_session_id.clone();
+    let mut captured_config = binding.config_json.clone();
+    if let Some(config) = captured_config.as_object_mut() {
+        config.remove("terminal_session");
+    }
+    let captured_binding = serde_json::json!({
+        "id": binding.id,
+        "driver_type": binding.driver_type.as_str(),
+        "workspace_path": binding.workspace_path,
+        "external_session_id": binding.external_session_id,
+        "config": captured_config,
+    });
+    if command.metadata.get("runtime_binding") != Some(&captured_binding) {
+        return Err(ApiError(AppError::Conflict(
+            "runtime binding changed while claiming the command".into(),
+        )));
+    }
+    let external_session_id = binding
+        .external_session_id
+        .clone()
+        .filter(|id| !id.is_empty())
+        .or_else(|| {
+            choruz_agent_runtime::headless::claude_direct_seed(
+                &binding.config_json,
+                &binding.id,
+                binding.driver_type.as_str(),
+                &binding.workspace_path,
+            )
+        });
+    let fork_session = binding.driver_type == choruz_agent_runtime::DriverType::ClaudeTerminal
+        && external_session_id.is_some()
+        && (binding
+            .external_session_id
+            .as_deref()
+            .is_none_or(str::is_empty)
+            || binding
+                .config_json
+                .get("external_session_mode")
+                .and_then(Value::as_str)
+                != Some("headless"));
     let harness_account = match (
         binding
             .config_json
@@ -945,6 +1033,7 @@ pub(crate) async fn claim_command(
         workspace_path: binding.workspace_path,
         model,
         external_session_id,
+        fork_session,
         harness_account,
         metadata: command.metadata,
     })))

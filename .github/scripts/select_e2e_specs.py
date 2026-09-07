@@ -93,7 +93,7 @@ RULES: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
             "lib/remote/**",
             "lib/runtime-window.ts",
         ),
-        ("tests/e2e/server.spec.ts", "tests/e2e/machines.spec.ts", "tests/e2e/remote-dashboard.spec.ts"),
+        ("tests/e2e/sweep-remote-servers.spec.ts", "tests/e2e/machines.spec.ts", "tests/e2e/remote-dashboard.spec.ts"),
     ),
     (
         ("components/ui/theme-provider.tsx",),
@@ -332,6 +332,11 @@ def main() -> None:
         shards = shard_count(count_tests(args.root, specs))
     else:
         shards = 0
+
+    deleted = {path[len(WEB):] for path in changed
+               if path.startswith(WEB + "tests/") and path.endswith(".spec.ts")
+               and not (args.root / path).is_file()}
+    specs = [spec for spec in specs if spec not in deleted]
 
     print(f"specs={' '.join(specs)}")
     print(f"shard_count={shards}")

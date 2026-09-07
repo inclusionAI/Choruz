@@ -5,6 +5,8 @@ use super::*;
 /// it is given, and reports a signed-in account.
 const FAKE_CLAUDE: &str = r#"#!/usr/bin/env python3
 import json, os, sys
+with open(os.path.join(os.environ["FAKE_CLAUDE_DIR"], "pid"), "w") as sink:
+    sink.write(str(os.getpid()))
 authenticated = False
 for line in sys.stdin:
     message = json.loads(line)
@@ -693,9 +695,23 @@ async fn cancelling_a_local_claude_login_stops_the_driver_and_keeps_the_account_
         fixture.cancel(&account_id, &login_id).await,
         StatusCode::NO_CONTENT
     );
-    // The driver notices at its next callback poll and ends without
-    // touching the cancelled row or the account.
-    tokio::time::sleep(Duration::from_millis(1_500)).await;
+    let pid = std::fs::read_to_string(dir.join("pid")).expect("login driver started");
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while std::process::Command::new("kill")
+        .args(["-0", pid.trim()])
+        .output()
+        .unwrap()
+        .status
+        .success()
+    {
+        if std::time::Instant::now() >= deadline {
+            let _ = std::process::Command::new("kill")
+                .args(["-KILL", pid.trim()])
+                .output();
+            panic!("cancelled login driver remains alive");
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
     let cancelled = fixture.login(&account_id, &login_id).await;
     assert_eq!(cancelled["state"], "cancelled");
     assert_eq!(cancelled["error"], Value::Null);
@@ -711,6 +727,12 @@ async fn cancelling_a_local_claude_login_stops_the_driver_and_keeps_the_account_
     assert_eq!(account_status, "pending");
     let (status, replacement) = fixture.start(&account_id).await;
     assert_eq!(status, StatusCode::CREATED, "{replacement}");
+    assert_eq!(
+        fixture
+            .cancel(&account_id, replacement["id"].as_str().unwrap())
+            .await,
+        StatusCode::NO_CONTENT
+    );
     drop(fixture.database);
 }
 

@@ -83,6 +83,8 @@ struct ClaimedCommand {
     workspace_path: String,
     model: Option<String>,
     external_session_id: Option<String>,
+    #[serde(default)]
+    fork_session: bool,
     harness_account: Option<ClaimedHarnessAccount>,
     #[serde(default)]
     metadata: serde_json::Value,
@@ -857,10 +859,11 @@ async fn execute(
         "starting remote Agent turn"
     );
     let prompt = stage_command_attachments(&client, &config, &command, &workspace).await;
-    let args = driver.args(
+    let args = driver.args_with_session_fork(
         command.external_session_id.as_deref(),
         command.model.as_deref(),
         &prompt,
+        command.fork_session,
     );
     let outbox_dir = tempfile::Builder::new()
         .prefix("choruz-connector-outbox-")
@@ -992,6 +995,14 @@ async fn execute(
         Ok(Ok(output)) if output.status.success() => {
             let parsed = parse_output(driver, &String::from_utf8_lossy(&output.stdout));
             let response = shipment.and_then(|()| {
+                if command.fork_session
+                    && (parsed.session_id.is_none()
+                        || parsed.session_id == command.external_session_id)
+                {
+                    return Err(
+                        "Claude did not isolate the routed turn from the direct session".into(),
+                    );
+                }
                 turn_response(&parsed, group_reply, routed_messages, !shipped.is_empty())
             });
             let (succeeded, contents, error) = match response {
@@ -1576,12 +1587,22 @@ async fn main() -> ExitCode {
     let result = match args.first().map(String::as_str) {
         Some("pair") => pair(&args[1..]).await,
         Some("pair-relay") => pair_relay(&args[1..]).await,
-        Some("run") => run(&args[1..]).await,
+        Some("run") => {
+            let mut sigterm =
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                    .expect("register SIGTERM");
+            tokio::select! {
+                result = run(&args[1..]) => result,
+                _ = tokio::signal::ctrl_c() => Ok(()),
+                _ = sigterm.recv() => Ok(()),
+            }
+        }
         _ => {
             usage();
             return ExitCode::from(2);
         }
     };
+    let _ = tokio::task::spawn_blocking(choruz_host_runtime::session::shutdown).await;
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(reason) => {

@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { CHORUZ_AGENT_SHEETS } from "../../components/pixel-world/agent-catalog";
 
 /* ========================================================================== */
 /*  Choruz 20-agent roster sheets                                              */
@@ -7,28 +8,7 @@ import { expect, test, type Page } from "@playwright/test";
 const WEB_BASE =
   process.env.CHORUZ_WEB_BASE_URL ?? `http://127.0.0.1:${process.env.CHORUZ_WEB_PORT ?? "3100"}`;
 
-const ROSTER_IDS = [
-  "founder",
-  "product_lead",
-  "engineer",
-  "designer",
-  "data_analyst",
-  "people_ops",
-  "community_manager",
-  "writer",
-  "researcher",
-  "facilities_lead",
-  "code_assistant",
-  "research_bot",
-  "data_wrangler",
-  "docs_keeper",
-  "qa_bot",
-  "devops_agent",
-  "scheduler",
-  "orchestrator",
-  "archivist",
-  "triage_bot",
-];
+
 
 const EXPECTED_W = 192;
 const EXPECTED_H = 384;
@@ -63,8 +43,8 @@ test.describe.serial("Pixel World — Choruz 20-agent roster sheets", () => {
     await page.goto(`${WEB_BASE}/login`, { waitUntil: "domcontentloaded" });
 
     const failures: string[] = [];
-    for (const id of ROSTER_IDS) {
-      const url = `${WEB_BASE}/sprites/generated/agents/sheets/${id}.png`;
+    for (const [id, asset] of Object.entries(CHORUZ_AGENT_SHEETS)) {
+      const url = `${WEB_BASE}${asset}`;
       const probe = await probeImage(page, url);
       if (!probe.ok) {
         failures.push(`${id}: HTTP ${probe.status}`);
@@ -80,16 +60,4 @@ test.describe.serial("Pixel World — Choruz 20-agent roster sheets", () => {
     expect(failures, `roster sheet dimension problems:\n${failures.join("\n")}`).toEqual([]);
   });
 
-  test("CHORUZ_AGENT_SHEETS is wired into agent-catalog with stable IDs", async ({
-    page,
-  }) => {
-    // Cross-check the catalog JSON (kept in the test to avoid dynamic imports
-    // in the browser context): the 20 IDs above must appear in the catalog
-    // with distinct master-asset paths. We read via Next's public static assets
-    // indirectly — the simplest portable cross-check is: each roster sheet URL
-    // maps 1:1 to a distinct ID, no collisions.
-    const unique = new Set(ROSTER_IDS);
-    expect(unique.size).toBe(ROSTER_IDS.length);
-    expect(ROSTER_IDS.length).toBe(20);
-  });
 });

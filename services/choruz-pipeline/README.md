@@ -12,7 +12,7 @@ The single process that turns persisted conversation events into agent turns and
 
 ## Tests
 
-`cargo test -p choruz-pipeline`. `src/executor/tests.rs` creates a temporary database per test from `CHORUZ_PG_HOST`, `CHORUZ_PG_PORT`, `CHORUZ_PG_USER` and `CHORUZ_PG_PASSWORD` and needs a running PostgreSQL; the outbox, cron and watcher tests that open a database run only when `CHORUZ_DATABASE_URL` is set and skip otherwise.
+`cargo test -p choruz-pipeline` requires a running PostgreSQL. Source `infra/host/setup_test_database.sh` first to supply `CHORUZ_TEST_DATABASE_URL` for the outbox, cron, watcher and member-provider tests; these tests fail when it is missing. `src/executor/tests.rs` creates a temporary database per test from `CHORUZ_PG_HOST`, `CHORUZ_PG_PORT`, `CHORUZ_PG_USER` and `CHORUZ_PG_PASSWORD`.
 
 ## Related
 

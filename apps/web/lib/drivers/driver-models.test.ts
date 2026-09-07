@@ -1,4 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { setTimeout as pause } from "node:timers/promises";
 
 import {
   clearDriverModelDiscoveryCache,
@@ -160,12 +164,43 @@ openai      gpt-5.6-codex                 400K     128K     yes       yes
   });
 
   it("enforces a hard timeout even when a harness ignores SIGTERM", async () => {
-    const startedAt = Date.now();
-    await expect(runModelCommand(
-      process.execPath,
-      ["-e", "process.on('SIGTERM', () => {}); setInterval(() => {}, 1_000)"],
-      50,
-    )).rejects.toThrow("Model discovery timed out");
-    expect(Date.now() - startedAt).toBeLessThan(1_000);
+    const directory = await mkdtemp(join(tmpdir(), "choruz-model-timeout-"));
+    const ready = join(directory, "ready");
+    let pid: number | undefined;
+    const alive = () => {
+      try { process.kill(pid!, 0); return true; }
+      catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return false; throw error; }
+    };
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const result = runModelCommand(process.execPath, ["-e",
+        "process.on('SIGTERM', () => {}); require('fs').writeFileSync(process.argv[1], String(process.pid)); setInterval(() => {}, 1000)", ready,
+      ], 50);
+      const rejected = expect(result).rejects.toThrow("Model discovery timed out");
+      for (let attempts = 0; pid === undefined; attempts++) {
+        expect(attempts, "child must install its SIGTERM handler").toBeLessThan(200);
+        const value = await readFile(ready, "utf8").catch(error => {
+          if (error.code === "ENOENT") return "";
+          throw error;
+        });
+        if (value) pid = Number(value);
+        else await pause(10);
+      }
+      expect(alive()).toBe(true);
+      await vi.advanceTimersByTimeAsync(50);
+      await rejected;
+      await vi.advanceTimersByTimeAsync(250);
+      for (let attempts = 0; alive(); attempts++) {
+        expect(attempts, "timed-out child must exit").toBeLessThan(200);
+        await pause(10);
+      }
+    } finally {
+      vi.useRealTimers();
+      if (pid && alive()) {
+        process.kill(pid, "SIGKILL");
+        for (let attempts = 0; alive() && attempts < 200; attempts++) await pause(10);
+      }
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 });

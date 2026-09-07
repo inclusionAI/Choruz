@@ -1,31 +1,33 @@
-# Chaos Engineering Scripts
+# Fault-recovery evidence
 
-Scripts for testing system resilience.
+Run `bash infra/host/recovery_smoke.sh` for owned process-loss and database-network
+recovery acceptance. It starts a disposable PostgreSQL, API and pipeline and
+substitutes only the external CLI. The CI DB/API smoke job runs it too.
 
-## Scripts
+The process-loss case kills its own CLI child, then verifies the same command
+retries and reaches committed state with exactly one expected reply visible
+through the message API. The network case disconnects a private TCP proxy,
+observes failed pipeline readiness, accepts a message through the direct API,
+restores the proxy and verifies committed delivery. Command IDs and attempt
+counts are printed as evidence. This is not live model-service acceptance.
 
-| Script | Purpose | Verifier |
-|--------|---------|----------|
-| `kill-executor.sh` | Kill random executor process (tests heartbeat timeout + retry) | `verify-executor-recovery.sh` |
-| `partition-db.sh` | Block DB traffic (tests graceful degradation) | `verify-db-recovery.sh` |
-| `slow-network.sh` | Add latency to DB connections (tests timeout handling) | `verify-executor-recovery.sh` |
+The unsafe global process-kill and firewall scripts are retired. They selected
+unrelated Claude processes or changed shared host networking; their verifiers
+could exit successfully without observing recovery. Do not restore them as CI
+gates or use their old output as acceptance evidence.
 
-## Quick Start
+Existing focused owners cover narrower contracts:
 
-```bash
-# 1. Ensure choruz-pipeline is running
-# 2. Run a chaos scenario
-./infra/host/chaos/kill-executor.sh
+- `services/choruz-pipeline/src/executor/tests.rs` checks actual owned CLI process
+  termination, failure classification, stale-session retry and WAL recovery.
+  External CLI responses are fixtures, not live model-service acceptance.
+- `infra/host/tests/process_lifecycle.test.sh` checks process-record ownership
+  before stopping its own disposable child.
+- `infra/host/migration_smoke.sh` checks real disposable PostgreSQL migrations and
+  notification delivery, not recovery from a network partition.
 
-# 3. Wait for recovery (lease_timeout_secs, default 60s)
-sleep 65
-
-# 4. Verify
-./infra/host/chaos/verify-executor-recovery.sh
-```
-
-## Prerequisites
-
-- `kill-executor.sh`: No special requirements
-- `partition-db.sh`: Requires sudo (uses pf on macOS, iptables on Linux)
-- `slow-network.sh`: Requires sudo (uses dummynet on macOS, tc/netem on Linux)
+A different manual network-fault experiment needs its own disposable stack and an explicit
+proxy endpoint, not system firewall changes. Record the affected command ID,
+pre-fault state, injected fault, recovery transition and final persisted message.
+Missing any of these leaves end-to-end recovery unverified, regardless of health
+checks. Stop only experiment-owned processes and preserve the evidence log.

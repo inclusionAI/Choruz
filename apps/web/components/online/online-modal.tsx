@@ -5,6 +5,7 @@ import { apiFetch } from "../../lib/api/choruz-api";
 import { Modal } from "../ui/modal";
 import type { Conversation, Principal } from "../../lib/api/choruz-types";
 import { OnlineGroups } from "./online-groups";
+import { notifyOnlineAccountChanged } from "./online-account-events";
 
 type Identity = { state: "signed_out" | "signed_in" | "reauth_required"; display_name?: string; device_id?: string };
 
@@ -31,6 +32,7 @@ export function OnlineModal({ sessionToken, onClose, principal, conversations, o
     try {
       await apiFetch("/v1/online/session", sessionToken, { method: "DELETE" });
       setIdentity({ state: "signed_out" });
+      notifyOnlineAccountChanged(principal.id);
     } catch (error) { setError(error instanceof Error ? error.message : "Could not sign out"); }
     finally { setBusy(false); }
   };
@@ -52,6 +54,7 @@ export function OnlineModal({ sessionToken, onClose, principal, conversations, o
           body: JSON.stringify({ email, password, ...(signup ? { name } : {}) }),
         });
         setIdentity(result);
+        notifyOnlineAccountChanged(principal.id);
       } catch (error) { setError(error instanceof Error ? error.message : "Online sign-in failed"); }
       finally { setPassword(""); setBusy(false); }
     }}>

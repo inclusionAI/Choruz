@@ -198,9 +198,11 @@ test.describe("Company management", () => {
       const managerConversation = page.locator(".conv-item").filter({ hasText: "AI Manager" }).first();
       await expect(managerConversation).toBeVisible({ timeout: 15_000 });
       await managerConversation.click();
-      await expect(page.locator(".terminal-container, .xterm, .xterm-screen").first()).toBeVisible({
+      await expect(page.getByRole("region", { name: "Agent session" })).toBeVisible({
         timeout: 15_000,
       });
+      await expect(page.getByRole("button", { name: "Conversation", exact: true })).toHaveAttribute("aria-pressed", "true");
+      await expect(page.getByRole("textbox", { name: "Message Agent", exact: true })).toBeVisible();
       await expect(page.locator(".chat-input-row textarea")).toHaveCount(0);
     } finally {
       if (companyId) await deleteCompany(page, token, companyId);
@@ -264,7 +266,7 @@ test.describe("Company management", () => {
       await expect(firstConversation).toBeVisible({ timeout: 15_000 });
       await expect(page.locator(".conv-item").filter({ hasText: secondAgent.agentName })).toHaveCount(0);
       await firstConversation.click();
-      await expect(page.locator(".terminal-container, .xterm, .xterm-screen").first()).toBeVisible({
+      await expect(page.getByRole("region", { name: "Agent session" })).toBeVisible({
         timeout: 15_000,
       });
       await page.reload();
@@ -281,6 +283,7 @@ test.describe("Company management", () => {
         timeout: 15_000,
       });
       await expect(page.locator(".terminal-container:visible, .xterm:visible")).toHaveCount(0);
+      await expect(page.getByRole("region", { name: "Agent session" })).toHaveCount(0);
       await expect(page.getByRole("heading", { name: "Welcome to Choruz" })).toBeVisible();
       await page.reload();
       await expect(page.locator(".company-selector-name")).toHaveText(secondCompany.name);

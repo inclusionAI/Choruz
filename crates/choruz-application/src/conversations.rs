@@ -1357,9 +1357,8 @@ mod conversations_tests {
         .unwrap();
 
         let alice_view = app.list_conversations("alice").unwrap();
-        // alice is in 'team' but not 'private'
         let names: Vec<String> = alice_view.iter().filter_map(|c| c.name.clone()).collect();
-        assert!(names.iter().any(|n| n == "team"));
+        assert_eq!(names, vec!["team"]);
     }
 
     #[test]

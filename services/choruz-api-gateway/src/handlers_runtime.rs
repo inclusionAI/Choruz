@@ -308,6 +308,13 @@ pub(crate) async fn binding_view_for_workspace(
 /// PTY and `message` otherwise. Clients never derive this from the driver
 /// name, so a plugin driver needs no client-side list.
 pub(crate) fn effective_interaction_mode(driver_type: &DriverType, config_json: &Value) -> String {
+    if matches!(
+        driver_type,
+        DriverType::ClaudeTerminal | DriverType::CodexTerminal
+    ) && config_json.get("interaction_mode").and_then(Value::as_str) != Some("message")
+    {
+        return "session".into();
+    }
     match config_json
         .get("interaction_mode")
         .and_then(Value::as_str)

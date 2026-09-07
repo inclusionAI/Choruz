@@ -1,0 +1,24 @@
+.agent-session { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; background: var(--bg); color: var(--text); }
+.agent-session-toolbar { display: flex; align-items: center; gap: 16px; padding: 12px 20px; border-bottom: 1px solid var(--border); font-size: 13px; }
+.agent-session-toolbar > span { margin-left: auto; color: var(--text-muted); }
+.agent-session button { cursor: pointer; border: 1px solid var(--border); background: var(--bg); color: var(--text); border-radius: 8px; padding: 7px 12px; }
+.agent-session button:disabled { opacity: .5; cursor: default; }
+.agent-session button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+.agent-session-toolbar [role="group"] { display: flex; gap: 6px; }
+.agent-session-timeline { flex: 1; min-height: 0; overflow: auto; padding: 24px clamp(16px, 5%, 80px); }
+.agent-session-item { max-width: 1000px; margin: 0 auto 24px; line-height: 1.7; overflow-wrap: anywhere; }
+.agent-session-item.is-user { border-left: 3px solid var(--accent); padding-left: 18px; }
+.agent-session-speaker { color: var(--text-muted); font-size: 12px; font-weight: 600; }
+.agent-session-item p { margin: 8px 0; }
+.agent-session pre { overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; padding: 14px; border: 1px solid var(--border); border-radius: 8px; font-size: 13px; }
+.agent-session details { border: 1px solid var(--border); border-radius: 10px; padding: 12px 16px; }
+.agent-session summary { cursor: pointer; font-size: 14px; }
+.agent-session summary span { margin-left: 12px; color: var(--text-muted); font-size: 12px; }
+.agent-session-request { max-width: 1000px; margin: 20px auto; padding: 20px; border: 1px solid var(--accent); border-radius: 12px; }
+.agent-session-request fieldset { border: 0; margin: 12px 0; padding: 0; }
+.agent-session-request input { display: block; width: 100%; margin: 10px 0; padding: 8px; background: var(--bg); color: var(--text); border: 1px solid var(--border); }
+.agent-session-request button { margin-right: 8px; }
+.agent-session-composer { display: flex; align-items: flex-end; gap: 12px; margin: 12px 20px 20px; padding: 12px; border: 1px solid var(--border); border-radius: 14px; }
+.agent-session-composer textarea { flex: 1; resize: vertical; min-height: 64px; max-height: 240px; border: 0; background: transparent; color: var(--text); font: inherit; }
+.agent-session-error { padding: 10px 20px; border-top: 1px solid var(--border); }
+.agent-session-empty { color: var(--text-muted); }

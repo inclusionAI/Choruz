@@ -8,25 +8,6 @@ use std::time::{Duration, SystemTime};
 
 const PROCESSING_STALE_AFTER: Duration = Duration::from_secs(60);
 
-#[cfg(test)]
-fn parse_dev_env_value(contents: &str, key: &str) -> Option<String> {
-    contents.lines().find_map(|line| {
-        let line = line.trim();
-        let line = line.strip_prefix("export ").unwrap_or(line);
-        let (name, value) = line.split_once('=')?;
-        if name.trim() != key {
-            return None;
-        }
-        Some(
-            value
-                .trim()
-                .trim_matches('"')
-                .trim_matches('\'')
-                .to_string(),
-        )
-    })
-}
-
 /// Logs in as the configured operator and returns a gateway-issued session
 /// token, or `None` on failure. Credentials come from `CHORUZ_OPERATOR_USER` /
 /// `CHORUZ_OPERATOR_PASSWORD` (matching gateway `local_auth::from_env`). Never

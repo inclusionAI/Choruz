@@ -256,6 +256,8 @@ export type MessageListProps = {
   /** Opens the thread side panel for the given message id. */
   onOpenThread?: (rootId: string) => void;
   initialActionsOpen?: boolean;
+  /** An explicit local send, not a newly fetched message from the same author. */
+  localSendId?: string | null;
   hasOlderMessages?: boolean;
   loadingOlderMessages?: boolean;
   onLoadOlderMessages?: () => Promise<void>;
@@ -282,6 +284,7 @@ export function MessageList({
   quotedMessages,
   onOpenThread,
   initialActionsOpen = false,
+  localSendId = null,
   hasOlderMessages = false,
   loadingOlderMessages = false,
   onLoadOlderMessages,
@@ -358,6 +361,12 @@ export function MessageList({
   }, [messages]);
 
   const wasNearBottomRef = useRef(true);
+  const followingBottomRef = useRef(true);
+  const stopFollowing = () => {
+    followingBottomRef.current = false;
+    // Cancel already queued bottom-follow frames before the scroll event arrives.
+    wasNearBottomRef.current = false;
+  };
 
   const isNearBottom = useCallback(() => {
     const el = containerRef.current;
@@ -365,7 +374,7 @@ export function MessageList({
     return el.scrollHeight - el.scrollTop - el.clientHeight < 150;
   }, []);
 
-  const scrollToBottom = useCallback((behavior: ScrollBehavior = "smooth") => {
+  const scrollToBottom = useCallback(() => {
     requestAnimationFrame(() => {
       const el = containerRef.current;
       if (el && wasNearBottomRef.current) {
@@ -403,7 +412,7 @@ export function MessageList({
     void onLoadOlderMessages().then(() => {
       requestAnimationFrame(() => {
         const current = containerRef.current;
-        if (current && preservePosition && activeConversationIdRef.current === requestedConversationId) {
+        if (current && preservePosition && !wasNearBottomRef.current && activeConversationIdRef.current === requestedConversationId) {
           current.scrollTop = preservePrependScrollTop(
             previousTop,
             previousHeight,
@@ -422,7 +431,12 @@ export function MessageList({
     const el = containerRef.current;
     if (!el) return;
     setScrollTop(el.scrollTop);
-    wasNearBottomRef.current = !navigationTarget && isNearBottom();
+    // Virtual row measurements can emit scroll events before following settles.
+    // Only a new reading gesture interrupts following the bottom.
+    if (!followingBottomRef.current) {
+      wasNearBottomRef.current = !navigationTarget && isNearBottom();
+      followingBottomRef.current = wasNearBottomRef.current;
+    }
     if (el.scrollTop < 200 && !historyError) loadHistory();
   }, [historyError, isNearBottom, loadHistory, navigationTarget]);
 
@@ -496,17 +510,19 @@ export function MessageList({
 
   // ---- Conversation switch: always scroll to bottom ----
   const prevConvRef = useRef(activeConv?.id);
+  const previousLocalSendRef = useRef(localSendId);
   useEffect(() => {
-    if (activeConv?.id !== prevConvRef.current) {
+    const localSendChanged = localSendId !== previousLocalSendRef.current;
+    previousLocalSendRef.current = localSendId;
+    if (activeConv?.id !== prevConvRef.current || (localSendChanged && localSendId !== null)) {
+      followingBottomRef.current = true;
       prevConvRef.current = activeConv?.id;
       wasNearBottomRef.current = true;
-      scrollToBottom("instant" as ScrollBehavior);
-      return;
     }
     if (wasNearBottomRef.current) {
       scrollToBottom();
     }
-  }, [messages.length, activeConv?.id, scrollToBottom]);
+  }, [totalHeight, activeConv?.id, localSendId, scrollToBottom]);
 
   // ---- scrollToMessage ----
   const scrollToMessage = useCallback(
@@ -610,7 +626,11 @@ export function MessageList({
     endIdx < offsets.length ? totalHeight - offsets[endIdx - 1] : 0;
 
   return (
-    <div className="messages-area" ref={containerRef} onScroll={onScroll}>
+    <div className="messages-area" ref={containerRef} onScroll={onScroll}
+      onWheelCapture={stopFollowing}
+      onTouchMoveCapture={stopFollowing}
+      onPointerDown={(event) => { if (event.target === event.currentTarget) stopFollowing(); }}
+      onKeyDown={(event) => { if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(event.key)) stopFollowing(); }}>
       {messages.length === 0 ? (
         <EmptyState
           icon={<MessageSquare size={40} strokeWidth={1.25} />}

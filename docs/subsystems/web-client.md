@@ -138,6 +138,7 @@ Use `data-activity` for a stable control identity when the accessible name is ab
 
 ## Failure modes
 
+- Agent provisioning preserves gateway HTTP errors and `Retry-After` through its step wrapper. Local failures remain HTTP 500; step records and raw error causes are not serialized to the caller.
 - IndexedDB unavailable (quota, private mode, schema upgrade): every `message-db.ts` operation catches and emits `trace.event("indexeddb_fallback", { op, error })`; the chat path re-fetches over HTTP.
 - Sync WebSocket drop: `useChatWebSocket` reports `status: "reconnecting"` and retries with backoff from `RECONNECT_BASE_MS` (500 ms) to `RECONNECT_MAX_MS` (16 s), resuming from the persisted `ack_cursor`.
 - Bootstrap or bindings fetch failure on `/dashboard`: `DashboardPage` logs `[dashboard] fetch failed source=…` and renders with empty companies and bindings instead of failing the page.

@@ -558,6 +558,14 @@ impl ExecutorContext {
                 .external_session_id
                 .clone()
                 .filter(|sid| !sid.is_empty())
+                .or_else(|| {
+                    choruz_agent_runtime::headless::claude_direct_seed(
+                        &binding.config_json,
+                        &binding_id,
+                        &drv,
+                        &binding.workspace_path,
+                    )
+                })
         };
         let (work_dir, driver_type) = (real_dir, drv);
 
@@ -592,11 +600,18 @@ impl ExecutorContext {
             LocalCliDriver::OpenCode => &self.opencode_cli_path,
             LocalCliDriver::MathCode => &self.mathcode_cli_path,
         };
-        let spawn_args = headless_cli_args(
-            cli_driver,
+        let fork_session = cli_driver == LocalCliDriver::Claude
+            && resume_session_id.is_some()
+            && (binding
+                .external_session_id
+                .as_deref()
+                .is_none_or(str::is_empty)
+                || !session_provenance_matches(&binding, "headless"));
+        let spawn_args = cli_driver.args_with_session_fork(
             resume_session_id.as_deref(),
             selected_model.as_deref(),
             &effective_prompt,
+            fork_session,
         );
 
         // 6. Headless mode: spawn process with prompt, read stdout directly.
@@ -996,6 +1011,14 @@ impl ExecutorContext {
             }
 
             // Save new session_id back to binding if we got one.
+            if fork_session
+                && (new_session_id.is_none()
+                    || new_session_id.as_ref() == resume_session_id.as_ref())
+            {
+                return Err(
+                    "Claude did not isolate the routed turn from the direct session".into(),
+                );
+            }
             if let Some(ref sid) = new_session_id {
                 tracing::info!(
                     session_key,
@@ -1020,8 +1043,13 @@ impl ExecutorContext {
                                      SET external_session_id = $1,
                                          config_json = config_json || $2::jsonb,
                                          updated_at = NOW()
-                                     WHERE id = $3",
-                                    &[sid, &provenance, &binding_id],
+                                     WHERE id = $3 AND state <> 'disabled'
+                                       AND driver_type = $4 AND workspace_path = $5
+                                       AND external_session_id IS NOT DISTINCT FROM $6
+                                       AND (config_json - 'terminal_session') = ($7::jsonb - 'terminal_session')",
+                                    &[sid, &provenance, &binding_id, &binding.driver_type,
+                                      &binding.workspace_path, &binding.external_session_id,
+                                      &binding.config_json],
                                 )
                                 .await
                             {
@@ -1468,34 +1496,7 @@ async fn stage_incoming_attachments_from_tokens_file(
     stage_into_inbox(&cmd.prompt, work_dir, &attachments, fetch).await
 }
 
-/// Extract content from `{{CHORUZ_REPLY}}...{{/CHORUZ_REPLY}}` tags.
-/// If no tags are present, return the full content.
 #[cfg(test)]
-fn extract_reply_content(raw: &str) -> String {
-    let re = regex::Regex::new(r"\{\{CHORUZ_REPLY\}\}([\s\S]*?)\{\{/CHORUZ_REPLY\}\}")
-        .expect("invalid regex");
-
-    if let Some(captures) = re.captures(raw) {
-        captures
-            .get(1)
-            .map(|m| m.as_str().trim().to_string())
-            .unwrap_or_else(|| raw.to_string())
-    } else {
-        // No tags -- return the raw content (already clean)
-        raw.trim().to_string()
-    }
-}
-
-/// Count tool call markers in the response text (heuristic).
-#[cfg(test)]
-fn count_tool_calls(content: &str) -> i32 {
-    let tool_re = regex::Regex::new(r"(?i)(tool_use|function_call|<tool>)").ok();
-    match tool_re {
-        Some(re) => re.find_iter(content).count() as i32,
-        None => 0,
-    }
-}
-
 fn headless_cli_args(
     driver: LocalCliDriver,
     resume_session_id: Option<&str>,

@@ -1,4 +1,4 @@
-import { mkdtemp } from "fs/promises";
+import { mkdtemp, rm } from "fs/promises";
 import { tmpdir } from "os";
 import * as path from "path";
 import { NextRequest } from "next/server";
@@ -12,14 +12,21 @@ vi.mock("../../../lib/api/api-auth", () => ({
 }));
 
 describe("/api/filesystem workspace path guard", () => {
-  afterEach(() => {
+  const roots: string[] = [];
+  async function tempRoot(prefix: string) {
+    const root = await mkdtemp(path.join(tmpdir(), prefix));
+    roots.push(root);
+    return root;
+  }
+  afterEach(async () => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
+    await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
   });
 
   it("rejects workspace-scoped reads outside the company folder before proxying", async () => {
-    const root = await mkdtemp(path.join(tmpdir(), "echat-fs-root-"));
-    const outside = await mkdtemp(path.join(tmpdir(), "echat-fs-outside-"));
+    const root = await tempRoot("echat-fs-root-");
+    const outside = await tempRoot("echat-fs-outside-");
     vi.mocked(requireAuth).mockResolvedValue({
       token: "session-token",
       claims: {
@@ -73,8 +80,8 @@ describe("/api/filesystem workspace path guard", () => {
   });
 
   it("rejects workspace-scoped writes outside the company folder before proxying", async () => {
-    const root = await mkdtemp(path.join(tmpdir(), "echat-fs-root-"));
-    const outside = await mkdtemp(path.join(tmpdir(), "echat-fs-outside-"));
+    const root = await tempRoot("echat-fs-root-");
+    const outside = await tempRoot("echat-fs-outside-");
     vi.mocked(requireAuth).mockResolvedValue({
       token: "session-token",
       claims: {

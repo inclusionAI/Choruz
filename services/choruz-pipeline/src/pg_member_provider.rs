@@ -827,10 +827,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_agent_policy_returns_default_for_unknown() {
-        // This test requires a running DB. Skip in CI.
-        let Ok(db_url) = std::env::var("CHORUZ_DATABASE_URL") else {
-            return;
-        };
+        let db_url = std::env::var("CHORUZ_TEST_DATABASE_URL")
+            .expect("source infra/host/setup_test_database.sh before database tests");
         let store = EventStore::new(&db_url);
         let provider = PgMemberProvider::new(store);
 
@@ -849,9 +847,8 @@ mod tests {
 
     #[tokio::test]
     async fn write_decision_returns_existing_route_id_for_message_agent_retry() {
-        let Ok(db_url) = std::env::var("CHORUZ_DATABASE_URL") else {
-            return;
-        };
+        let db_url = std::env::var("CHORUZ_TEST_DATABASE_URL")
+            .expect("source infra/host/setup_test_database.sh before database tests");
 
         let store = EventStore::new(&db_url);
         let session_store = PgSessionStore::new(&db_url);

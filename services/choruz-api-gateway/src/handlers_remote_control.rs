@@ -875,13 +875,4 @@ mod tests {
         );
         assert!(unwrap_session_key("wrong-secret", &wrapped).is_err());
     }
-
-    #[test]
-    fn transport_rooms_are_not_derived_from_long_lived_identity() {
-        let first = choruz_common::new_id();
-        let second = choruz_common::new_id();
-        assert_ne!(first, second);
-        assert!(!first.is_empty());
-        assert!(!second.is_empty());
-    }
 }

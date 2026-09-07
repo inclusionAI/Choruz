@@ -5,6 +5,12 @@
 //! (e.g. passing a `TurnId` where a `CommandId` is expected) while keeping
 //! serialisation / display / parsing uniform.
 //!
+//! ```compile_fail
+//! use choruz_ids::{AttemptId, TurnId};
+//! fn takes_turn(_: TurnId) {}
+//! takes_turn(AttemptId::new());
+//! ```
+//!
 //! # ID hierarchy
 //!
 //! ```text
@@ -203,23 +209,6 @@ mod tests {
         assert!(json.starts_with('"'));
         let parsed: TurnId = serde_json::from_str(&json).expect("deserialize failed");
         assert_eq!(original, parsed);
-    }
-
-    /// Ensure different ID types cannot be accidentally mixed (compile-time
-    /// guarantee — this test just documents intent).
-    #[test]
-    fn type_safety_documented() {
-        fn takes_turn(_id: TurnId) {}
-        fn takes_attempt(_id: AttemptId) {}
-
-        let t = TurnId::new();
-        let a = AttemptId::new();
-
-        takes_turn(t);
-        takes_attempt(a);
-        // The following would NOT compile:
-        // takes_turn(a);
-        // takes_attempt(t);
     }
 
     /// Debug format includes the type name.

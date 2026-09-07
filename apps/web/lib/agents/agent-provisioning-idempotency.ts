@@ -51,8 +51,10 @@ async function runDurableRequest<T>(
   const pool = await postgresQueryClient() as LockPool;
   const connection = await pool.connect();
   const lockScope = `agent-provisioning:${actorId}:${idempotencyKey}`;
-  await connection.query("SELECT pg_advisory_lock(hashtextextended($1, 0))", [lockScope]);
+  let locked = false;
   try {
+    await connection.query("SELECT pg_advisory_lock(hashtextextended($1, 0))", [lockScope]);
+    locked = true;
     await connection.query(
       `INSERT INTO agent_provisioning_checkpoint
          (actor_id, idempotency_key, request_fingerprint)
@@ -88,7 +90,7 @@ async function runDurableRequest<T>(
     });
   } finally {
     try {
-      await connection.query("SELECT pg_advisory_unlock(hashtextextended($1, 0))", [lockScope]);
+      if (locked) await connection.query("SELECT pg_advisory_unlock(hashtextextended($1, 0))", [lockScope]);
     } finally {
       connection.release();
     }

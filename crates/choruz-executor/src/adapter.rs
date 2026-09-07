@@ -108,15 +108,4 @@ mod tests {
         let parsed: ToolCallRecord = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.name, "bash");
     }
-
-    #[test]
-    fn cli_response_construction() {
-        let resp = CliResponse {
-            content: "Hello".into(),
-            is_complete: true,
-            tool_calls: vec![],
-        };
-        assert!(resp.is_complete);
-        assert!(resp.tool_calls.is_empty());
-    }
 }

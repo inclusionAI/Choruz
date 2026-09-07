@@ -45,6 +45,8 @@ new feature area).
 
 Apply the policy's [behaviour acceptance evidence](../../../docs/testing/pr-test-policy.md#behaviour-acceptance-evidence) before selecting tests: name the observable contract, trace its production entry to the owner of the result, and select only the ordinary scenarios affected by the change. Read the assertions, not just test names. Record the scenario, boundary replacements and observed red/green evidence in the PR; document unavailable evidence without calling it passed. An existing test that stays green when the claimed behaviour is absent does not satisfy the type's requirement.
 
+Before adding coverage, apply the policy's [test value and incremental cost](../../../docs/testing/pr-test-policy.md#test-value-and-incremental-cost): find and strengthen the existing owner first, explain what a new scenario uniquely proves, and replace affected obsolete or redundant coverage without losing guarantees. This is scoped to the change, not a mandatory whole-suite cleanup.
+
 ## Naming new packages and files
 
 Rust packages are `choruz-<role>`: directory equals the package name, the crate ident is `choruz_<role>`. npm packages are `@choruz/<role>`. Libraries live in `crates/`, long-running processes in `services/`, human entry points (`choruz-cli`, `choruz-replay`, `web`) in `apps/`. Files: Rust `snake_case.rs`, web `kebab-case.ts(x)`, tests beside the module (`foo.test.ts`, `tests/<topic>.rs`), migrations `V0NN__name.sql`. A name states a role, never a layer or a generic word.

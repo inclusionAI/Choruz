@@ -8,6 +8,7 @@ export class ApiRequestError extends Error {
   constructor(
     public readonly status: number,
     detail: string,
+    public readonly retryAfter: string | null = null,
   ) {
     super(detail);
     this.name = "ApiRequestError";
@@ -123,7 +124,7 @@ export type RuntimeBinding = {
     | "opencode_terminal"
     | "acp"
     | "webhook_agent";
-  interaction_mode?: "message" | "terminal" | null;
+  interaction_mode?: "message" | "terminal" | "session" | null;
   runtime_host_id?: string | null;
   harness_account_id?: string | null;
   harness_account_name?: string | null;
@@ -1128,7 +1129,7 @@ async function apiRequestError(response: Response): Promise<ApiRequestError> {
     if (typeof payload.error === "string") detail = payload.error;
     else if (payload.error && typeof payload.error.detail === "string") detail = payload.error.detail;
   } catch {}
-  return new ApiRequestError(response.status, detail);
+  return new ApiRequestError(response.status, detail, response.headers.get("retry-after"));
 }
 
 async function apiJson<T>(

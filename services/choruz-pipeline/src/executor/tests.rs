@@ -437,44 +437,6 @@ async fn direct_attachment_is_staged_only_in_the_target_workspace() {
 }
 
 #[test]
-fn extract_reply_with_tags() {
-    let raw = "some preamble\n{{CHORUZ_REPLY}}Hello, world!{{/CHORUZ_REPLY}}\nsome postamble";
-    assert_eq!(extract_reply_content(raw), "Hello, world!");
-}
-
-#[test]
-fn extract_reply_without_tags() {
-    let raw = "Just a plain reply with no tags.";
-    assert_eq!(
-        extract_reply_content(raw),
-        "Just a plain reply with no tags."
-    );
-}
-
-#[test]
-fn extract_reply_multiline() {
-    let raw = "{{CHORUZ_REPLY}}\nLine 1\nLine 2\n{{/CHORUZ_REPLY}}";
-    assert_eq!(extract_reply_content(raw), "Line 1\nLine 2");
-}
-
-#[test]
-fn extract_reply_empty_tags() {
-    let raw = "{{CHORUZ_REPLY}}{{/CHORUZ_REPLY}}";
-    assert_eq!(extract_reply_content(raw), "");
-}
-
-#[test]
-fn count_tool_calls_none() {
-    assert_eq!(count_tool_calls("Hello, just text here."), 0);
-}
-
-#[test]
-fn count_tool_calls_some() {
-    let content = "tool_use: read_file, then another tool_use: write_file";
-    assert_eq!(count_tool_calls(content), 2);
-}
-
-#[test]
 fn codex_exec_args_use_current_cli_flags() {
     let args = headless_cli_args(LocalCliDriver::Codex, Some("session-123"), None, "hello");
 
@@ -737,7 +699,25 @@ fn ignores_bound_unmatched_old_or_non_tool_outbox_files() {
     })
     .to_string();
     assert!(extract_external_outbox_files(&tool_stdout, &bound, UNIX_EPOCH).is_empty());
-    assert!(extract_external_outbox_files(&tool_stdout, &bound, SystemTime::now()).is_empty());
+    let matching_file = external.join(".choruz-outbox/new/cmd-0001.json");
+    fs::write(
+        &matching_file,
+        json!({"type":"send","group":"team","content":"hello"}).to_string(),
+    )
+    .unwrap();
+    let modified = fs::metadata(&matching_file).unwrap().modified().unwrap();
+    assert_eq!(
+        extract_external_outbox_files(&tool_stdout, &bound, UNIX_EPOCH).len(),
+        1
+    );
+    assert!(
+        extract_external_outbox_files(
+            &tool_stdout,
+            &bound,
+            modified + std::time::Duration::from_secs(60)
+        )
+        .is_empty()
+    );
 
     let non_tool_stdout = json!({
             "message": {
@@ -1187,8 +1167,16 @@ async fn local_cli_failures_are_classified_for_bounded_recovery() {
                 .expect("create failure-mode binding");
 
             let cli_path = tmp.path().join(format!("fake-{suffix}.sh"));
+            let child_pid_file = tmp.path().join(format!("pid-{suffix}"));
             if let Some(body) = failure.body {
-                write_fake_cli_body(&cli_path, body);
+                if failure.label == "timeout" {
+                    write_fake_cli_body(
+                        &cli_path,
+                        &format!("echo $$ > '{}'; exec sleep 30", child_pid_file.display()),
+                    );
+                } else {
+                    write_fake_cli_body(&cli_path, body);
+                }
             }
             let mut config = PipelineConfig::from_env();
             // Only the hung-child case tests the deadline. Other cases await
@@ -1226,6 +1214,25 @@ async fn local_cli_failures_are_classified_for_bounded_recovery() {
             );
             assert!(!error.contains("PRIVATE_AUTH_MARKER"));
             assert!(!error.contains("PRIVATE_CRASH_MARKER"));
+            if failure.label == "timeout" {
+                let pid = fs::read_to_string(&child_pid_file).expect("timed-out driver started");
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                while std::process::Command::new("kill")
+                    .args(["-0", pid.trim()])
+                    .output()
+                    .unwrap()
+                    .status
+                    .success()
+                {
+                    if std::time::Instant::now() >= deadline {
+                        let _ = std::process::Command::new("kill")
+                            .args(["-KILL", pid.trim()])
+                            .output();
+                        panic!("{suffix}: timed-out driver remains alive");
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            }
             if failure.label == "crash" {
                 assert!(
                     error.contains("exit_status=exit status: 17"),
@@ -1950,35 +1957,4 @@ async fn shutdown_all_on_empty() {
     let ctx = ExecutorContext::from_config(&config);
     // Should not panic
     ctx.shutdown_all().await;
-}
-
-/// Verify the hard-timeout pattern used in `spawn_headless_session`:
-/// a child that won't finish within the deadline must be released
-/// promptly via `tokio::time::timeout` dropping the future, which in
-/// turn fires `kill_on_drop` on the spawned Child. Uses `sleep 30`
-/// against a 200 ms deadline.
-#[tokio::test]
-async fn hard_timeout_kills_hung_child() {
-    let start = std::time::Instant::now();
-
-    let cli_future = tokio::process::Command::new("sleep")
-        .arg("30")
-        .kill_on_drop(true)
-        .output();
-
-    let result = tokio::time::timeout(std::time::Duration::from_millis(200), cli_future).await;
-
-    // 200 ms deadline against a 30 s sleep must time out, never complete.
-    assert!(result.is_err(), "expected Elapsed, got {:?}", result);
-
-    // Wall time must be ~200 ms, NOT 30 s. If kill_on_drop hadn't fired
-    // we'd still measure ≈ 200 ms (timeout drops the future regardless),
-    // but the test name + intent is to lock in the kill-on-drop contract.
-    // Allow generous headroom for slow CI; failing means something is
-    // *seriously* off.
-    assert!(
-        start.elapsed() < std::time::Duration::from_secs(2),
-        "hard timeout did not return promptly: took {:?}",
-        start.elapsed()
-    );
 }

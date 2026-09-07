@@ -532,11 +532,17 @@ mod tests {
             name: "test-backend",
             child,
         });
-        std::thread::sleep(Duration::from_millis(50));
-
-        let error = supervisor
-            .check_children()
-            .expect_err("exit must be reported");
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let error = loop {
+            if let Err(error) = supervisor.check_children() {
+                break error;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "child exit was not reported"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        };
         assert!(error.contains("test-backend exited with exit status: 7"));
     }
 }

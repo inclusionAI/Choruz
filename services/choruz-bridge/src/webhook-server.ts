@@ -18,18 +18,27 @@ const MAX_RECENT_WEBHOOK_EVENT_IDS = 10_000;
 
 /** Bounded, in-memory replay guard for signed webhook deliveries. */
 export class WebhookReplayCache {
-  private readonly eventIds = new Map<string, number>();
+  private readonly eventIds = new Map<string, {
+    expiresAt: number;
+    running: boolean;
+    completed: boolean;
+    delivered: Set<string>;
+  }>();
 
-  hasOrRemember(eventId: string, nowSeconds = Date.now() / 1000): boolean {
-    for (const [id, expiresAt] of this.eventIds) {
-      if (expiresAt <= nowSeconds) this.eventIds.delete(id);
+  get(eventId: string, nowSeconds = Date.now() / 1000) {
+    for (const [id, entry] of this.eventIds) {
+      if (!entry.running && entry.expiresAt <= nowSeconds) this.eventIds.delete(id);
     }
-    if (this.eventIds.has(eventId)) return true;
+    const existing = this.eventIds.get(eventId);
+    if (existing) return existing;
     if (this.eventIds.size >= MAX_RECENT_WEBHOOK_EVENT_IDS) {
-      this.eventIds.delete(this.eventIds.keys().next().value!);
+      const evictable = [...this.eventIds].find(([, entry]) => !entry.running);
+      if (!evictable) return null;
+      this.eventIds.delete(evictable[0]);
     }
-    this.eventIds.set(eventId, nowSeconds + WEBHOOK_REPLAY_WINDOW_SECONDS);
-    return false;
+    const entry = { expiresAt: nowSeconds + WEBHOOK_REPLAY_WINDOW_SECONDS, running: false, completed: false, delivered: new Set<string>() };
+    this.eventIds.set(eventId, entry);
+    return entry;
   }
 }
 
@@ -129,10 +138,6 @@ export class WebhookServer {
         return reply.code(400).send({ error: 'invalid payload' });
       }
 
-      if (this.replayCache.hasOrRemember(payload.event_id)) {
-        return reply.code(200).send({ status: 'ignored', reason: 'duplicate_event' });
-      }
-
       // Only handle message.created events
       if (payload.event_type !== 'message.created') {
         return reply.code(200).send({ status: 'ignored', reason: 'event_type' });
@@ -153,53 +158,79 @@ export class WebhookServer {
         return reply.code(400).send({ error: 'missing conversation_id or content' });
       }
 
-      console.log(
-        `[webhook] message.created in ${conversation_id} from ${senderName}`,
-      );
-
-      // Look up all platform channels mapped to this Choruz conversation
-      const channels =
-        await this.config.mappings.findByChoruzConversation(conversation_id);
-
-      if (channels.length === 0) {
-        return reply
-          .code(200)
-          .send({ status: 'ignored', reason: 'no_mapping' });
+      const delivery = this.replayCache.get(payload.event_id);
+      if (!delivery || delivery.running) {
+        return reply.code(503).send({ status: 'retry', reason: 'delivery_busy' });
       }
+      if (delivery.completed) {
+        return reply.code(200).send({ status: 'ignored', reason: 'duplicate_event' });
+      }
+      delivery.running = true;
+      try {
 
-      const platformContent = choruzMentionToPlatform(content);
+        console.log(
+          `[webhook] message.created in ${conversation_id} from ${senderName}`,
+        );
 
-      // Fan out to each mapped platform channel
-      const results: Array<{ platform: string; channel: string; ok: boolean }> =
-        [];
+        // Look up all platform channels mapped to this Choruz conversation
+        const channels =
+          await this.config.mappings.findByChoruzConversation(conversation_id);
 
-      for (const ch of channels) {
-        try {
-          if (ch.platform === 'slack' && this.config.slack) {
-            await this.config.slack.pushToSlack(
-              ch.platform_channel_id,
-              platformContent,
-              senderName,
-            );
-            results.push({
-              platform: 'slack',
-              channel: ch.platform_channel_id,
-              ok: true,
-            });
-          } else if (ch.platform === 'telegram' && this.config.telegram) {
-            await this.config.telegram.pushToTelegram(
-              ch.platform_channel_id,
-              platformContent,
-              senderName,
-            );
-            results.push({
-              platform: 'telegram',
-              channel: ch.platform_channel_id,
-              ok: true,
-            });
-          } else {
-            console.warn(
-              `[webhook] No adapter for platform "${ch.platform}", channel ${ch.platform_channel_id}`,
+        if (channels.length === 0) {
+          return reply
+            .code(200)
+            .send({ status: 'ignored', reason: 'no_mapping' });
+        }
+
+        const platformContent = choruzMentionToPlatform(content);
+
+        // Fan out to each mapped platform channel
+        const results: Array<{ platform: string; channel: string; ok: boolean }> =
+          [];
+
+        for (const ch of channels) {
+          const channelKey = JSON.stringify([ch.platform, ch.platform_channel_id]);
+          if (delivery.delivered.has(channelKey)) {
+            results.push({ platform: ch.platform, channel: ch.platform_channel_id, ok: true });
+            continue;
+          }
+          try {
+            if (ch.platform === 'slack' && this.config.slack) {
+              await this.config.slack.pushToSlack(
+                ch.platform_channel_id,
+                platformContent,
+                senderName,
+              );
+              results.push({
+                platform: 'slack',
+                channel: ch.platform_channel_id,
+                ok: true,
+              });
+            } else if (ch.platform === 'telegram' && this.config.telegram) {
+              await this.config.telegram.pushToTelegram(
+                ch.platform_channel_id,
+                platformContent,
+                senderName,
+              );
+              results.push({
+                platform: 'telegram',
+                channel: ch.platform_channel_id,
+                ok: true,
+              });
+            } else {
+              console.warn(
+                `[webhook] No adapter for platform "${ch.platform}", channel ${ch.platform_channel_id}`,
+              );
+              results.push({
+                platform: ch.platform,
+                channel: ch.platform_channel_id,
+                ok: false,
+              });
+            }
+          } catch (err) {
+            console.error(
+              `[webhook] Failed to push to ${ch.platform}/${ch.platform_channel_id}:`,
+              err,
             );
             results.push({
               platform: ch.platform,
@@ -207,20 +238,14 @@ export class WebhookServer {
               ok: false,
             });
           }
-        } catch (err) {
-          console.error(
-            `[webhook] Failed to push to ${ch.platform}/${ch.platform_channel_id}:`,
-            err,
-          );
-          results.push({
-            platform: ch.platform,
-            channel: ch.platform_channel_id,
-            ok: false,
-          });
+          if (results.at(-1)?.ok) delivery.delivered.add(channelKey);
         }
-      }
 
-      return reply.code(200).send({ status: 'delivered', results });
+        delivery.completed = results.every((result) => result.ok);
+        return reply.code(delivery.completed ? 200 : 503).send({ status: delivery.completed ? 'delivered' : 'partial_failure', results });
+      } finally {
+        delivery.running = false;
+      }
     });
   }
 }

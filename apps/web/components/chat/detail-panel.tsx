@@ -174,11 +174,14 @@ export function DetailPanel({
     agentBinding ? "overview" : "members",
   );
 
-  // Reset tab when conversation changes
+  const agentBindingId = agentBinding?.id;
   useEffect(() => {
-    setActiveTab(agentBinding ? "overview" : "members");
+    setActiveTab(agentBindingId ? "overview" : "members");
+  }, [activeConv.id, agentBindingId]);
+
+  useEffect(() => {
     trace.event("detail_open", { convId: activeConv.id, convName: chatTitle });
-  }, [activeConv.id, agentBinding, chatTitle]);
+  }, [activeConv.id, chatTitle]);
 
   useEffect(() => {
     if (activeTab === agentSkillsDetailTab.id && !agentSkillsEnabled) setActiveTab("overview");

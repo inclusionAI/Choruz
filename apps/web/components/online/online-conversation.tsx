@@ -12,6 +12,7 @@ import { ChatInput } from "../chat/chat-input";
 import { MessageList } from "../chat/message-list";
 import { Modal } from "../ui/modal";
 import { OnlineAgents } from "./online-agents";
+import { subscribeOnlineAccountChanges } from "./online-account-events";
 
 export type OnlineGroup = {
   id: string;
@@ -46,6 +47,26 @@ type Page = {
 };
 export const onlineConversationId = (id: string) => `online:${id}`;
 
+export function sameOnlineGroups(left: OnlineGroup[], right: OnlineGroup[]) {
+  return left.length === right.length && left.every((group, index) => {
+    const other = right[index];
+    return group.id === other.id && group.role === other.role &&
+      group.name === other.name && group.status === other.status &&
+      group.conversation_id === other.conversation_id &&
+      group.message_count === other.message_count && group.latest_seq === other.latest_seq &&
+      group.last_message?.content === other.last_message?.content &&
+      group.last_message?.created_at === other.last_message?.created_at;
+  });
+}
+
+export function onlineRetryDelay(error: unknown, failures: number, now = Date.now()) {
+  const backoff = Math.min(60_000, 3000 * 2 ** Math.min(failures, 5));
+  if (!(error instanceof ApiRequestError) || !error.retryAfter) return backoff;
+  const seconds = Number(error.retryAfter);
+  const retry = Number.isFinite(seconds) ? seconds * 1000 : Date.parse(error.retryAfter) - now;
+  return Number.isFinite(retry) ? Math.max(backoff, retry) : backoff;
+}
+
 export function onlineConversation(
   link: OnlineGroup,
   principal: Principal,
@@ -69,6 +90,13 @@ export function useOnlineGroups(sessionToken: string, principalId: string) {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [revision, setRevision] = useState(0);
+  useEffect(() => subscribeOnlineAccountChanges(principalId, () => {
+    setGroups(previous => previous.length ? [] : previous);
+    setRevision(value => value + 1);
+  }), [principalId]);
+  useEffect(() => {
+    setGroups(previous => previous.length ? [] : previous);
+  }, [sessionToken, principalId]);
   const [readCounts, setReadCounts] = useState<Record<string, number>>({});
   const storageKey = `choruz_online_reads:${principalId}`;
   useEffect(() => {
@@ -107,8 +135,21 @@ export function useOnlineGroups(sessionToken: string, principalId: string) {
   );
   useEffect(() => {
     const abort = new AbortController();
-    let timer: ReturnType<typeof setTimeout>;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let blocked = false;
+    let running = false;
+    let failures = 0;
+    let nextAttempt = 0;
+    const available = () => document.visibilityState !== "hidden" && navigator.onLine;
     const load = async () => {
+      if (abort.signal.aborted || blocked || running || !available()) return;
+      clearTimeout(timer);
+      if (Date.now() < nextAttempt) {
+        timer = setTimeout(load, nextAttempt - Date.now());
+        return;
+      }
+      running = true;
+      let delay = 3000;
       try {
         const result = await apiFetch<{ groups: OnlineGroup[] }>(
           "/v1/online/groups",
@@ -116,8 +157,10 @@ export function useOnlineGroups(sessionToken: string, principalId: string) {
           { signal: abort.signal },
         );
         if (!abort.signal.aborted) {
-          setGroups(result.groups.filter((group) => group.role === "guest"));
+          const next = result.groups.filter((group) => group.role === "guest");
+          setGroups(previous => sameOnlineGroups(previous, next) ? previous : next);
           setError(null);
+          failures = 0;
         }
       } catch (cause) {
         if (!abort.signal.aborted) {
@@ -125,28 +168,44 @@ export function useOnlineGroups(sessionToken: string, principalId: string) {
             cause instanceof ApiRequestError &&
             [401, 403].includes(cause.status)
           ) {
-            setGroups([]);
-            setError(null);
-          } else
+            blocked = true;
+            setGroups(previous => previous.length ? [] : previous);
+            setError(cause.status === 403 && cause.message.includes("Sign in to Online first")
+              ? null : cause.message);
+          } else {
+            delay = onlineRetryDelay(cause, ++failures);
             setError(
               cause instanceof Error
                 ? cause.message
                 : "Could not load Online groups",
             );
+          }
         }
       } finally {
+        running = false;
         if (!abort.signal.aborted) {
           setLoading(false);
-          timer = setTimeout(load, 3000);
+          nextAttempt = Date.now() + delay;
+          if (!blocked && available()) timer = setTimeout(load, delay);
         }
       }
     };
+    const wake = () => {
+      if (!available()) clearTimeout(timer);
+      else void load();
+    };
+    document.addEventListener("visibilitychange", wake);
+    window.addEventListener("online", wake);
+    window.addEventListener("offline", wake);
     void load();
     return () => {
       abort.abort();
       clearTimeout(timer);
+      document.removeEventListener("visibilitychange", wake);
+      window.removeEventListener("online", wake);
+      window.removeEventListener("offline", wake);
     };
-  }, [sessionToken, revision]);
+  }, [sessionToken, principalId, revision]);
   const unreads = Object.fromEntries(
     groups.map((group) => [
       onlineConversationId(group.id),

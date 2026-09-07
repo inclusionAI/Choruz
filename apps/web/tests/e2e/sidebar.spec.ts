@@ -516,7 +516,7 @@ test.describe("Sidebar chat sections and pins", () => {
       direct.id,
       false,
     );
-    await expect(sidebarSection(page, SECTION_TITLES.archived)).toHaveCount(0);
+    await expect(rowInSection(page, SECTION_TITLES.archived, directName)).toHaveCount(0);
     await expandSection(page, SECTION_TITLES.direct);
     await expect(rowInSection(page, SECTION_TITLES.direct, directName)).toBeVisible();
   });

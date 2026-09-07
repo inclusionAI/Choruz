@@ -30,6 +30,28 @@ vi.mock("../../../../lib/agents/agent-provisioning-idempotency", async (importOr
 });
 
 describe("/api/agents/provision", () => {
+  it("preserves a gateway rate limit through the real provisioning step", async () => {
+    vi.mocked(requireAuth).mockResolvedValue({ token: "session-token", claims: {
+      principal_id: "human-1", workspace_id: "workspace-1", display_name: "Alice", expires_at_epoch_s: 1,
+    } });
+    const actual = await vi.importActual<typeof import("../../../../lib/agents/agent-provisioning")>("../../../../lib/agents/agent-provisioning");
+    vi.mocked(provisionAgent).mockImplementation(actual.provisionAgent);
+    // Only upstream HTTP and unrelated auth/idempotency storage are replaced:
+    // route -> provisioning step -> API error decoding all run their real code.
+    const upstream = vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: "Too many requests" }), {
+      status: 429, headers: { "retry-after": "42" },
+    }));
+    vi.stubGlobal("fetch", upstream);
+    const response = await POST(new NextRequest("http://localhost/api/agents/provision", {
+      method: "POST", body: JSON.stringify({ name: "Helper", driver_type: "claude_terminal", instructions: "Help with tasks." }),
+    }));
+    expect(upstream).toHaveBeenCalledOnce();
+    expect(String(upstream.mock.calls[0][0])).toMatch(/\/v1\/agents$/);
+    expect(response.status).toBe(429);
+    expect(response.headers.get("retry-after")).toBe("42");
+    expect(await response.json()).toEqual({ error: "Too many requests" });
+  });
+
   it("leaves a remote workspace path to the selected device's validator", async () => {
     vi.stubEnv("HOME", "/controller-home");
     vi.mocked(requireAuth).mockResolvedValue({ token: "session-token", claims: {
@@ -55,6 +77,7 @@ describe("/api/agents/provision", () => {
   afterEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
   });
 
   it("delegates to the provisioning primitive while preserving the manual response shape", async () => {

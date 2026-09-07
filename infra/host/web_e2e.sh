@@ -2,6 +2,9 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ "${CHORUZ_SMOKE_ENTRY:-}" != "${SCRIPT_DIR}/web_e2e.sh" ]]; then
+  exec node "${SCRIPT_DIR}/isolated-smoke.mjs" "${SCRIPT_DIR}/web_e2e.sh" "$@"
+fi
 if [[ "${CHORUZ_REMOTE_E2E_RUNNING:-0}" != "1" && ( "${CHORUZ_WEB_E2E_FULL:-0}" == "1" || "$*" == *remote-file-transport.spec.ts* || "$*" == *online.spec.ts* ) ]]; then
   exec node "${SCRIPT_DIR}/remote_web_e2e.mjs" "$@"
 fi
@@ -135,6 +138,7 @@ curl -fsS "http://127.0.0.1:${WEB_PORT}/" >/dev/null 2>&1 \
 require_pid_running "${WEB_PID_FILE}" "web app"
 
 CHORUZ_API_PORT="${API_PORT}" \
+CHORUZ_DATABASE_URL="${HOST_DATABASE_URL}" \
 CHORUZ_WEB_PORT="${WEB_PORT}" \
 CHORUZ_PIPELINE_METRICS_PORT="${PIPELINE_PORT}" \
 CHORUZ_API_BASE_URL="http://127.0.0.1:${API_PORT}" \

@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, writeFileSync } from "fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import path from "path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -16,11 +16,13 @@ const ORIGINAL_ENV = {
   USER: process.env.USER,
 };
 const ORIGINAL_CWD = process.cwd();
+const roots: string[] = [];
 
 describe("postgresDatabaseUrl", () => {
   afterEach(() => {
     process.chdir(ORIGINAL_CWD);
     restoreEnv();
+    for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
   });
 
   it("prefers the explicit database URL", () => {
@@ -34,6 +36,7 @@ describe("postgresDatabaseUrl", () => {
     clearDbEnv();
     process.env.USER = "dev-user";
     const root = mkdtempSync(path.join(tmpdir(), "choruz-host-env-"));
+    roots.push(root);
     mkdirSync(path.join(root, "apps", "web"), { recursive: true });
     mkdirSync(path.join(root, "infra", "host"), { recursive: true });
     writeFileSync(path.join(root, "infra", "host", ".env"), [
@@ -53,6 +56,7 @@ describe("postgresDatabaseUrl", () => {
     process.env.ECHAT_PG_DB = "legacy";
     process.env.ECHAT_PG_USER = "legacy-user";
     const root = mkdtempSync(path.join(tmpdir(), "choruz-empty-host-env-"));
+    roots.push(root);
     mkdirSync(path.join(root, "apps", "web"), { recursive: true });
     process.chdir(path.join(root, "apps", "web"));
 

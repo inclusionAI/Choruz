@@ -16,7 +16,13 @@ pub mod instructions;
 pub mod link;
 pub mod outbox;
 pub mod process;
+pub mod session;
+mod session_history;
+pub mod session_protocol;
 pub mod terminal;
+
+#[cfg(test)]
+static TEST_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 use std::{collections::BTreeSet, path::PathBuf};
 

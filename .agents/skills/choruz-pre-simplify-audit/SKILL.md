@@ -96,6 +96,8 @@ visual evidence where required. Code inspection is not a real runtime test,
 and green CI does not prove assertions are meaningful. Report unavailable
 required evidence as unverified, never as a successful fallback.
 
+Apply [test value and incremental cost](../../../docs/testing/pr-test-policy.md#test-value-and-incremental-cost) to changed tests and their nearest overlapping scenarios. Check the existing owner, the new distinguishing guarantee, false-green exits, obsolete coverage and justified execution cost. Block introduced or worsened defects; keep unrelated existing debt advisory. Do not demand extra tests or deletions merely to satisfy a count. CI-selector changes require checking overlap and distinct environments, not assuming full and selected jobs are interchangeable.
+
 ## Verdict and re-audit
 
 Return a compact report containing:
