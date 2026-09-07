@@ -1,7 +1,9 @@
 import importlib.util
+from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
 from pathlib import Path
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -11,6 +13,34 @@ spec.loader.exec_module(module)
 
 
 class GatewayDeliveryTests(unittest.TestCase):
+    def test_probe_identifies_itself_on_both_real_http_requests(self):
+        requests = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                requests.append((self.path, self.headers.get("User-Agent")))
+                if self.headers.get("User-Agent") != "Choruz-CD/1.0":
+                    self.send_error(403)
+                    return
+                payload = {"ok": True, "version": {"id": "right"}} if self.path == "/healthz" else None
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps(payload).encode())
+
+            def log_message(self, *args):
+                pass
+
+        server = HTTPServer(("127.0.0.1", 0), Handler)
+        self.addCleanup(server.server_close)
+        thread = threading.Thread(target=server.serve_forever)
+        thread.start()
+        self.addCleanup(thread.join)
+        self.addCleanup(server.shutdown)
+        module.probe(f"http://127.0.0.1:{server.server_port}", "right", timeout=0)
+        self.assertEqual(requests, [("/healthz", "Choruz-CD/1.0"),
+                                    ("/v1/online/auth/get-session", "Choruz-CD/1.0")])
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="choruz-cd-test-")
         self.addCleanup(self.temp.cleanup)

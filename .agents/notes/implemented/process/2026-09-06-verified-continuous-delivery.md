@@ -12,6 +12,8 @@ CI builds an immutable, commit-addressed archive and boots its API, pipeline and
 
 The designated repository's cloud-production environment owns the Cloudflare token. Gateway promotion checks storage migration state, pins a uniquely uploaded version and verifies the serving version and Online session route. Failure restores the exact prior version unless an intervening deployment makes rollback unsafe. Serialized, non-cancelling delivery and lifecycle records make the result diagnosable.
 
+Health probes identify themselves as `Choruz-CD/1.0`: Cloudflare can reject Python's default User-Agent with error 1010 before the Worker receives a request. Both readiness endpoints use the same explicit client identity; their status, version and response checks remain mandatory.
+
 Device updates are opt-in. One release helper owns manifest validation, atomic link replacement, managed-service restart and health-checked recovery. Writable state is outside release directories. Packaging does not activate code.
 
 ## Alternatives considered
