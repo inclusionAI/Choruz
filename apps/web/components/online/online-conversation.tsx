@@ -110,18 +110,6 @@ export function useOnlineGroups(sessionToken: string, principalId: string) {
     let timer: ReturnType<typeof setTimeout>;
     const load = async () => {
       try {
-        const identity = await apiFetch<{ state: string }>(
-          "/v1/online/session",
-          sessionToken,
-          { signal: abort.signal },
-        );
-        if (identity.state !== "signed_in") {
-          if (!abort.signal.aborted) {
-            setGroups([]);
-            setError(null);
-          }
-          return;
-        }
         const result = await apiFetch<{ groups: OnlineGroup[] }>(
           "/v1/online/groups",
           sessionToken,

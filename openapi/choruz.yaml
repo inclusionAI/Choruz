@@ -172,6 +172,10 @@ paths:
       responses:
         '200':
           description: Signed-in account or signed-out state
+        '429':
+          description: Account verification throttled; the local identity is retained
+          headers:
+            Retry-After: {schema: {type: integer}, description: Seconds until another attempt}
     delete:
       summary: Revoke the Online session and disconnect this local identity
       responses:

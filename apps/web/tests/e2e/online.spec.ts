@@ -199,9 +199,18 @@ test("Online group invitation exchanges real encrypted messages without granting
     await b.getByRole("button", { name: "Online", exact: true }).click();
     await b.keyboard.press("Escape");
     await expect(b.getByPlaceholder("Message Online shared acceptance...")).toHaveValue("Draft survives navigation");
+    // Account verification may be throttled; local history is not an auth probe.
+    let verificationRequests = 0;
+    await b.route("**/v1/online/session", async route => {
+      if (route.request().method() !== "GET") return route.continue();
+      verificationRequests++;
+      await route.fulfill({ status: 429, headers: { "Retry-After": "60" }, json: { error: { detail: "Too many requests" } } });
+    });
     await b.reload();
     await expect(b.getByRole("dialog")).toHaveCount(0);
     await expect(b.getByPlaceholder("Message Online shared acceptance...")).toHaveValue("Draft survives navigation");
+    await b.waitForResponse(response => response.url().endsWith("/v1/online/groups") && response.ok(), { timeout: 30_000 });
+    expect(verificationRequests).toBe(0);
     await b.getByPlaceholder("Message Online shared acceptance...").fill("");
     await expect(b.locator(".chat-main .messages-area").getByText(guestText, { exact: true })).toHaveCount(1);
     await b.screenshot({ path: test.info().outputPath("online-shared-group.png"), fullPage: true });

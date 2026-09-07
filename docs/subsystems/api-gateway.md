@@ -42,6 +42,10 @@ development. Redirects are refused. The account credential stays in the local
 `online_identity` row; API responses contain only state and public identity.
 Sign-out revokes the cloud session before removing the local row. An unavailable
 service returns an error and leaves the identity available for a retry.
+Verification throttling preserves HTTP 429 and `Retry-After`. Dashboard group
+refresh reads actor-scoped local history without verifying the cloud session;
+the Online account dialog performs explicit verification. Cloud transport still
+validates the session, so readable local history does not prove remote access.
 The request and response contract is in [OpenAPI](../../openapi/choruz.yaml).
 
 `online_groups.rs` owns one background mailbox client per signed-in local

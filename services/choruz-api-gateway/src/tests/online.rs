@@ -2,6 +2,96 @@ use super::*;
 use choruz_application::db_service::OnlineIdentity;
 
 #[tokio::test]
+async fn online_verification_preserves_throttling_and_rechecks_recovery_and_revocation() {
+    let database = TestDatabase::create().await;
+    let db =
+        choruz_application::DbService::new(choruz_store::EventStore::new(&database.database_url));
+    let human = db
+        .create_human_user("online-throttling", "test-password")
+        .await
+        .unwrap();
+    let upstream_status = Arc::new(AtomicUsize::new(429));
+    let status = upstream_status.clone();
+    let upstream = Router::new().route(
+        "/v1/online/auth/get-session",
+        get(move || {
+            let status = status.clone();
+            async move {
+                (
+                    StatusCode::from_u16(status.load(Ordering::SeqCst) as u16).unwrap(),
+                    [("x-retry-after", "7")],
+                    AxumJson(json!({"user":{"id":"cloud-account"}})),
+                )
+            }
+        }),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, upstream)
+            .with_graceful_shutdown(async {
+                let _ = stopped.await;
+            })
+            .await
+            .unwrap();
+    });
+    db.connect_online_identity(
+        &human,
+        &OnlineIdentity {
+            account_id: "cloud-account".into(),
+            device_id: "cloud-device".into(),
+            service_url: format!("http://{address}"),
+            session_token: "fixture-session".into(),
+            display_name: "Online".into(),
+        },
+    )
+    .await
+    .unwrap();
+    let router = router_with_db(choruz_application::ChatApp::new(), &database.database_url);
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/v1/online/session")
+                .header("authorization", format!("Bearer {}", session_token(&human)))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(response.headers()["retry-after"], "7");
+    assert!(db.online_identity(&human).await.unwrap().is_some());
+    // Local history remains available; it does not grant cloud transport access.
+    let (status, _) = api_json_request(
+        router.clone(),
+        &human,
+        Method::GET,
+        "/v1/online/groups".into(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    upstream_status.store(200, Ordering::SeqCst);
+    let (status, body) = api_json_request(
+        router.clone(),
+        &human,
+        Method::GET,
+        "/v1/online/session".into(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["state"], "signed_in");
+    upstream_status.store(401, Ordering::SeqCst);
+    let (status, body) =
+        api_json_request(router, &human, Method::GET, "/v1/online/session".into()).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["state"], "reauth_required");
+    let _ = stop.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn online_routes_reject_agent_credentials_before_contacting_account_service() {
     let database = TestDatabase::create().await;
     let app = choruz_application::ChatApp::new();

@@ -190,7 +190,9 @@ pub(crate) async fn session(
         value["user"]["id"].as_str() == Some(&identity.account_id)
     } else {
         tracing::warn!(event="online.session_verification_failed",principal_id=%actor.id,http_status=response.status().as_u16(),"Account service did not verify the Online session");
-        return Err(AppError::Internal("Online session verification failed".into()).into());
+        return Err(rate_limit_error(&response)
+            .unwrap_or_else(|| AppError::Internal("Online session verification failed".into()))
+            .into());
     };
     Ok(Json(
         json!({"state":if active {"signed_in"} else {"reauth_required"},"account_id":identity.account_id,"device_id":identity.device_id,"display_name":identity.display_name,"connection":state.online.status(&actor.id)}),
@@ -198,6 +200,17 @@ pub(crate) async fn session(
 }
 
 fn authentication_error(response: &reqwest::Response, signup: bool) -> AppError {
+    if let Some(error) = rate_limit_error(response) {
+        return error;
+    }
+    if response.status().is_client_error() {
+        AppError::Validation(if signup { "Online registration rejected. Use a valid email and a password of 12–128 characters; the account may already exist." } else { "Online sign-in rejected. Check your email and password, or wait before trying again." }.into())
+    } else {
+        AppError::Internal("Online account service is unavailable".into())
+    }
+}
+
+fn rate_limit_error(response: &reqwest::Response) -> Option<AppError> {
     if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
         let seconds = response
             .headers()
@@ -207,15 +220,11 @@ fn authentication_error(response: &reqwest::Response, signup: bool) -> AppError 
             .and_then(|value| value.parse::<u64>().ok())
             .unwrap_or(60)
             .max(1);
-        return AppError::RateLimited {
+        return Some(AppError::RateLimited {
             retry_after_ms: seconds.saturating_mul(1000),
-        };
+        });
     }
-    if response.status().is_client_error() {
-        AppError::Validation(if signup { "Online registration rejected. Use a valid email and a password of 12–128 characters; the account may already exist." } else { "Online sign-in rejected. Check your email and password, or wait before trying again." }.into())
-    } else {
-        AppError::Internal("Online account service is unavailable".into())
-    }
+    None
 }
 
 pub(crate) async fn sign_out(
