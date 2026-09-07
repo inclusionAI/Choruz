@@ -388,7 +388,7 @@ function HarnessLoginPanel({ account, companyId, onVerified, onClose }: {
             {login.authorization_url ? <a className="btn-secondary" href={login.authorization_url} target="_blank" rel="noreferrer">Open sign-in link</a> : null}
             <label>
               Claude Code authentication value
-              <input value={code} onChange={(event) => setCode(event.target.value)} autoComplete="off" />
+              <input data-activity="claude_authentication" data-activity-value="private" value={code} onChange={(event) => setCode(event.target.value)} autoComplete="off" />
               <button type="button" className="btn-secondary" disabled={!code.trim()} onClick={() => void submitCode()}>Finish sign-in</button>
             </label>
           </>
@@ -399,7 +399,7 @@ function HarnessLoginPanel({ account, companyId, onVerified, onClose }: {
             <p>This screen verifies the account automatically when the browser sign-in finishes. If you opened the link on another computer, paste its complete localhost callback URL below.</p>
             <label>
               Codex callback URL
-              <input value={code} onChange={(event) => setCode(event.target.value)} autoComplete="off" />
+              <input data-activity="codex_callback" data-activity-value="private" value={code} onChange={(event) => setCode(event.target.value)} autoComplete="off" />
               <button type="button" className="btn-secondary" disabled={!code.trim()} onClick={() => void submitCode()}>Finish sign-in</button>
             </label>
           </>

@@ -518,12 +518,12 @@ export function CreateAgentModal({
           </p>
           <label>
             Agent bearer secret (for <code>Authorization: Bearer</code>)
-            <input readOnly value={installResult.agentSecret} onFocus={(e) => e.currentTarget.select()} />
+            <input data-activity-value="private" readOnly value={installResult.agentSecret} onFocus={(e) => e.currentTarget.select()} />
           </label>
           {installResult.webhookSecret ? (
             <label>
               Webhook signing secret (for <code>X-Choruz-Signature</code> verification)
-              <input readOnly value={installResult.webhookSecret} onFocus={(e) => e.currentTarget.select()} />
+              <input data-activity-value="private" readOnly value={installResult.webhookSecret} onFocus={(e) => e.currentTarget.select()} />
             </label>
           ) : null}
           <label>

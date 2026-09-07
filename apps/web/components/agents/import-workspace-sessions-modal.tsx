@@ -201,6 +201,7 @@ export function ImportWorkspaceSessionsModal({
   return (
     <>
       <Modal
+        activitySurface="Import Sessions"
         title="Import Sessions"
         description="Choose existing sessions from a folder and all of its subfolders. Nothing starts until you message an imported Agent."
         onClose={onClose}

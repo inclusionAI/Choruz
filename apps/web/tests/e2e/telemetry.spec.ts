@@ -109,7 +109,7 @@ test("import choices are recorded as controls, not input values", async ({ page 
   } finally { await deleteCompany(page, token, company.id); }
 });
 
-test("a user's send click is correlated with failure and retry without collecting the draft", async ({ page }) => {
+test("a user's draft and send click are correlated with failure and retry", async ({ page }) => {
   const { token, principal } = await login(page);
   const company = await createCompany(page, token, principal.id, uniqueName("activity-flow"));
   const db = await postgresQueryClient();
@@ -158,7 +158,7 @@ test("a user's send click is correlated with failure and retry without collectin
     expect(content.ok()).toBe(true);
     expect((await content.json()).records[0].content).toBe(draft);
     const activity = await db.query("SELECT data FROM telemetry_event WHERE principal_id=$1 AND data->>'company_id'=$2", [principal.id, company.id]);
-    expect(JSON.stringify(activity.rows)).not.toContain(draft);
+    expect(activity.rows.filter(row => row.data.control === "message_draft" && row.data.value === draft)).toHaveLength(1);
     const privateName = uniqueName("private-file") + ".txt";
     await page.locator(".chat-input-bar input[type=file]").setInputFiles({ name: privateName, mimeType: "text/plain", buffer: Buffer.from("private-file-bytes") });
     await page.getByRole("button", { name: `Remove ${privateName}`, exact: true }).click();
@@ -166,6 +166,59 @@ test("a user's send click is correlated with failure and retry without collectin
     const withFile = await db.query("SELECT data FROM telemetry_event WHERE principal_id=$1 AND data->>'company_id'=$2", [principal.id, company.id]);
     expect(JSON.stringify(withFile.rows)).not.toContain(privateName);
     expect(JSON.stringify(withFile.rows)).not.toContain("private-file-bytes");
+  } finally { await deleteCompany(page, token, company.id); }
+});
+
+test("component edits, selections and cancelled dialogs persist with semantic identity", async ({ page }) => {
+  const { token, principal } = await login(page);
+  const company = await createCompany(page, token, principal.id, uniqueName("component-activity"));
+  const db = await postgresQueryClient();
+  try {
+    const group = await createGroup(page, token, principal.id, uniqueName("component-group"), [], company.id);
+    await gotoDashboard(page);
+    await page.locator(".company-selector-btn").click();
+    await page.locator(".company-dropdown-item-name").filter({ hasText: company.name }).click();
+    await page.locator(`[data-conversation-id="${group.id}"]`).click();
+    const first = uniqueName("draft-first");
+    const second = uniqueName("draft-revised");
+    const draft = page.locator('[data-activity="message_draft"]');
+    await draft.fill(first);
+    await draft.fill(second);
+    await draft.fill("");
+    // Blur emits change as well as input; it must not duplicate the last snapshot.
+    await page.getByRole("tab", { name: "Tasks", exact: true }).click();
+    const records = () => db.query("SELECT name,occurred_at,data FROM telemetry_event WHERE principal_id=$1 AND data->>'company_id'=$2 ORDER BY occurred_at,id", [principal.id, company.id]);
+    await expect.poll(async () => (await records()).rows.filter(row => row.name === "ui_input" && row.data.control === "message_draft").map(row => row.data.value)).toEqual([first, second, ""]);
+    const edits = (await records()).rows.filter(row => row.name === "ui_input" && row.data.control === "message_draft");
+    expect(edits.every(row => row.occurred_at && row.data.conversation_id === group.id && row.data.resource === "/dashboard")).toBe(true);
+    const other = await createGroup(page, token, principal.id, uniqueName("other-component-group"), [], company.id);
+    await page.getByRole("tab", { name: "Chat", exact: true }).click();
+    await draft.fill(first);
+    await page.locator(`[data-conversation-id="${other.id}"]`).click();
+    await draft.fill(first);
+    await expect.poll(async () => (await records()).rows.filter(row => row.name === "ui_input" && row.data.conversation_id === other.id && row.data.value === first).length).toBe(1);
+
+    await page.getByRole("button", { name: "Actions menu", exact: true }).click();
+    await page.getByText("Import Sessions", { exact: true }).click();
+    await page.getByRole("dialog", { name: "Import Sessions" }).getByRole("button", { name: "Close", exact: true }).click();
+    await expect.poll(async () => (await records()).rows.filter(row => row.data.surface === "Import Sessions" && row.name.startsWith("ui_dialog_")).map(row => row.name)).toEqual(["ui_dialog_opened", "ui_dialog_closed"]);
+    expect((await records()).rows.some(row => row.name === "ui_click" && row.data.surface === "Import Sessions" && row.data.control === "Close")).toBe(true);
+
+    await page.getByRole("button", { name: "Actions menu", exact: true }).click();
+    await page.getByRole("button", { name: "Harness Accounts", exact: true }).click();
+    const accounts = page.getByRole("dialog", { name: "Harness Accounts" });
+    const harness = accounts.getByRole("combobox", { name: "Account harness" });
+    await harness.selectOption("codex_terminal");
+    await expect.poll(async () => (await records()).rows.filter(row => row.name === "ui_selection" && row.data.value === "codex_terminal").length).toBe(1);
+    await accounts.getByRole("button", { name: "Close", exact: true }).click();
+
+    await page.getByRole("button", { name: "Actions menu", exact: true }).click();
+    await page.getByText("Online", { exact: true }).click();
+    const password = uniqueName("never-collect-password");
+    await page.locator('input[type="password"]').fill(password);
+    await page.locator('input[type="password"]').blur();
+    await expect.poll(async () => (await records()).rows.filter(row => row.name === "ui_input" && row.data.value_omitted === "private").length).toBeGreaterThan(0);
+    expect(JSON.stringify((await records()).rows)).not.toContain(password);
   } finally { await deleteCompany(page, token, company.id); }
 });
 

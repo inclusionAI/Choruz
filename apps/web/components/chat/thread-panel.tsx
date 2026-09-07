@@ -164,6 +164,7 @@ export function ThreadPanel({
           if (listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight;
         }}>New replies</button>}
         <textarea
+          data-activity="thread_reply_draft"
           ref={textareaRef}
           value={draft}
           rows={2}

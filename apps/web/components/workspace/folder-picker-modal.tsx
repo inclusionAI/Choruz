@@ -234,6 +234,7 @@ export function FolderPickerModal({
 
   return (
     <Modal
+      activitySurface="Select Folder"
       title={fileExtension ? "Select File" : "Select Folder"}
       onClose={handleClose}
       closeDisabled={selectionPending}

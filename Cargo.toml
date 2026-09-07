@@ -48,7 +48,7 @@ collapsible_if = "allow"
 [workspace.package]
 edition = "2024"
 license = "MIT"
-version = "0.1.0"
+version = "0.1.2"
 
 [workspace.dependencies]
 async-trait = "0.1.89"
