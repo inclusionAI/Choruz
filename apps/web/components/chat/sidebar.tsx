@@ -62,6 +62,8 @@ export type SidebarProps = {
   open: boolean;
   principal: Principal;
   conversations: Conversation[];
+  onlineConversationIds?: ReadonlySet<string>;
+  sharedPreviews?: Record<string, { content: string; created_at: string }>;
   agents: Principal[];
   messagesByConv: Record<string, ChatMessage[]>;
   pinnedConversations: PinnedConversation[];
@@ -112,6 +114,8 @@ export function Sidebar({
   open,
   principal,
   conversations,
+  onlineConversationIds = new Set<string>(),
+  sharedPreviews = {},
   agents,
   messagesByConv,
   pinnedConversations,
@@ -292,6 +296,7 @@ export function Sidebar({
       agents,
       principal,
       messagesByConv,
+      latestActivityByConv: Object.fromEntries(Object.entries(sharedPreviews).map(([id, preview]) => [id, preview.created_at])),
       searchQuery: searchFilter,
       pinnedConversations,
       archivedConversations,
@@ -299,7 +304,7 @@ export function Sidebar({
       activeConvId,
       runtimeBindings,
     }),
-    [activeConvId, agents, archivedConversations, conversations, hiddenConversations, messagesByConv, pinnedConversations, principal, runtimeBindings, searchFilter],
+    [activeConvId, agents, archivedConversations, conversations, hiddenConversations, messagesByConv, pinnedConversations, principal, runtimeBindings, searchFilter, sharedPreviews],
   );
 
   const toggleSection = useCallback((
@@ -311,7 +316,7 @@ export function Sidebar({
       [sectionId]: !isExpanded,
     }));
   }, []);
-  const allFilteredConversationIds = sidebarSections.allFilteredConversationIds;
+  const allFilteredConversationIds = sidebarSections.allFilteredConversationIds.filter(id => !onlineConversationIds.has(id));
   const allFilteredSelected =
     allFilteredConversationIds.length > 0 &&
     allFilteredConversationIds.every((convId) => selectedConvIds.has(convId));
@@ -941,7 +946,9 @@ export function Sidebar({
                         hidePending={hidePendingConversationIds.has(item.id)}
                         pinPending={pinPendingConversationIds.has(item.id)}
                         archivePending={archivePendingConversationIds.has(item.id)}
-                        manageMode={manageMode}
+                        manageMode={manageMode && !onlineConversationIds.has(item.id)}
+                        localActions={!onlineConversationIds.has(item.id)}
+                        sharedPreview={sharedPreviews[item.id]}
                         unreadCount={unreads[item.id]?.unread ?? 0}
                         mentionCount={unreads[item.id]?.mentions ?? 0}
                         threadUnreadCount={unreads[item.id]?.threadUnread ?? 0}

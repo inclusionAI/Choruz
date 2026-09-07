@@ -350,6 +350,14 @@ pub fn router_with_runtime(
             delete(handlers_online_groups::leave),
         )
         .route(
+            "/v1/online/groups/{link_id}/agents",
+            get(handlers_online_groups::agents).post(handlers_online_groups::add_agent),
+        )
+        .route(
+            "/v1/online/groups/{link_id}/agents/{agent_id}",
+            axum::routing::delete(handlers_online_groups::remove_agent),
+        )
+        .route(
             "/v1/online/groups/{link_id}/messages",
             get(handlers_online_groups::messages).post(handlers_online_groups::send),
         )

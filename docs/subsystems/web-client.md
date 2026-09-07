@@ -111,8 +111,8 @@ does not establish abandonment, and HTTP success does not imply AI turn success.
   token. `signed_in` means authenticated, not connected to other people. Password
   fields clear after each submission and are not stored in browser persistence.
   `online-groups.tsx` creates single-person group invitations and accepts them.
-  Owners open the canonical group; guests read and send shared text in the Online
-  dialog using the shared message renderer. Connection state is separate from
+  Owners open the canonical group; guests read and send shared text in the main
+  chat pane using the shared message renderer. Connection state is separate from
   login state. Queued messages survive a closed browser through server storage.
   Leaving or removal disables sending; saved history remains readable. Files,
   terminal output and private chats are not included in the shared projection.

@@ -42,6 +42,10 @@ development. Redirects are refused. The account credential stays in the local
 `online_identity` row; API responses contain only state and public identity.
 Sign-out revokes the cloud session before removing the local row. An unavailable
 service returns an error and leaves the identity available for a retry.
+Verification throttling preserves HTTP 429 and `Retry-After`. Dashboard group
+refresh reads actor-scoped local history without verifying the cloud session;
+the Online account dialog performs explicit verification. Cloud transport still
+validates the session, so readable local history does not prove remote access.
 The request and response contract is in [OpenAPI](../../openapi/choruz.yaml).
 
 `online_groups.rs` owns one background mailbox client per signed-in local
@@ -53,6 +57,20 @@ Outgoing history advances atomically with its durable shipment; incoming frames
 are acknowledged after local inbox persistence. Guest history cursors trigger
 periodic resynchronization so relay retention expiry does not permanently skip
 canonical messages. The group owner must keep Choruz running for new replies.
+
+Joined groups appear in the dashboard's group list and open in its main chat
+pane. Online manages sign-in, invitations and leaving groups, not a separate
+chat window. Guest views use group-link endpoints rather than local conversation
+or runtime endpoints. Received-history summaries supply bounded previews and
+message counts; browser-local read counts and drafts are scoped to the local
+principal and group link. A revoked link remains readable but cannot send.
+Author context exports display names for the Agent owner, device and Harness
+account, plus the driver; it excludes credentials, profile paths and arbitrary
+metadata. Local Company selection does not change Online account membership.
+
+The guest group's Details panel manages visible, runtime-bound Agents in the link owner's local workspace through `/v1/online/groups/{link_id}/agents`. Registration remains pending until the host confirms it; conflicting names produce an actionable error. Each peer Agent has a namespaced, credentialless identity in the canonical group. The host accepts replies only from that link's active members. A guest's internal execution group uses `handlers_messages::publish_message` and the ordinary pipeline; peer identities never execute on the receiving installation. Input ids and independent durable cursors prevent history echoes from becoming repeated turns or replies. Removing an Agent stops sharing it without deleting its runtime or private DM.
+
+Structured events `online.agent_requested`, `online.agent_registration`, `online.agent_confirmed`, `online.delivery_stored`, `online.delivery_processed`, `online.delivery_rejected`, `online.message_published`, `online.agent_input_published` and `online.agent_reply_queued` identify the link, delivery, message or Agent at each boundary. `online.connection_changed`, `online.shipment_sent`, `online.shipment_accepted` and `online.protocol_rejected` distinguish transport readiness, queued writes and gateway acceptance. `online.agent_removal_received` correlates host removal with the remote Agent, local proxy and membership generation. Rejection logs name the protocol or membership failure, not just a generic failure. The guest input log connects the canonical message id to the local pipeline message id; pipeline execution logs continue from that id. These events exclude message text, encryption keys, login tokens and profile paths. Transport retries remain durable across process restarts.
 
 - `domain::Principal` ([`crates/choruz-domain/src/lib.rs`](../../crates/choruz-domain/src/lib.rs)) is the authenticated identity: `id`, `workspace_id`, `principal_type` (`human` or `agent`), `name`, `scopes`, `secret_hash`, `disabled`, `deleted_at`, `channel_visibility`, `user_id`.
 - Session token: `SessionClaims { principal_id, workspace_id, display_name, expires_at_epoch_s }` serialised as `<base64url(json)>.<base64url(hmac-sha256)>`, signed with `CHORUZ_SESSION_SECRET`, verified in constant time, and delivered either as `Authorization: Bearer <token>` or the `choruz_session` cookie (`HttpOnly; SameSite=Lax; Path=/`).

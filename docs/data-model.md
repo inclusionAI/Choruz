@@ -106,7 +106,7 @@ the canonical conversation and a guest principal without login credentials;
 a guest link stores the shared conversation identity without Company membership.
 The encryption key remains server-only. Revocation removes the host-side guest
 membership and clears queued delivery, but retains the guest's received history.
-`principal.online_guest` distinguishes these group-only humans from local login
+`principal.online_guest` distinguishes group-only human and Agent identities from local login
 identities. They cannot hold a login secret and do not reserve local usernames;
 different invited people may have the same display name.
 
@@ -116,6 +116,10 @@ tracks application processing separately. `online_group_message` holds the
 guest's text projection, unique by link/event and link/sequence. All four tables
 carry `workspace_id`; reads and mutations require the bound local actor and
 current Online account. The schema is [V048](../migrations/V048__online_groups.sql).
+
+`online_group_agent` records the link owner's explicitly shared Agent, peer identity, allowlisted display context, membership generation and pending/active/removed/error state. `online_execution_workspace` holds an internal conversation and independent input/output cursors for each `(link, Agent workspace)`, including accessible Companies. These conversations contain execution members but no local human membership, so they do not appear as duplicate sidebar groups. [V050](../migrations/V050__online_group_agents.sql) defines registrations; [V051](../migrations/V051__online_execution_workspaces.sql) defines workspace-scoped execution. Revocation removes shared Agent memberships and disables forwarding; it preserves history and existing local Agents.
+
+Registration `workspace_id` scopes ownership to the link owner's tenant; the Agent's execution workspace comes from its principal and is stored on `online_execution_workspace`.
 
 ### conversation
 

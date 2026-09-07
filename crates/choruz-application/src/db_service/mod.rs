@@ -17,6 +17,7 @@ pub(crate) mod helpers;
 mod messages;
 mod online;
 pub use online::OnlineIdentity;
+mod online_agents;
 mod online_groups;
 pub use online_groups::OnlineGroupLink;
 mod principals;

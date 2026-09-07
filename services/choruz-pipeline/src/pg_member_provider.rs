@@ -40,6 +40,7 @@ impl MemberProvider for PgMemberProvider {
                  JOIN conversation c ON c.id = cm.conv_id
                  WHERE cm.conv_id = $1
                    AND p.type = 'agent'
+                   AND NOT p.online_guest
                    AND p.workspace_id = c.workspace_id
                    AND cm.removed_at IS NULL
                    AND p.disabled = FALSE

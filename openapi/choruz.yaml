@@ -64,7 +64,7 @@ paths:
     get:
       summary: List this Online account's shared groups and invitations
       responses:
-        '200': {description: Actor-scoped group links without encryption keys}
+        '200': {description: 'Actor-scoped group links with message_count, latest_seq and a last_message preview (content limited to 200 characters, created_at); no encryption keys'}
   /v1/online/groups/invite:
     post:
       summary: Invite one Online account to an owned group
@@ -108,6 +108,33 @@ paths:
       summary: Leave a joined group or revoke an owned invitation
       responses:
         '204': {description: Local access disabled and cloud link revoked}
+  /v1/online/groups/{link_id}/agents:
+    get:
+      summary: List this user's eligible Agents and their membership in an Online guest group
+      responses:
+        '200':
+          description: Agents with id, name, status and safe error; the link must belong to the signed-in human
+    post:
+      summary: Request membership for an existing Agent owned by the guest device
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [agent_id]
+              additionalProperties: false
+              properties:
+                agent_id: { type: string }
+      responses:
+        '202':
+          description: Membership is pending until the group owner accepts the encrypted registration
+  /v1/online/groups/{link_id}/agents/{agent_id}:
+    delete:
+      summary: Stop sharing this user's Agent and queue removal on the owner device
+      responses:
+        '204':
+          description: Local execution stopped; remote membership removal queued durably
   /v1/online/groups/{link_id}/messages:
     parameters:
       - in: path
@@ -121,7 +148,7 @@ paths:
           name: after_seq
           schema: {type: integer, minimum: 0, default: 0}
       responses:
-        '200': {description: Up to 100 messages in ascending sequence}
+        '200': {description: 'Up to 100 messages in ascending sequence. Shared author context contains display-only owner_name, device_name, account_name and harness strings, never account credentials or runtime paths.'}
     post:
       summary: Queue a guest message for the owner's existing group pipeline
       requestBody:
@@ -145,6 +172,10 @@ paths:
       responses:
         '200':
           description: Signed-in account or signed-out state
+        '429':
+          description: Account verification throttled; the local identity is retained
+          headers:
+            Retry-After: {schema: {type: integer}, description: Seconds until another attempt}
     delete:
       summary: Revoke the Online session and disconnect this local identity
       responses:

@@ -268,6 +268,8 @@ export function MessageBubble({
   const prevMsg = idx > 0 ? allMsgs[idx - 1] : null;
   const isContinuation = shouldGroup(prevMsg, msg);
   const driverLabel = isAgentMsg ? "AI" : null;
+  const onlineContext = msg.metadata.online_author_context as { owner_name?: string; harness?: string; account_name?: string } | undefined;
+  const accountLabel = typeof onlineContext?.account_name === "string" ? onlineContext.account_name : runtimeAccountName;
 
   // In terminal mode, agent text responses render as terminal output too
   if (isTerminalChat && isAgentMsg && !isSelf) {
@@ -373,12 +375,14 @@ export function MessageBubble({
               {typeof msg.metadata.runtime_host_name === "string"
                 ? msg.metadata.runtime_host_name
                 : "This computer"}
-              {runtimeAccountName ? ` · ${runtimeAccountName}` : ""}
+              {accountLabel ? ` · ${accountLabel}` : ""}
             </span>
           ) : null}
           {driverLabel && (
             <span className="agent-badge">{driverLabel}</span>
           )}
+          {typeof onlineContext?.harness === "string" && <span className="agent-badge">{onlineContext.harness.replace(/_/g, " ")}</span>}
+          {typeof onlineContext?.owner_name === "string" && <span className="msg-runtime-host">Agent owner: {onlineContext.owner_name}</span>}
         </div>
         {quoteBlock}
         <div className="msg-bubble">
