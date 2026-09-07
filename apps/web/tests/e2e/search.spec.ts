@@ -316,8 +316,14 @@ test.describe("Search", () => {
     const input = page.locator('input[placeholder="Search messages…"]');
     await input.fill(content);
     const historyRoute = (url: URL) => url.pathname.endsWith(`/conversations/${group.id}/message-page`) && url.searchParams.has("before_seq");
+    const retryCursors: string[] = [];
     if (scenario === "retry") {
-      await page.route(historyRoute, (route) => route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "Owned failure" }) }), { times: 1 });
+      await page.route(historyRoute, (route) => {
+        retryCursors.push(new URL(route.request().url()).searchParams.get("before_seq")!);
+        return retryCursors.length === 1
+          ? route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "Owned failure" }) })
+          : route.continue();
+      });
     }
     if (scenario === "cancel" || scenario === "switch" || scenario === "replace" || scenario === "cancel replacement") {
       let held!: () => void;
@@ -381,9 +387,12 @@ test.describe("Search", () => {
     if (scenario === "retry") {
       const error = page.locator(".messages-area").getByRole("alert");
       await expect(error).toContainText("Could not load older messages.");
-      expect(historyCursors).toHaveLength(1);
+      // Count this navigation, not history prefetched before the route was installed.
+      expect(retryCursors).toHaveLength(1);
       await error.getByRole("button", { name: "Retry", exact: true }).click();
       await expect(error).toHaveCount(0);
+      await expect.poll(() => retryCursors.length).toBeGreaterThanOrEqual(2);
+      expect(retryCursors[1]).toBe(retryCursors[0]);
     }
 
     await expect(page.locator(`[data-msg-id="${target.id}"]`), `history cursors: ${historyCursors}`).toBeInViewport();

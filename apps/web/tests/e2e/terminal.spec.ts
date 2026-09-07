@@ -51,8 +51,15 @@ for (const driver of ["claude_terminal", "codex_terminal"]) {
       await expect(session.getByRole("status")).toHaveText("ready");
       await expect(session.getByRole("button", { name: "Stop", exact: true })).toHaveCount(0);
       await expect(session.getByRole("button", { name: "Reconnect", exact: true })).toHaveCount(0);
+      const reopened = page.waitForResponse((response) =>
+        new URL(response.url()).pathname.endsWith(`/runtime/bindings/${agent.binding.id}/session`)
+        && response.request().method() === "POST",
+      );
       await page.reload();
       await open();
+      // The region mounts before its reopen request returns. Verify replay
+      // after that owned request, not against the temporary connecting view.
+      expect((await reopened).ok()).toBeTruthy();
       await expect(session.getByText("Verified workspace on selected device", { exact: true })).toHaveCount(1);
       const beforeTerminal = await (await page.request.get(`${API_BASE}/v1/runtime/bindings/${agent.binding.id}/session`, { headers })).json();
       await session.getByRole("button", { name:"Terminal", exact:true }).click();
