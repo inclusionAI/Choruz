@@ -47,13 +47,14 @@ def probe(origin, version, timeout=60, require_metadata=True):
     deadline = time.monotonic() + timeout
     while True:
         try:
-            with urllib.request.urlopen(origin + "/healthz", timeout=5) as response:
+            headers = {"User-Agent": "Choruz-CD/1.0"}
+            with urllib.request.urlopen(urllib.request.Request(origin + "/healthz", headers=headers), timeout=5) as response:
                 health = json.load(response)
             if health.get("ok") is not True:
                 raise ValueError("gateway health is not ready")
             if require_metadata and (health.get("version") or {}).get("id") != version:
                 raise ValueError("gateway is serving a different release")
-            with urllib.request.urlopen(origin + "/v1/online/auth/get-session", timeout=5) as response:
+            with urllib.request.urlopen(urllib.request.Request(origin + "/v1/online/auth/get-session", headers=headers), timeout=5) as response:
                 if json.load(response) is not None:
                     raise ValueError("anonymous Online session response is invalid")
             return
