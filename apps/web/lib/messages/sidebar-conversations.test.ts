@@ -40,6 +40,13 @@ describe("conversationDisplayName", () => {
 });
 
 describe("buildSidebarConversationSections", () => {
+  it("sorts a shared group by its latest message without loading its history into local storage", () => {
+    const shared = conv("online:link", "group", [principal.id], { created_at: "2026-09-01T00:00:00Z" });
+    const local = conv("local", "group", [principal.id], { created_at: "2026-09-02T00:00:00Z" });
+    const result = buildSidebarConversationSections({ conversations: [local, shared], agents, principal, messagesByConv: {}, latestActivityByConv: { [shared.id]: "2026-09-03T00:00:00Z" } });
+    expect(result.group.conversations.map(item => item.id)).toEqual([shared.id, local.id]);
+  });
+
   it("partitions pinned chats once and removes them from their original sections", () => {
     const direct = conv("direct", "direct", [principal.id, activeAgent.id]);
     const group = conv("group", "group", [principal.id, activeAgent.id], {

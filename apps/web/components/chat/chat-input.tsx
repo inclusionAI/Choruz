@@ -36,6 +36,8 @@ export type ChatInputProps = {
   agents: Principal[];
   activeConv: Conversation | null;
   placeholder: string;
+  disabled?: boolean;
+  attachmentsEnabled?: boolean;
   /** Report each attachment only after its message is accepted, so a retry retains only unsent files. */
   onSendMessage: (content: string, attachments: File[], onAttachmentSent?: () => void) => Promise<void>;
   replyTo?: ReplyTo | null;
@@ -53,6 +55,8 @@ export function ChatInput({
   agents,
   activeConv,
   placeholder,
+  disabled = false,
+  attachmentsEnabled = true,
   onSendMessage,
   replyTo,
   onCancelReply,
@@ -116,7 +120,7 @@ export function ChatInput({
   }, [mentionQuery, mentionCandidates]);
 
   const sendMessage = useCallback(async () => {
-    if ((!inputText.trim() && pendingFiles.length === 0) || sending) return;
+    if ((!inputText.trim() && pendingFiles.length === 0) || sending || disabled) return;
     const sendingConversationId = activeConv?.id;
     if (!sendingConversationId) return;
     const draft = inputText;
@@ -152,25 +156,25 @@ export function ChatInput({
         activeConversationIdRef.current === sendingConversationId;
       setSending(false);
     }
-  }, [inputText, pendingFiles, sending, onSendMessage, activeConv?.id, principal.id, setPendingFilesByConversation]);
+  }, [inputText, pendingFiles, sending, disabled, onSendMessage, activeConv?.id, principal.id, setPendingFilesByConversation]);
 
   const openFilePicker = useCallback(() => {
-    if (sending) return;
+    if (sending || disabled || !attachmentsEnabled) return;
     fileInputRef.current?.click();
-  }, [sending]);
+  }, [sending, disabled, attachmentsEnabled]);
 
   const handleFileSelected = useCallback(
     (e: ChangeEvent<HTMLInputElement>) => {
       const files = Array.from(e.target.files ?? []);
       // Allow selecting the same file again later.
       e.target.value = "";
-      if (files.length === 0 || !activeConv?.id || sending) return;
+      if (files.length === 0 || !activeConv?.id || sending || disabled || !attachmentsEnabled) return;
       setPendingFilesByConversation((previous) => ({
         ...previous,
         [activeConv.id]: [...(previous[activeConv.id] ?? []), ...files],
       }));
     },
-    [activeConv?.id, sending, setPendingFilesByConversation],
+    [activeConv?.id, sending, disabled, attachmentsEnabled, setPendingFilesByConversation],
   );
 
   const removePendingFile = useCallback((index: number) => {
@@ -364,7 +368,7 @@ export function ChatInput({
         </div>
       )}
       <div className="chat-input-row">
-        <input
+        {attachmentsEnabled && <><input
           ref={fileInputRef}
           type="file"
           multiple
@@ -375,12 +379,12 @@ export function ChatInput({
         <button
           className="attach-btn"
           onClick={openFilePicker}
-          disabled={sending}
+          disabled={sending || disabled}
           title="Attach files"
           aria-label="Attach file"
         >
           <Paperclip size={18} strokeWidth={1.75} aria-hidden="true" />
-        </button>
+        </button></>}
         <textarea
           ref={textareaRef}
           rows={1}
@@ -388,12 +392,12 @@ export function ChatInput({
           value={inputText}
           onChange={handleInputChange}
           onKeyDown={handleKeyDown}
-          disabled={sending}
+          disabled={sending || disabled}
         />
         <button
           className="send-btn"
           onClick={sendMessage}
-          disabled={(!inputText.trim() && pendingFiles.length === 0) || sending}
+          disabled={(!inputText.trim() && pendingFiles.length === 0) || sending || disabled}
           aria-busy={sending}
           title="Send message"
         >

@@ -158,7 +158,7 @@ async fn peer(
     Ok(false)
 }
 
-async fn process(
+pub(crate) async fn process(
     app: &ChatApp,
     db: &DbService,
     actor: &Principal,
@@ -167,21 +167,53 @@ async fn process(
     body: &Value,
 ) -> Result<(), choruz_common::AppError> {
     match (link.role.as_str(), body["kind"].as_str()) {
+        ("host", Some("agent_join")) => db.accept_online_agent(actor, &link.id, id, body).await?,
+        ("host", Some("agent_leave")) => {
+            db.accept_online_agent_leave(
+                actor,
+                &link.id,
+                body["agent_id"].as_str().ok_or_else(|| {
+                    choruz_common::AppError::Validation("Missing Online Agent id".into())
+                })?,
+                body["generation"].as_i64().unwrap_or(0),
+            )
+            .await?
+        }
+        ("guest", Some("agent_joined")) => db.confirm_online_agent(actor, &link.id, body).await?,
         ("host", Some("join")) => {
             db.activate_online_guest(actor, &link.id, body["name"].as_str().unwrap_or(""))
                 .await?
         }
-        ("host", Some("say")) if link.status == "active" => {
+        ("host", Some("say" | "agent_say")) if link.status == "active" => {
+            let is_agent = body["kind"] == "agent_say";
             let content = body["content"]
                 .as_str()
-                .filter(|s| !s.trim().is_empty() && s.len() <= 32_000)
+                .filter(|s| {
+                    !s.trim().is_empty() && s.len() <= if is_agent { 400_000 } else { 32_000 }
+                })
                 .ok_or_else(|| {
                     choruz_common::AppError::Validation("Invalid Online message".into())
                 })?;
-            let sender = link.peer_principal_id.clone().ok_or_else(|| {
-                choruz_common::AppError::Internal("Online guest identity missing".into())
-            })?;
-            super::handlers_messages::publish_message(
+            let mut metadata = json!({"online_link_id":link.id});
+            let sender = if is_agent {
+                let (sender, context) = db
+                    .online_agent_sender(
+                        actor,
+                        &link.id,
+                        body["agent_id"].as_str().ok_or_else(|| {
+                            choruz_common::AppError::Validation("Missing Online Agent id".into())
+                        })?,
+                    )
+                    .await?;
+                metadata["online_author_context"] = json!(context);
+                metadata["runtime_host_name"] = json!(context.device_name);
+                sender
+            } else {
+                link.peer_principal_id.clone().ok_or_else(|| {
+                    choruz_common::AppError::Internal("Online guest identity missing".into())
+                })?
+            };
+            let message = super::handlers_messages::publish_message(
                 app,
                 db,
                 SendMessageRequest {
@@ -190,11 +222,12 @@ async fn process(
                     idempotency_key: format!("online:{}:{id}", link.id),
                     content: content.into(),
                     content_type: "text".into(),
-                    metadata: json!({"online_link_id":link.id}),
-                    trace_id: None,
+                    metadata,
+                    trace_id: Some(id.into()),
                 },
             )
             .await?;
+            tracing::info!(event="online.message_published",link_id=%link.id,delivery_id=id,message_id=%message.id,conversation_id=%message.conversation_id,agent=is_agent,"Online message entered the group pipeline");
         }
         ("host", Some("sync")) => {
             db.rewind_online_history(actor, &link.id, body["after"].as_i64().unwrap_or(-1))
@@ -207,7 +240,9 @@ async fn process(
             ));
         }
     }
-    db.online_processed(actor, id).await
+    db.online_processed(actor, id).await?;
+    tracing::info!(event="online.delivery_processed",link_id=%link.id,delivery_id=id,kind=body["kind"].as_str().unwrap_or("invalid"),"Online delivery processed");
+    Ok(())
 }
 
 async fn maintain(
@@ -221,8 +256,13 @@ async fn maintain(
     let mut interval = tokio::time::interval(Duration::from_secs(3));
     let mut cleaned = HashSet::new();
     let mut tick = 0u64;
+    let mut connection = client.status.clone();
     loop {
         tokio::select! {
+            changed=connection.changed()=> {
+                if changed.is_err() { break; }
+                tracing::info!(event="online.connection_changed",principal_id=%actor.id,device_id=%identity.device_id,status=?*connection.borrow_and_update(),"Online transport state changed");
+            }
             event=events.recv()=> {
                 let Some(event)=event else { break };
                 let result=async {
@@ -234,11 +274,16 @@ async fn maintain(
                             if link.peer_account_id.as_deref()!=Some(&delivery.sender) { return Err(choruz_common::AppError::Forbidden("Online sender mismatch".into())); }
                             let body=delivery.open(&link.encryption_key,&identity.account_id).map_err(|_|choruz_common::AppError::Forbidden("Invalid encrypted group delivery".into()))?;
                             db.receive_online(&actor,&link.id,&delivery.id,&body).await?;
+                            tracing::info!(event="online.delivery_stored",link_id=%link.id,delivery_id=%delivery.id,kind=body["kind"].as_str().unwrap_or("invalid"),"Encrypted Online delivery persisted before acknowledgement");
                             client.acknowledge(&delivery.id).await.map_err(choruz_common::AppError::Internal)?;
                         }
-                        Event::Accepted(id)=>db.online_accepted(&actor,&id).await?,
+                        Event::Accepted(id)=> {
+                            db.online_accepted(&actor,&id).await?;
+                            tracing::info!(event="online.shipment_accepted",principal_id=%actor.id,delivery_id=%id,"Gateway accepted encrypted shipment");
+                        },
                         Event::Revoked(id)=> { for link in db.online_groups(&actor).await?.into_iter().filter(|l|l.channel_id==id) { db.revoke_online_group(&actor,&link.id).await?; } },
                         Event::Rejected{id,reason}=>tracing::warn!(message_id=%id,reason=%reason,"Online shipment not accepted; retained for retry"),
+                        Event::ProtocolRejected=>tracing::warn!(event="online.protocol_rejected",principal_id=%actor.id,"Gateway rejected the Online wire protocol; shipments retained for retry"),
                     }
                     Ok::<_,choruz_common::AppError>(())
                 }.await;
@@ -264,9 +309,20 @@ async fn maintain(
                             let current=db.online_group(&actor,&link.id).await?;
                             match process(&app,&db,&actor,&current,&id,&body).await {
                                 Ok(())=>{},
-                                Err(choruz_common::AppError::Validation(_)|choruz_common::AppError::Forbidden(_))=> { db.online_processed(&actor,&id).await?; tracing::warn!(message_id=%id,"Online message rejected by group permission or protocol"); },
+                                Err(e @ (choruz_common::AppError::Validation(_)|choruz_common::AppError::Forbidden(_)))=> { db.online_processed(&actor,&id).await?; tracing::warn!(event="online.delivery_rejected",link_id=%link.id,delivery_id=%id,kind=body["kind"].as_str().unwrap_or("invalid"),reason=%e,"Online message rejected by group permission or protocol"); },
                                 Err(e)=>return Err(e),
                             }
+                        }
+                        if link.role=="guest"&&link.status=="active" {
+                            for _ in 0..20 {
+                                let Some(input)=db.next_online_agent_input(&actor,&link.id).await? else {break};
+                                let seq=input.metadata["online_seq"].as_i64().unwrap_or(0);
+                                let shared_id=input.metadata["online_message_id"].as_str().unwrap_or("").to_owned();
+                                let message=super::handlers_messages::publish_message(&app,&db,input).await?;
+                                db.finish_online_agent_input(&actor,&link.id,&message.conversation_id,seq).await?;
+                                tracing::info!(event="online.agent_input_published",link_id=%link.id,shared_message_id=%shared_id,message_id=%message.id,conversation_id=%message.conversation_id,seq,"Shared message entered the guest's normal Agent pipeline");
+                            }
+                            db.queue_online_agent_replies(&actor,&link.id).await?;
                         }
                         db.queue_online_history(&actor,&link.id).await?;
                         let current=db.online_group(&actor,&link.id).await?;
@@ -276,6 +332,7 @@ async fn maintain(
                                 if budget==0 { break; }
                                 budget-=1;
                                 tokio::time::timeout(Duration::from_secs(2),client.send(&id,&link.channel_id,recipient,&identity.account_id,&link.encryption_key,body)).await.map_err(|_|choruz_common::AppError::Internal("Online send queue is busy".into()))?.map_err(choruz_common::AppError::Internal)?;
+                                tracing::info!(event="online.shipment_sent",link_id=%link.id,delivery_id=%id,"Online shipment queued on encrypted transport");
                             }
                         }
                         Ok::<_,choruz_common::AppError>(())

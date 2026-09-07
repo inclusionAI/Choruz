@@ -189,6 +189,7 @@ pub(crate) async fn session(
             .map_err(|_| AppError::Internal("Invalid Online session response".into()))?;
         value["user"]["id"].as_str() == Some(&identity.account_id)
     } else {
+        tracing::warn!(event="online.session_verification_failed",principal_id=%actor.id,http_status=response.status().as_u16(),"Account service did not verify the Online session");
         return Err(AppError::Internal("Online session verification failed".into()).into());
     };
     Ok(Json(

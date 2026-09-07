@@ -57,6 +57,7 @@ export type BuildSidebarConversationSectionsInput = {
   agents: Principal[];
   principal: Principal;
   messagesByConv: Record<string, ChatMessage[]>;
+  latestActivityByConv?: Record<string, string>;
   searchQuery?: string | null;
   pinnedConversations?: PinnedConversation[];
   archivedConversations?: ArchivedConversation[];
@@ -92,6 +93,7 @@ export function buildSidebarConversationSections({
   agents,
   principal,
   messagesByConv,
+  latestActivityByConv = {},
   searchQuery,
   pinnedConversations = [],
   archivedConversations = [],
@@ -131,7 +133,7 @@ export function buildSidebarConversationSections({
         pinnedAt,
         isArchived: archivedAt !== null,
         archivedAt,
-        latestActivityAt: latestActivityAt(conversation, messagesByConv),
+        latestActivityAt: latestActivityByConv[conversation.id] ?? latestActivityAt(conversation, messagesByConv),
         isActive: conversation.id === activeConvId,
         isTerminalDirectMessage: isTerminalDirectMessage(
           conversation,

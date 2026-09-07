@@ -44,6 +44,7 @@ pub enum Event {
     Accepted(String),
     Rejected { id: String, reason: String },
     Revoked(String),
+    ProtocolRejected,
 }
 
 #[derive(Clone)]
@@ -77,6 +78,9 @@ impl Client {
         key: &str,
         body: Value,
     ) -> Result<(), String> {
+        if uuid::Uuid::parse_str(id).is_err() || id.len() != 36 {
+            return Err("Online shipment ID must be a UUID".into());
+        }
         let inner =
             json!({"id":id,"channel":channel,"recipient":recipient,"sender":sender,"body":body});
         if inner.to_string().len() > 600_000 {
@@ -218,6 +222,7 @@ async fn connection(
                             Some("accepted") => Some(Event::Accepted(value["id"].as_str().ok_or(())?.into())),
                             Some("rejected") => Some(Event::Rejected { id: value["id"].as_str().ok_or(())?.into(), reason: value["reason"].as_str().ok_or(())?.into() }),
                             Some("revoked") => Some(Event::Revoked(value["channel"].as_str().ok_or(())?.into())),
+                            Some("error") => Some(Event::ProtocolRejected),
                             _ => return Err(()),
                         };
                         if let Some(event) = event { events.send(event).await.map_err(|_| ())?; }
@@ -233,6 +238,25 @@ async fn connection(
 mod tests {
     use super::*;
     use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+
+    #[tokio::test]
+    async fn rejects_invalid_shipment_ids_before_transport() {
+        let (outbound, mut queued) = mpsc::channel(1);
+        let (_, status) = watch::channel(Status::Connected);
+        let client = Client { outbound, status };
+        let result = client
+            .send(
+                "agent-ack:invalid",
+                "channel",
+                "peer",
+                "sender",
+                "unused",
+                json!({}),
+            )
+            .await;
+        assert_eq!(result.unwrap_err(), "Online shipment ID must be a UUID");
+        assert!(queued.try_recv().is_err());
+    }
 
     #[test]
     fn sealed_delivery_authenticates_every_routing_field() {

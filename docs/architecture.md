@@ -65,8 +65,7 @@ Online group guests enter this flow through a separate encrypted account mailbox
 not Remote Control. The owner's API process persists a received group message
 before acknowledgement and submits it to `DbService::send_message` as the invited
 human. Canonical text and Agent replies return through the mailbox to a guest-side
-history projection. The owner remains the sole ordering and Agent execution
-authority; the invitation grants no device access. See the
+history projection. The owner remains the sole ordering authority. Each guest can explicitly share its own Agents; received messages enter an internal local group through the same pipeline, and only those Agents' replies return to the owner. Credentialless peer Agents are excluded from local execution. The invitation grants no device access. See the
 [gateway subsystem](subsystems/api-gateway.md#data) for lifecycle and recovery.
 
 Dispatch serialises work per agent: `PgSessionStore::find_pending_commands` (`crates/choruz-session/src/store.rs`) skips a pending command while the same agent has a command in `leased`, `started`, `heartbeating` or `retry_scheduled`, orders the rest fairly across agents (index `idx_agent_commands_pending_fair`, `migrations/V022__idx_agent_commands_pending_fair.sql`), and the dispatch loop batches several pending messages for one idle agent into a single turn.

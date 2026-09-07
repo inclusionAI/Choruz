@@ -58,6 +58,8 @@ export type ConversationListItemProps = {
    * conversation, via POST /threads/{root}/view. */
   threadUnreadCount?: number;
   hideEmptyPreview?: boolean;
+  localActions?: boolean;
+  sharedPreview?: { content: string; created_at: string };
   onSelect: () => void;
   onToggleSelection: () => void;
   onTogglePin: (nextPinned: boolean) => void;
@@ -86,6 +88,8 @@ export function ConversationListItem({
   mentionCount,
   threadUnreadCount = 0,
   hideEmptyPreview = false,
+  localActions = true,
+  sharedPreview,
   onSelect,
   onToggleSelection,
   onTogglePin,
@@ -94,13 +98,13 @@ export function ConversationListItem({
 }: ConversationListItemProps) {
   const name = conversationDisplayName(conv, principal, agents);
   const lastMsg = messages[messages.length - 1];
-  const preview = conversationPreviewText({
+  const preview = sharedPreview?.content ?? conversationPreviewText({
     messages,
     principal,
     agents,
     hideEmptyPlaceholder: hideEmptyPreview,
   });
-  const time = lastMsg ? relativeTime(lastMsg.created_at) : "";
+  const time = sharedPreview ? relativeTime(sharedPreview.created_at) : lastMsg ? relativeTime(lastMsg.created_at) : "";
 
   const handleClick = () => {
     if (manageMode) {
@@ -161,7 +165,7 @@ export function ConversationListItem({
       role="listitem"
       className={`conv-item${isActive && !manageMode ? " active" : ""}${isSelected ? " selected" : ""}${isPinned ? " pinned" : ""}`}
     >
-      {manageMode && (
+      {manageMode && localActions && (
         <input
           type="checkbox"
           checked={isSelected}
@@ -211,7 +215,7 @@ export function ConversationListItem({
           <span className="conv-kind-badge">group</span>
         )}
       </div>
-      {!manageMode && (
+      {!manageMode && localActions && (
         <div className="conv-item-actions">
           {!isArchived && (
             <button

@@ -353,6 +353,16 @@ impl DbService {
         // 2. Check membership; auto-join agents
         let mut client = self.store.connect().await?;
 
+        // A late reply must not auto-rejoin an Agent removed from an Online execution group.
+        if matches!(actor.principal_type, PrincipalType::Agent) {
+            let denied=client.query_opt("SELECT 1 FROM online_execution_workspace x JOIN online_group_link l ON l.id=x.link_id JOIN principal p ON p.id=$2 WHERE x.conversation_id=$1 AND NOT p.online_guest AND (l.status<>'active' OR NOT EXISTS(SELECT 1 FROM online_group_agent a WHERE a.link_id=l.id AND a.agent_id=p.id AND a.status='active'))", &[&conv.id,&actor.id]).await.map_err(|_|AppError::Internal("Check Online Agent membership".into()))?;
+            if denied.is_some() {
+                return Err(AppError::Forbidden(
+                    "This Agent is no longer shared in the Online group".into(),
+                ));
+            }
+        }
+
         if !conv.members.contains_key(&actor.id) {
             if matches!(actor.principal_type, PrincipalType::Agent) {
                 // Auto-join agent as member
@@ -647,7 +657,7 @@ impl DbService {
         let agent_rows = tx
             .query(
                 "SELECT id, name FROM principal
-                 WHERE id = ANY($1) AND type = 'agent' AND disabled = FALSE",
+                 WHERE id = ANY($1) AND type = 'agent' AND disabled = FALSE AND NOT online_guest",
                 &[&member_ids],
             )
             .await

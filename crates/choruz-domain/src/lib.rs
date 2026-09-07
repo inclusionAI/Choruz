@@ -150,6 +150,18 @@ pub struct OnlineSharedMessage {
     pub own: bool,
     pub content: String,
     pub created_at: DateTime<Utc>,
+    #[serde(default)]
+    pub author_context: OnlineAuthorContext,
+}
+
+/// Display labels only; group membership does not confer runtime authority.
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct OnlineAuthorContext {
+    pub owner_name: Option<String>,
+    pub device_name: Option<String>,
+    pub account_name: Option<String>,
+    pub harness: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

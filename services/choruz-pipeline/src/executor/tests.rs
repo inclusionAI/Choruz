@@ -1191,7 +1191,9 @@ async fn local_cli_failures_are_classified_for_bounded_recovery() {
                 write_fake_cli_body(&cli_path, body);
             }
             let mut config = PipelineConfig::from_env();
-            config.executor_timeout_secs = 1;
+            // Only the hung-child case tests the deadline. Other cases await
+            // process exit and stderr classification, including on a busy runner.
+            config.executor_timeout_secs = if failure.label == "timeout" { 1 } else { 30 };
             config.sandbox_base_dir = sandbox_dir.display().to_string();
             config.gateway_base_url = "http://127.0.0.1:9".into();
             config.claude_cli_path = tmp.path().join("unused-claude").display().to_string();

@@ -53,6 +53,7 @@ import { pixelWorldSidebarAction } from "../../plugins/pixel-world/client";
 import { remoteSshSidebarAction, RemoteSshModal } from "../../plugins/remote-ssh/client";
 import { remoteControlSidebarAction, RemoteControlModal, RuntimeHostsModal } from "../../plugins/remote-control/client";
 import { OnlineModal } from "../online/online-modal";
+import { OnlineConversation, onlineConversation, onlineConversationId, useOnlineGroups } from "../online/online-conversation";
 import { ImportWorkspaceSessionsModal } from "../agents/import-workspace-sessions-modal";
 import type { RuntimeHost } from "../../lib/remote/remote-control";
 import { resolveClientPluginIds } from "../../plugins/registry";
@@ -154,6 +155,9 @@ function messageTraceId(msg: ChatMessage): string | undefined {
 export function ChatApp({ initialSnapshot, sessionToken, runtimeBindings: initialBindings, initialCompanies = [], gatewayBaseUrl, initialActiveConversationId = null, initialActiveConversationView = "chat", initialMessageActionsOpen = false, initialSyncCursor = 0, initialBootstrapNextCursor = null, initialBootstrapHasMore = false }: ChatAppProps) {
   // ---- State ----
   const principal = initialSnapshot.principal;
+  const online = useOnlineGroups(sessionToken, principal.id);
+  const onlineConversations = useMemo(() => online.groups.map(group => onlineConversation(group, principal)), [online.groups, principal]);
+  const onlineIds = useMemo(() => new Set(onlineConversations.map(conversation => conversation.id)), [onlineConversations]);
   const [knownPrincipals, setKnownPrincipals] = useState<Principal[]>(
     mergeKnownPrincipals(initialSnapshot.principals ?? [], [
       initialSnapshot.principal,
@@ -425,12 +429,14 @@ export function ChatApp({ initialSnapshot, sessionToken, runtimeBindings: initia
       : [],
   );
   const [activeTabId, setActiveTabId] = useState<string | null>(initialActiveConversationId); // convId or filePath
+  const activeOnline = online.groups.find(group => onlineConversationId(group.id) === activeTabId);
   const [activeConversationView, setActiveConversationView] = useState<"chat" | "tasks">(initialActiveConversationView);
   useEffect(() => {
     if (activeTabId !== activeConvId || activeConversationView !== "chat") setSearchTarget(null);
   }, [activeTabId, activeConvId, activeConversationView]);
 
   const selectCompany = useCallback((companyId: string) => {
+    try { localStorage.removeItem(`choruz_active_online:${principal.id}`); } catch {}
     const visibleConversationIds = new Set(
       conversations
         .filter((conversation) => conversation.workspace_id === companyId)
@@ -491,16 +497,19 @@ export function ChatApp({ initialSnapshot, sessionToken, runtimeBindings: initia
 
   // Close any tab
   const closeTab = useCallback((id: string) => {
-    setOpenTabs(prev => {
-      const filtered = prev.filter(t => tabId(t) !== id);
-      return filtered;
-    });
-    setActiveTabId(prev => {
-      if (prev !== id) return prev;
-      // Switch to most recent remaining tab, or the active conversation
-      return activeConvId;
-    });
-  }, [activeConvId]);
+    const remaining = openTabs.filter(tab => tabId(tab) !== id);
+    setOpenTabs(remaining);
+    if (activeTabId !== id) return;
+    const next = remaining.at(-1);
+    const nextId = next ? tabId(next) : null;
+    setActiveTabId(nextId);
+    setActiveConvId(next?.type === "conv" && !next.convId.startsWith("online:") ? next.convId : null);
+    setShowDetail(false);
+    try {
+      if (next?.type === "conv" && next.convId.startsWith("online:")) localStorage.setItem(`choruz_active_online:${principal.id}`, next.convId);
+      else localStorage.removeItem(`choruz_active_online:${principal.id}`);
+    } catch {}
+  }, [openTabs, activeTabId, principal.id]);
 
   // Stable ref for activeConvId so WS handler can read it without being
   // a dependency (which would thrash the callback on every selection).
@@ -724,6 +733,13 @@ export function ChatApp({ initialSnapshot, sessionToken, runtimeBindings: initia
     // locally selected conversation.
     try {
       const requested = new URLSearchParams(window.location.search).get("conversationId");
+      const savedOnline = localStorage.getItem(`choruz_active_online:${principal.id}`);
+      if (!requested && !initialActiveConversationId && savedOnline?.startsWith("online:")) {
+        setActiveConvId(null);
+        setActiveTabId(savedOnline);
+        setOpenTabs([{ type: "conv", convId: savedOnline }]);
+        return;
+      }
       const hiddenConversationIds = new Set(
         (initialSnapshot.hidden_conversations ?? []).map((hidden) => hidden.conversation_id),
       );
@@ -1297,6 +1313,18 @@ export function ChatApp({ initialSnapshot, sessionToken, runtimeBindings: initia
   // ---- Select conversation ----
   const selectConversation = useCallback(
     (convId: string) => {
+      if (convId.startsWith("online:")) {
+        trace.event("select_online_conversation", { conversation_id: convId });
+        trackEvent("switch_conversation", { conversation_id: convId });
+        try { localStorage.setItem(`choruz_active_online:${principal.id}`, convId); } catch {}
+        setActiveConvId(null);
+        setActiveTabId(convId);
+        setShowDetail(false);
+        setOpenTabs(previous => previous.some(tab => tab.type === "conv" && tab.convId === convId) ? previous : [...previous, { type: "conv", convId }]);
+        setShowSidebar(false);
+        return;
+      }
+      try { localStorage.removeItem(`choruz_active_online:${principal.id}`); } catch {}
       const span = trace.start("select_conversation", { convId });
       setActiveConvId(convId);
       const conv = conversations.find((conversation) => conversation.id === convId);
@@ -1985,7 +2013,9 @@ export function ChatApp({ initialSnapshot, sessionToken, runtimeBindings: initia
       <Sidebar
         open={showSidebar}
         principal={principal}
-        conversations={companyConversations}
+        conversations={[...companyConversations, ...onlineConversations]}
+        onlineConversationIds={onlineIds}
+        sharedPreviews={online.previews}
         agents={companyAgents}
         messagesByConv={messagesByConv}
         pinnedConversations={sidebarPinnedConversations}
@@ -1995,7 +2025,7 @@ export function ChatApp({ initialSnapshot, sessionToken, runtimeBindings: initia
         pinPendingConversationIds={flags.pendingPinIds}
         archivePendingConversationIds={flags.pendingArchiveIds}
         hidePendingConversationIds={flags.pendingHiddenIds}
-        activeConvId={activeConvId}
+        activeConvId={activeOnline ? activeTabId : activeConvId}
         onTogglePin={flags.togglePin}
         onToggleArchive={flags.toggleArchive}
         onRestoreHiddenSession={flags.restore}
@@ -2052,7 +2082,7 @@ export function ChatApp({ initialSnapshot, sessionToken, runtimeBindings: initia
         onRenameCompany={renameCompany}
         onChangeCompanyWorkspace={changeCompanyWorkspace}
         onOpenCompanyMachines={remoteControlEnabled ? setMachinesCompanyId : undefined}
-        unreads={unreads}
+        unreads={{ ...unreads, ...online.unreads }}
         style={{ "--sidebar-width": `${sidebarResize.width}px` } as CSSProperties}
         extraClassName={sidebarResize.resizing ? "resizing" : undefined}
         onOpenFile={openFile}
@@ -2070,7 +2100,7 @@ export function ChatApp({ initialSnapshot, sessionToken, runtimeBindings: initia
               const id = tab.type === 'conv' ? tab.convId : tab.path;
               const isActive = activeTabId === id;
               const label = tab.type === 'conv'
-                ? (() => { const c = conversations.find(c => c.id === tab.convId); return c ? conversationDisplayName(c, principal, agents) : 'Chat'; })()
+                ? (() => { const c = [...conversations, ...onlineConversations].find(c => c.id === tab.convId); return c ? conversationDisplayName(c, principal, agents) : 'Chat'; })()
                 : tab.path.split('/').pop() || 'File';
               const isConv = tab.type === 'conv';
               return (
@@ -2081,7 +2111,7 @@ export function ChatApp({ initialSnapshot, sessionToken, runtimeBindings: initia
                     onClick={() => {
                       trace.event("switch_tab", { tabId: id, tabType: isConv ? "conv" : "file", label });
                       setActiveTabId(id);
-                      if (isConv) setActiveConvId(tab.convId);
+                      if (isConv) selectConversation(tab.convId);
                     }}
                   >
                     <span className="editor-tab-icon" aria-hidden="true">
@@ -2108,7 +2138,22 @@ export function ChatApp({ initialSnapshot, sessionToken, runtimeBindings: initia
 
         {/* Show chat or file editor based on active tab */}
         {/* Show chat when active tab is a conversation (or no tab selected), file editor when it's a file */}
-        {!openTabs.some(t => t.type === 'file' && tabId(t) === activeTabId) ? (
+        {activeOnline ? (
+          <OnlineConversation
+            key={activeOnline.id}
+            link={activeOnline}
+            principal={principal}
+            sessionToken={sessionToken}
+            onToggleSidebar={() => setShowSidebar(value => !value)}
+            onManage={() => setShowOnline(true)}
+            onViewed={online.viewed}
+          />
+        ) : activeTabId?.startsWith("online:") ? (
+          <div className="empty-state">
+            <p>{online.loading ? "Loading Online group…" : online.error ?? "This Online group is not available. Check your Online account."}</p>
+            <button type="button" onClick={() => setShowOnline(true)}>Manage Online account</button>
+          </div>
+        ) : !openTabs.some(t => t.type === 'file' && tabId(t) === activeTabId) ? (
           <>
             <ChatHeader
               activeConv={activeConv}
@@ -2336,7 +2381,7 @@ export function ChatApp({ initialSnapshot, sessionToken, runtimeBindings: initia
           onClose={() => setShowRemoteControl(false)}
         />
       )}
-      {showOnline && <OnlineModal sessionToken={sessionToken} principal={principal} conversations={conversations} onOpenConversation={(id) => { selectConversation(id); setShowOnline(false); }} onClose={() => setShowOnline(false)} />}
+      {showOnline && <OnlineModal sessionToken={sessionToken} principal={principal} conversations={conversations} onOpenConversation={(id) => { online.refresh(); selectConversation(id); setShowOnline(false); }} onClose={() => { online.refresh(); setShowOnline(false); }} />}
       {remoteControlEnabled && machinesCompanyId && (() => {
         const company = companies.find((item) => item.id === machinesCompanyId);
         return company ? (

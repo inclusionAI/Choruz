@@ -17,7 +17,7 @@ and webhook dispatch; the existing pipeline remains the only Agent execution
 owner. A separate local link id avoids confusing the two installations' records
 with the cloud channel.
 Invited display names do not reserve local usernames. A database constraint
-keeps these marked guest principals human and credential-free; local username
+keeps these marked guest principals credential-free; local username
 lookup excludes them even when an invited name matches an existing account.
 The owner's chat renders author names from bootstrap principals, not only the
 Agent catalog. Guest humans retain human styling in messages and threads.
@@ -60,5 +60,7 @@ CLI acceptance is a separate requirement.
 
 ## Related
 
+- [Guest-owned Agent execution](2026-09-06-online-guests-share-their-own-agents.md) extends participation while retaining canonical ordering and group-only authority.
 - [Online transport](2026-09-06-online-mail-is-not-runtime-control.md)
+- [Workspace chat presentation](2026-09-06-online-groups-share-the-workspace-chat.md)
 - [Data model](../../../../docs/data-model.md#online-group-storage)

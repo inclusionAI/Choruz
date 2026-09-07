@@ -58,14 +58,51 @@ pub(crate) struct Cursor {
     after_seq: i64,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct AgentSelection {
+    agent_id: String,
+}
+
+pub(crate) async fn agents(
+    headers: HeaderMap,
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let (actor, _) = identity(&headers, &state).await?;
+    Ok(Json(state.db.online_agents(&actor, &id).await?))
+}
+pub(crate) async fn add_agent(
+    headers: HeaderMap,
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+    Json(input): Json<AgentSelection>,
+) -> Result<StatusCode, ApiError> {
+    let (actor, _) = identity(&headers, &state).await?;
+    state
+        .db
+        .add_online_agent(&actor, &id, &input.agent_id)
+        .await?;
+    Ok(StatusCode::ACCEPTED)
+}
+pub(crate) async fn remove_agent(
+    headers: HeaderMap,
+    State(state): State<ApiState>,
+    Path((id, agent)): Path<(String, String)>,
+) -> Result<StatusCode, ApiError> {
+    let (actor, _) = identity(&headers, &state).await?;
+    state.db.remove_online_agent(&actor, &id, &agent).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 pub(crate) async fn list(
     headers: HeaderMap,
     State(state): State<ApiState>,
 ) -> Result<Json<Value>, ApiError> {
     let (actor, _) = identity(&headers, &state).await?;
-    let links = state.db.online_groups(&actor).await?;
+    let links = state.db.online_group_summaries(&actor).await?;
     Ok(Json(
-        json!({"groups":links.iter().map(OnlineGroupLink::summary).collect::<Vec<_>>(),"connection":state.online.status(&actor.id)}),
+        json!({"groups":links,"connection":state.online.status(&actor.id)}),
     ))
 }
 

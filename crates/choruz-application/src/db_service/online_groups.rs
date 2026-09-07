@@ -1,6 +1,8 @@
 use super::{DbService, OnlineIdentity};
 use choruz_common::{AppError, new_id};
-use choruz_domain::{ConversationType, OnlineSharedMessage, Principal, PrincipalType};
+use choruz_domain::{
+    ConversationType, OnlineAuthorContext, OnlineSharedMessage, Principal, PrincipalType,
+};
 use serde_json::{Value, json};
 
 /// Server material; the encryption key is never part of a group-list response.
@@ -116,6 +118,42 @@ impl DbService {
         Ok(client.query("SELECT l.* FROM online_group_link l JOIN online_identity i ON i.principal_id=l.principal_id AND i.account_id=l.account_id WHERE l.principal_id=$1 AND l.workspace_id=$2 ORDER BY l.created_at", &[&actor.id,&actor.workspace_id]).await.map_err(storage)?.into_iter().map(row).collect())
     }
 
+    pub async fn online_group_summaries(&self, actor: &Principal) -> Result<Vec<Value>, AppError> {
+        let client = self.store.connect().await?;
+        let rows = client
+            .query(
+                "SELECT l.*,
+                (SELECT COUNT(*) FROM online_group_message m
+                 WHERE m.link_id=l.id AND m.workspace_id=l.workspace_id) AS message_count,
+                (SELECT COALESCE(MAX(server_seq),0) FROM online_group_message m
+                 WHERE m.link_id=l.id AND m.workspace_id=l.workspace_id) AS latest_seq,
+                (SELECT jsonb_build_object('content', left(m.body->>'content', 200),
+                                          'created_at', m.body->>'created_at')
+                 FROM online_group_message m
+                 WHERE m.link_id=l.id AND m.workspace_id=l.workspace_id
+                 ORDER BY m.server_seq DESC LIMIT 1) AS last_message
+             FROM online_group_link l
+             JOIN online_identity i ON i.principal_id=l.principal_id AND i.account_id=l.account_id
+             WHERE l.principal_id=$1 AND l.workspace_id=$2 ORDER BY l.created_at",
+                &[&actor.id, &actor.workspace_id],
+            )
+            .await
+            .map_err(storage)?;
+        Ok(rows
+            .into_iter()
+            .map(|record| {
+                let count: i64 = record.get("message_count");
+                let latest: i64 = record.get("latest_seq");
+                let preview: Option<Value> = record.get("last_message");
+                let mut summary = row(record).summary();
+                summary["message_count"] = json!(count);
+                summary["latest_seq"] = json!(latest);
+                summary["last_message"] = json!(preview);
+                summary
+            })
+            .collect())
+    }
+
     pub async fn online_group(
         &self,
         actor: &Principal,
@@ -224,6 +262,13 @@ impl DbService {
         if link.role == "host" {
             tx.execute("UPDATE conversation_member SET removed_at=NOW() WHERE conv_id=$1 AND principal_id=$2", &[&link.conversation_id,&link.peer_principal_id]).await.map_err(storage)?;
         }
+        tx.execute("UPDATE conversation_member SET removed_at=NOW() WHERE (conv_id=$1 OR conv_id IN (SELECT conversation_id FROM online_execution_workspace WHERE link_id=$2)) AND principal_id IN (SELECT agent_id FROM online_group_agent WHERE link_id=$2)", &[&link.conversation_id,&link.id]).await.map_err(storage)?;
+        tx.execute(
+            "UPDATE online_group_agent SET status='removed' WHERE link_id=$1",
+            &[&link.id],
+        )
+        .await
+        .map_err(storage)?;
         tx.execute("INSERT INTO audit_log(id,workspace_id,actor_id,action,target_type,target_id,metadata) VALUES($1,$2,$3,'online.group_revoked','online_group',$4,'{}')", &[&new_id(),&actor.workspace_id,&actor.id,&link.id]).await.map_err(storage)?;
         tx.commit().await.map_err(storage)
     }
@@ -445,6 +490,15 @@ impl DbService {
                     || parsed.sender_id.len() > 100
                     || parsed.sender_name.len() > 200
                     || parsed.content.len() > 400_000
+                    || [
+                        &parsed.author_context.owner_name,
+                        &parsed.author_context.device_name,
+                        &parsed.author_context.account_name,
+                        &parsed.author_context.harness,
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .any(|value| value.len() > 200 || value.chars().any(char::is_control))
                 {
                     return Err(AppError::Validation("Invalid shared message fields".into()));
                 }
@@ -505,23 +559,45 @@ impl DbService {
             .online_identity(actor)
             .await?
             .ok_or_else(|| AppError::Forbidden("Online signed out".into()))?;
+        let client = self.store.connect().await?;
         for m in page.messages {
             let sender = self.get_principal(&m.sender_id).await?;
+            let mut author_context = OnlineAuthorContext::default();
+            if sender.principal_type == PrincipalType::Agent {
+                author_context.owner_name = Some(identity.display_name.clone());
+                let binding = client.query_opt(
+                    "SELECT b.driver_type, b.config_json->>'harness_account_name' AS account_name,
+                            h.name AS device_name
+                     FROM agent_runtime_bindings b
+                     JOIN principal p ON p.id=b.agent_principal_id
+                     LEFT JOIN runtime_host h ON h.id=b.config_json->>'runtime_host_id'
+                                              AND h.company_id=p.workspace_id
+                     WHERE b.agent_principal_id=$1 AND p.workspace_id=$2
+                     ORDER BY (b.conversation_id=$3) DESC,
+                              (b.config_json->>'is_primary'='true') DESC NULLS LAST,
+                              b.created_at LIMIT 1",
+                    &[&sender.id, &conv.workspace_id, &conv.id],
+                ).await.map_err(storage)?;
+                if let Some(binding) = binding {
+                    author_context.device_name = Some(
+                        binding
+                            .get::<_, Option<String>>("device_name")
+                            .unwrap_or_else(|| "Group owner's device".into()),
+                    );
+                    author_context.account_name = binding.get("account_name");
+                    author_context.harness = Some(binding.get("driver_type"));
+                }
+            }
+            if let Some(peer_agent)=client.query_opt("SELECT context FROM online_group_agent WHERE agent_id=$1 AND link_id IN (SELECT id FROM online_group_link WHERE conversation_id=$2 AND role='host') LIMIT 1", &[&sender.id,&conv.id]).await.map_err(storage)? {
+                author_context=serde_json::from_value(peer_agent.get(0)).map_err(|_|AppError::Internal("Invalid stored Online Agent attribution".into()))?;
+            }
             let sender_name = if sender.id == actor.id {
                 &identity.display_name
             } else {
                 &sender.name
             };
-            let content = if m.content_type == "attachment" {
-                "[Attachment remains on the owner's device; Online shares text and Agent replies.]"
-                    .to_owned()
-            } else if m.content.len() > 400_000 {
-                "[Message exceeds the Online transfer limit; read it on the owner's device.]"
-                    .to_owned()
-            } else {
-                m.content
-            };
-            let mut message = json!({"id":m.id,"seq":m.server_seq,"sender_id":m.sender_id,"sender_name":sender_name,"agent":sender.principal_type==PrincipalType::Agent,"own":link.peer_principal_id.as_deref()==Some(&m.sender_id),"content":content,"created_at":m.created_at});
+            let content = shared_content(&m.content_type, m.content);
+            let mut message = json!({"id":m.id,"seq":m.server_seq,"sender_id":m.sender_id,"sender_name":sender_name,"agent":sender.principal_type==PrincipalType::Agent,"own":link.peer_principal_id.as_deref()==Some(&m.sender_id),"content":content,"created_at":m.created_at,"author_context":author_context});
             if message.to_string().len() > 450_000 {
                 message["content"] = json!(
                     "[Message exceeds the Online transfer limit; read it on the owner's device.]"
@@ -552,5 +628,15 @@ impl DbService {
             .map_err(storage)?;
         }
         tx.commit().await.map_err(storage)
+    }
+}
+
+pub(super) fn shared_content(content_type: &str, content: String) -> String {
+    if content_type == "attachment" {
+        "[Attachment remains on the owner's device; Online shares text and Agent replies.]".into()
+    } else if content.len() > 400_000 {
+        "[Message exceeds the Online transfer limit; read it on the owner's device.]".into()
+    } else {
+        content
     }
 }
