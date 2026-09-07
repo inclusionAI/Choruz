@@ -143,6 +143,8 @@ export function PathPicker({
     <div style={{ position: "relative" }}>
       <div style={{ position: "relative" }}>
         <input
+          data-activity="workspace_path"
+          data-activity-value="private"
           ref={inputRef}
           type="text"
           value={value}

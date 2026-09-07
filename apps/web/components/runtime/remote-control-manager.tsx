@@ -178,6 +178,7 @@ export function RemoteControlManager({
 
   return (
     <Modal
+      activitySurface="Remote Control"
       title="Remote Control"
       description="Control this Choruz workspace from another browser without moving the agent runtime off this computer."
       onClose={onClose}

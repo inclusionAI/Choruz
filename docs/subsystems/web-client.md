@@ -92,14 +92,9 @@ HTTP lifecycle events for both transports without consuming response bodies.
 Context carries the selected Company/conversation and, for a terminal binding,
 its device/account IDs. These observations are not authoritative audit records.
 
-Dashboard activity includes actionable clicks, select/toggle changes, selected
-file counts, submit events, command keys, copy/paste intent, settled scroll and
-page visibility. Input values, clipboard contents and arbitrary DOM text are
-not collected. Controls under `data-activity-private` are excluded. Use a stable
-`data-activity` attribute when a control has no distinct accessible name; import
-Harness checkboxes use this to distinguish providers without reading values.
-Dynamic message, attachment and folder labels are omitted. Missing completion
-does not establish abandonment, and HTTP success does not imply AI turn success.
+Dashboard activity includes semantic clicks, input snapshots, selected values, toggle changes, selected file counts, submissions, dialog open/close, command keys, copy/paste intent, settled scroll and page visibility. Each changed input snapshot includes at most 2048 characters, its length and a truncation flag; native change after input does not duplicate the snapshot. Clipboard contents, file bytes and raw terminal input are excluded. Password, authentication, invitation and explicitly private values emit only an omission marker. Filesystem values are omitted. Recognizable secret markers are redacted, but arbitrary secrets in ordinary free text cannot be reliably identified; stored drafts require private-data access and retention controls.
+
+Use `data-activity` for a stable control identity when the accessible name is absent or dynamic. The shared modal supplies `data-activity-surface`; controls otherwise derive identity from their name, stable ID or accessible label, never CSS classes or coordinates. `data-activity-private` excludes a region entirely; `data-activity-value="private"` retains actions while omitting values. Dynamic message, attachment and folder labels are omitted. Custom canvas actions require explicit semantic events. Missing completion does not establish abandonment, and HTTP success does not imply AI turn success.
 
 `PixelWorldState` in `components/pixel-world/pixel-world-store.ts` is a zustand store (`usePixelWorldStore`) holding `PixelAgentState`, `HouseInfo`, `PlayerState` and `WalkabilityMask`; `emitPixelWorldEvent` is the bridge chat-app uses to animate agents.
 

@@ -1,6 +1,7 @@
 import { sanitizeTelemetryData } from "./telemetry-sanitize";
 import { activeTransport, setRequestObserver } from "./transport";
 import { ActivityOutbox, type ActivityEvent } from "./activity-outbox";
+import { activityExcluded, activityFieldValue, describeActivityControl } from "./activity-control";
 
 // choruz-trace.ts — Unified front-end tracing that logs to console AND sends
 // events to the gateway so they appear in the same log stream as back-end spans.
@@ -286,7 +287,7 @@ export const trace = {
 };
 
 // ---------------------------------------------------------------------------
-// Authenticated UI activity; never record input values or raw keystrokes.
+// Authenticated component activity; private fields and raw terminal keys are excluded.
 // ---------------------------------------------------------------------------
 
 let _interactionListenersAttached = false;
@@ -298,12 +299,43 @@ export function startInteractionTracking() {
   const controller = new AbortController();
   const options = { capture: true, passive: true, signal: controller.signal };
   let scrollTimer: ReturnType<typeof setTimeout> | undefined;
-  const describe = (el: Element) => ({
-    tag: el.tagName.toLowerCase(),
-    control: (el.getAttribute("data-activity") || el.getAttribute("data-testid") || el.id || el.getAttribute("class") || el.tagName.toLowerCase()).slice(0, 160),
-    label: el.closest('.attachment-queue,.msg-group,.conv-item,.folder-picker-modal,.file-tree') ? "" : (el.getAttribute("aria-label") || el.getAttribute("title") || el.getAttribute("name") || "").slice(0, 80),
-    role: el.getAttribute("role") ?? undefined,
-  });
+  const describe = describeActivityControl;
+  const dialogs = new Map<Element, ReturnType<typeof describeActivityControl>>();
+  const observeDialogs = () => {
+    for (const el of document.querySelectorAll('[role="dialog"]')) {
+      if (!dialogs.has(el) && !activityExcluded(el)) {
+        const data = describe(el);
+        dialogs.set(el, data);
+        trace.event("ui_dialog_opened", data);
+      }
+    }
+    for (const [el, data] of dialogs) {
+      if (!el.isConnected) {
+        trace.event("ui_dialog_closed", data);
+        dialogs.delete(el);
+      }
+    }
+  };
+  const observer = new MutationObserver(observeDialogs);
+  observer.observe(document.body, { childList: true, subtree: true });
+  observeDialogs();
+  const values = new WeakMap<Element, string>();
+  const captureInput = (el: Element) => {
+    if (activityExcluded(el)) return;
+    const editable = el instanceof HTMLElement && el.isContentEditable;
+    if (!(el instanceof HTMLTextAreaElement) && !(el instanceof HTMLInputElement &&
+      !["checkbox", "radio", "file", "button", "submit", "hidden"].includes(el.type)) && !editable) return;
+    const value = editable ? el.textContent ?? "" : (el as HTMLInputElement).value;
+    const snapshot = activityFieldValue(el, value);
+    const serialized = JSON.stringify({ ..._context, ...snapshot });
+    if (values.get(el) === serialized) return;
+    values.set(el, serialized);
+    beginTrace();
+    trace.event("ui_input", { ...describe(el), ...snapshot });
+  };
+  document.addEventListener("input", e => {
+    if (e.target instanceof Element) captureInput(e.target);
+  }, options);
 
   // Click tracking — walk up to nearest actionable element and report its
   // label. Every click starts a FRESH trace before emitting the event, so
@@ -312,22 +344,23 @@ export function startInteractionTracking() {
   // joining onto this one.
   document.addEventListener("click", (e) => {
     if (!(e.target instanceof Element)) return;
-    const el = e.target.closest('button,a,[role="button"],[role="tab"],[role="menuitem"],[role="option"],input,select');
-    if (!el || el.closest('[data-activity-private]')) return;
+    const el = e.target.closest('button,a,[role="button"],[role="tab"],[role="menuitem"],[role="option"],[role="treeitem"],[data-activity],input,textarea,select,summary');
+    if (!el || activityExcluded(el)) return;
     beginTrace();
     trace.event("ui_click", describe(el));
   }, options);
 
   document.addEventListener("change", e => {
     const el = e.target;
-    if (!(el instanceof Element) || el.closest('[data-activity-private]')) return;
+    if (!(el instanceof Element) || activityExcluded(el)) return;
     if (el instanceof HTMLSelectElement) {
-      trace.event("ui_selection", { ...describe(el), selected_index: el.selectedIndex });
+      beginTrace();
+      trace.event("ui_selection", { ...describe(el), selected_index: el.selectedIndex, ...activityFieldValue(el, el.value) });
     } else if (el instanceof HTMLInputElement && ["checkbox", "radio"].includes(el.type)) {
       trace.event("ui_toggle", { ...describe(el), checked: el.checked });
     } else if (el instanceof HTMLInputElement && el.type === "file") {
       trace.event("ui_files_selected", { ...describe(el), count: el.files?.length ?? 0 });
-    }
+    } else captureInput(el);
   }, options);
 
   document.addEventListener("submit", e => {
@@ -378,6 +411,8 @@ export function startInteractionTracking() {
   }, options);
   return () => {
     controller.abort();
+    observer.disconnect();
+    dialogs.clear();
     clearTimeout(scrollTimer);
     _interactionListenersAttached = false;
   };

@@ -51,6 +51,7 @@ export function HarnessAccountsModal({ companyId, sessionToken, multiHarnessAcco
 
   return (
     <Modal
+      activitySurface="Harness Accounts"
       eyebrow="Device setup"
       title="Harness Accounts"
       description="Choruz verifies the login each device already has and shows its plan and exact usage. Credentials stay on that device."

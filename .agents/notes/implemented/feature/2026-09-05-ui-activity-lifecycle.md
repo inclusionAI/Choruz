@@ -18,8 +18,9 @@ Telemetry delivery uses its captured transport directly, avoiding recursion.
 
 Authenticated dashboard listeners record actionable clicks, selections, toggles,
 file counts, form submissions, selected command keys, copy/paste intent, settled
-scroll position and page visibility. They never inspect input values, clipboard
-contents, file bytes or raw keystrokes. Dynamic message, attachment and folder
+scroll position and page visibility. The [component input contract](2026-09-06-component-input-activity.md)
+owns bounded input snapshots and sensitive-field exclusions. Clipboard
+contents, file bytes and raw keystrokes are excluded. Dynamic message, attachment and folder
 labels are omitted; stable control attributes identify those actions. A
 `data-activity-private` ancestor excludes a control from UI capture.
 
@@ -43,8 +44,8 @@ records serve different purposes and must not be conflated.
 HTTP success describes the request, not user satisfaction or completion of a
 long-running AI turn. A missing finish event is not proof of abandonment.
 Trace association at UI entry is a correlation aid, not a causal proof for all
-background work. Ordinary typing and terminal byte streams are not captured by
-these DOM listeners. Page-close capture remains best effort until local storage
+background work. Terminal byte streams are not captured by these DOM listeners.
+Page-close capture remains best effort until local storage
 commits, as described by the [durable activity owner](../architecture/2026-09-05-durable-browser-activity.md).
 
 ## Testing
@@ -52,7 +53,7 @@ commits, as described by the [durable activity owner](../architecture/2026-09-05
 `telemetry.spec.ts` exercises send failure, draft retention and successful retry
 through real UI and database persistence; the first HTTP response is fault
 injected. It checks matching request headers, start/finish pairs, context and
-absence of draft text. Import checkbox actions verify control identity and both
+separate draft observations. Import checkbox actions verify control identity and both
 values. Transport tests cover HTTP failure, cancellation and untouched bodies.
 Client-side navigation remounts the dashboard in the same document before a
 clipboard event; database assertions check single delivery and omitted contents.

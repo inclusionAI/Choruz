@@ -386,6 +386,7 @@ export function ChatInput({
           <Paperclip size={18} strokeWidth={1.75} aria-hidden="true" />
         </button></>}
         <textarea
+          data-activity="message_draft"
           ref={textareaRef}
           rows={1}
           placeholder={placeholder}

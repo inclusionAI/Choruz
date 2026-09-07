@@ -6,6 +6,8 @@ import { useModalA11y } from "../../hooks/use-modal-a11y";
 
 type ModalProps = {
   title: ReactNode;
+  /** Static analytics key; never a user-provided title. */
+  activitySurface?: string;
   onClose: () => void;
   /** One line under the title explaining what the dialog is for; becomes the dialog's description. */
   description?: ReactNode;
@@ -37,6 +39,7 @@ type ModalProps = {
  */
 export function Modal({
   title,
+  activitySurface = "dialog",
   onClose,
   description,
   eyebrow,
@@ -69,6 +72,7 @@ export function Modal({
         ref={cardRef}
         className={cardClass}
         role="dialog"
+        data-activity-surface={activitySurface}
         aria-modal="true"
         aria-labelledby={titleId}
         aria-describedby={describedBy ?? (description ? descriptionId : undefined)}
