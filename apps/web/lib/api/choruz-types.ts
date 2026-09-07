@@ -168,7 +168,7 @@ export type RuntimeBindingInfo = {
   conversation_type?: "direct" | "group";
   agent_principal_id: string;
   driver_type: string;
-  interaction_mode?: "message" | "terminal" | null;
+  interaction_mode?: "message" | "terminal" | "session" | null;
   runtime_host_id?: string | null;
   harness_account_id?: string | null;
   harness_account_name?: string | null;

@@ -15,23 +15,11 @@ import {
 
 // Helpers ---------------------------------------------------------------------
 
-type MockResponse = {
-  ok: boolean;
-  status: number;
-  statusText?: string;
-  json: () => Promise<unknown>;
-};
-
-function jsonResponse(body: unknown, status = 200): MockResponse {
-  return {
-    ok: status >= 200 && status < 300,
-    status,
-    statusText: status >= 400 ? "Error" : "OK",
-    json: async () => body,
-  };
+function jsonResponse(body: unknown, status = 200): Response {
+  return Response.json(body, { status });
 }
 
-function captureFetch(impl: (url: string, init?: RequestInit) => MockResponse) {
+function captureFetch(impl: (url: string, init?: RequestInit) => Response) {
   const fn = vi.fn((url: string, init?: RequestInit) => Promise.resolve(impl(url, init)));
   vi.stubGlobal("fetch", fn);
   return fn;
@@ -126,11 +114,8 @@ describe("apiJson — methods", () => {
   });
 
   it("accepts an empty 204 response when revoking a runtime host", async () => {
-    const fn = captureFetch(() => ({
-      ok: true,
+    const fn = captureFetch(() => new Response(null, {
       status: 204,
-      statusText: "No Content",
-      json: async () => { throw new Error("empty response"); },
     }));
 
     await expect(revokeRuntimeHost("t", "host/1")).resolves.toBeUndefined();
@@ -200,13 +185,9 @@ describe("apiJson — error responses", () => {
   });
 
   it("falls back to status + statusText when error body cannot be parsed", async () => {
-    captureFetch(() => ({
-      ok: false,
+    captureFetch(() => new Response("not json", {
       status: 500,
       statusText: "Server Error",
-      json: async () => {
-        throw new Error("not json");
-      },
     }));
     await expect(fetchCompanies("t")).rejects.toThrow(/500.*Server Error/);
   });

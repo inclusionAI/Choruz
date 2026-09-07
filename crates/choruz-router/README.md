@@ -11,7 +11,7 @@ Router and policy engine of the message pipeline: `route_event` and `run_router_
 
 ## Tests
 
-`cargo test -p choruz-router` runs against in-memory providers; the three tests in `src/router/tests.rs` that open PostgreSQL run only when `CHORUZ_DATABASE_URL` is set and skip otherwise.
+`cargo test -p choruz-router` covers in-memory providers and PostgreSQL routing. Source `infra/host/setup_test_database.sh` first to supply the required `CHORUZ_TEST_DATABASE_URL`; database tests fail when it is missing.
 
 ## Related
 

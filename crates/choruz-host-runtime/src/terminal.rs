@@ -203,6 +203,7 @@ pub fn live_terminal_exists(pool: &TerminalPool, terminal_id: &str) -> bool {
 /// stream still holds another reference to the session.
 pub fn close_terminal(pool: &TerminalPool, terminal_id: &str) -> Result<(), AppError> {
     let mut sessions = pool.lock().expect("terminal pool lock");
+    crate::session::close(terminal_id)?;
     if let Some(session) = sessions.get(terminal_id) {
         session._container.kill_all();
         match session.child.lock().expect("child lock").try_wait() {
@@ -385,6 +386,11 @@ pub fn ensure_terminal(
     evict_stale_terminals(pool);
 
     let mut sessions = pool.lock().expect("terminal pool lock");
+    if crate::session::active(&spec.terminal_id) {
+        return Err(AppError::Conflict(
+            "Close the structured conversation before opening Terminal".into(),
+        ));
+    }
     if let Some(session) = sessions.get(terminal_id) {
         if session.is_child_alive() {
             session.touch();
@@ -460,7 +466,31 @@ pub fn ensure_terminal(
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty());
-    for arg in terminal_cli_args(&driver_type, resume_session_id, model) {
+    let mut args = terminal_cli_args(&driver_type, resume_session_id, model);
+    if driver_type == DriverType::ClaudeTerminal
+        && let Some(id) = resume_session_id
+    {
+        let anchor = &spec.harness_account["terminal_session"];
+        if anchor["session_id"] == id {
+            let root = crate::session_history::claude_account_root(spec)?;
+            if anchor["native_home_path"].as_str() != Some(root.to_string_lossy().as_ref()) {
+                return Err(AppError::Conflict(
+                    "The direct session belongs to a different Claude account".into(),
+                ));
+            }
+            match crate::session_history::claude_history(spec, id) {
+                Ok(_) => {}
+                Err(AppError::NotFound(_)) if anchor["provenance"] == "direct_session_reserved" => {
+                    args = terminal_cli_args(&driver_type, None, model);
+                    args.extend(["--session-id".into(), id.into()]);
+                }
+                Err(error) => return Err(error),
+            }
+        } else if spec.harness_account["external_session_mode"] == "headless" {
+            args.push("--fork-session".into());
+        }
+    }
+    for arg in args {
         cmd.arg(arg);
     }
 
@@ -628,6 +658,8 @@ mod tests {
     #[tokio::test]
     async fn fake_cli_pty_round_trips_input_output_and_exit_code() {
         use std::os::unix::fs::PermissionsExt;
+
+        let _environment = crate::TEST_ENV_LOCK.lock().await;
 
         let temp = tempfile::tempdir().expect("create fake PTY dir");
         let dir = temp.path();

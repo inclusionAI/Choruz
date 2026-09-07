@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, request } from "@playwright/test";
 import { randomUUID } from "node:crypto";
 import { mkdir, writeFile, readFile, realpath } from "node:fs/promises";
 import path from "node:path";
@@ -6,6 +6,84 @@ import { postgresQueryClient } from "../../lib/groups/group-provisioning-db";
 import { API_BASE, WEB_BASE, login, gotoDashboard } from "../fixtures/auth";
 import { createGroup, provisionAgent, sendMessage, uniqueName } from "../fixtures/api";
 import { runtimeTest } from "../fixtures/runtime-device";
+
+for (const driver of ["claude_terminal", "codex_terminal"]) {
+  for (const remote of [false, true]) {
+    runtimeTest(`structured ${driver} on ${remote ? "device B" : "this computer"} preserves approvals across reload`, async ({ page, device }) => {
+      const { company, host, headers, home } = device;
+      const name = uniqueName("structured-dm");
+      const fixture = path.join(home, `structured-${driver}`);
+      await writeFile(fixture, await readFile(path.resolve("tests/fixtures/structured-cli.py")), { mode: 0o700 });
+      const created = await page.request.post(`${WEB_BASE}/api/agents/provision`, { data: {
+        name, instructions: "Verify the selected device workspace.", driver_type: driver,
+        workspace_id: company.id, ...(remote ? { runtime_host_id: host.id } : {}),
+      } });
+      expect(created.status(), await created.text()).toBe(201);
+      const agent = await created.json();
+      const db = await postgresQueryClient();
+      await db.query("UPDATE agent_runtime_bindings SET config_json = (config_json - 'model') || $1::jsonb WHERE id=$2", [JSON.stringify({ binary_path: fixture }), agent.binding.id]);
+      await gotoDashboard(page);
+      await page.getByRole("button", { name: "Select company" }).click();
+      await page.locator(".company-dropdown-item").filter({ hasText: company.name }).locator(".company-dropdown-item-name").click();
+      const open = async () => {
+        const conversation = page.locator(".conv-item").filter({ hasText: name }).first();
+        await expect(conversation).toBeVisible();
+        await conversation.click();
+        await expect(page.getByRole("region", { name: "Agent session" })).toBeVisible();
+      };
+      await open();
+      const session = page.getByRole("region", { name: "Agent session" });
+      await session.getByLabel("Message Agent").fill("Inspect the workspace");
+      await expect(session.getByRole("button", { name: "Send", exact: true })).toBeEnabled();
+      await session.getByRole("button", { name: "Send", exact: true }).click();
+      await expect(session.getByRole("button", { name: "Allow once" })).toBeVisible();
+      await expect(readFile(path.join(agent.workspace_path, "approved-on-device"))).rejects.toThrow();
+      await page.reload();
+      await open();
+      await session.getByRole("button", { name: "Allow once" }).click();
+      await expect(session.getByText("Verified workspace on selected device", { exact: true })).toBeVisible();
+      await expect.poll(() => readFile(path.join(agent.workspace_path, "approved-on-device"), "utf8").catch(() => "")).toBe(agent.workspace_path);
+      await session.locator("details summary").first().click();
+      await expect(session.locator("details pre").first()).toContainText(agent.workspace_path);
+      await session.getByLabel("Message Agent").fill("wait");
+      await session.getByRole("button", { name: "Send", exact: true }).click();
+      await session.getByRole("button", { name: "Stop", exact: true }).click();
+      await expect(session.getByRole("status")).toHaveText("ready");
+      await expect(session.getByRole("button", { name: "Stop", exact: true })).toHaveCount(0);
+      await expect(session.getByRole("button", { name: "Reconnect", exact: true })).toHaveCount(0);
+      const reopened = page.waitForResponse((response) =>
+        new URL(response.url()).pathname.endsWith(`/runtime/bindings/${agent.binding.id}/session`)
+        && response.request().method() === "POST",
+      );
+      await page.reload();
+      await open();
+      // The region mounts before its reopen request returns. Verify replay
+      // after that owned request, not against the temporary connecting view.
+      expect((await reopened).ok()).toBeTruthy();
+      await expect(session.getByText("Verified workspace on selected device", { exact: true })).toHaveCount(1);
+      const beforeTerminal = await (await page.request.get(`${API_BASE}/v1/runtime/bindings/${agent.binding.id}/session`, { headers })).json();
+      await session.getByRole("button", { name:"Terminal", exact:true }).click();
+      await expect(session.locator(".terminal-container > .xterm")).toHaveCount(1);
+      await session.getByRole("button", { name:"Conversation", exact:true }).click();
+      await expect(session.getByRole("status")).toHaveText("ready");
+      await expect(session.getByText("Verified workspace on selected device", { exact: true })).toHaveCount(1);
+      const afterTerminal = await (await page.request.get(`${API_BASE}/v1/runtime/bindings/${agent.binding.id}/session`, { headers })).json();
+      expect(afterTerminal.session_id).toBe(beforeTerminal.session_id);
+      const anonymous = await request.newContext();
+      try {
+        const unauthorized = await anonymous.get(`${API_BASE}/v1/runtime/bindings/${agent.binding.id}/session`);
+        expect(unauthorized.status()).toBe(401);
+      } finally {
+        await anonymous.dispose();
+      }
+      const current = await (await page.request.get(`${API_BASE}/v1/runtime/bindings/${agent.binding.id}/session`, { headers })).json();
+      const stale = await page.request.post(`${API_BASE}/v1/runtime/bindings/${agent.binding.id}/session/commands`, { headers, data: { action: "send", instance: randomUUID(), text: "stale request", submission_id: randomUUID() } });
+      expect(stale.status()).toBe(409);
+      const closed = await page.request.post(`${API_BASE}/v1/runtime/bindings/${agent.binding.id}/session/commands`, { headers, data: { action: "close", instance: current.instance } });
+      expect(closed.ok(), await closed.text()).toBe(true);
+    });
+  }
+}
 
 runtimeTest("remote terminal activity records outcomes and byte counts without content", async ({ page, device }) => {
   const { home, company, host, headers, session } = device;
@@ -140,12 +218,19 @@ runtimeTest("remote Codex terminal uses the selected account on its own device",
 test.describe("Terminal view (PTY)", () => {
   let terminalAgentName: string;
   let terminalAgentId: string;
+  let terminalBindingId: string;
 
   test.beforeEach(async ({ page }) => {
     await login(page);
     terminalAgentName = uniqueName("terminal-agent");
     const agent = await provisionAgent(page, "", terminalAgentName);
     terminalAgentId = agent.agentId;
+    const binary = path.join(agent.workspacePath, "fixture-cli");
+    await writeFile(binary, await readFile(path.resolve("tests/fixtures/structured-cli.py")), {mode:0o700});
+    const db = await postgresQueryClient();
+    const bindings = await db.query("UPDATE agent_runtime_bindings SET config_json=(config_json - 'model') || $1::jsonb WHERE agent_principal_id=$2 RETURNING id", [JSON.stringify({binary_path:binary}), agent.agentId]);
+    expect(bindings.rows).toHaveLength(1);
+    terminalBindingId = bindings.rows[0].id;
     await gotoDashboard(page);
   });
 
@@ -155,12 +240,18 @@ test.describe("Terminal view (PTY)", () => {
 
   async function selectDirectAgentConv(
     page: import("@playwright/test").Page,
-  ): Promise<boolean> {
+  ): Promise<void> {
     const item = page.locator(".conv-item").filter({ hasText: terminalAgentName }).first();
     await expect(item).toBeVisible({ timeout: 15_000 });
+    const ready = page.waitForResponse(async response =>
+      new URL(response.url()).pathname.endsWith(`/runtime/bindings/${terminalBindingId}/session`)
+      && response.ok() && (await response.json()).status === "ready");
     await item.click();
+    await ready;
+    await expect(page.getByRole("region", {name:"Agent session"}).getByRole("status")).toHaveText("ready");
+    await page.getByRole("button", {name:"Terminal", exact:true}).click();
     const term = page.locator(".terminal-container, .xterm, .xterm-screen").first();
-    return term.isVisible({ timeout: 10_000 }).catch(() => false);
+    await expect(term).toBeVisible();
   }
 
   /* ---------------------------------------------------------------------- */
@@ -170,37 +261,31 @@ test.describe("Terminal view (PTY)", () => {
   test("should render terminal for direct agent conversations", async ({
     page,
   }) => {
-    const found = await selectDirectAgentConv(page);
-    if (!found) {
-      test.skip();
-      return;
-    }
+    await selectDirectAgentConv(page);
     const term = page.locator(".terminal-container, .xterm, .xterm-screen");
     await expect(term.first()).toBeVisible();
   });
 
-  test("should show xterm canvas element", async ({ page }) => {
-    const found = await selectDirectAgentConv(page);
-    if (!found) {
-      test.skip();
-      return;
-    }
-    const canvas = page.locator(".xterm-screen canvas, .xterm canvas");
-    const hasCanvas = await canvas.isVisible({ timeout: 5000 }).catch(() => false);
-    expect(typeof hasCanvas).toBe("boolean");
+  test("fits the terminal screen to the conversation pane", async ({ page }) => {
+    await selectDirectAgentConv(page);
+    await expect.poll(async () => {
+      const screen = await page.locator(".xterm-screen").boundingBox();
+      const pane = await page.locator(".terminal-container").boundingBox();
+      return screen && pane ? screen.width / pane.width : 0;
+    }).toBeGreaterThan(0.9);
   });
 
-  test("should have a dark terminal background", async ({ page }) => {
-    const found = await selectDirectAgentConv(page);
-    if (!found) {
-      test.skip();
-      return;
-    }
-    const terminal = page.locator(".xterm, .terminal-container").first();
-    const bg = await terminal.evaluate((el) =>
-      getComputedStyle(el).backgroundColor,
-    );
-    expect(bg).toBeTruthy();
+  test("uses the light terminal palette on the light page", async ({ page }) => {
+    await selectDirectAgentConv(page);
+    const screenshot = await page.locator(".xterm-screen").screenshot();
+    const rgb = await page.evaluate(async (bytes) => {
+      const image = await createImageBitmap(new Blob([new Uint8Array(bytes)], {type:"image/png"}));
+      const canvas = new OffscreenCanvas(image.width, image.height);
+      const context = canvas.getContext("2d")!;
+      context.drawImage(image, 0, 0);
+      return Array.from(context.getImageData(Math.floor(image.width / 2), Math.floor(image.height / 2), 1, 1).data).slice(0, 3);
+    }, [...screenshot]);
+    expect(rgb).toEqual([250, 249, 245]);
   });
 
   /* ---------------------------------------------------------------------- */
@@ -210,45 +295,41 @@ test.describe("Terminal view (PTY)", () => {
   test("should attempt WebSocket connection for terminal", async ({
     page,
   }) => {
-    const wsRequests: string[] = [];
-    page.on("request", (req) => {
-      if (req.url().includes("/ws/terminals")) {
-        wsRequests.push(req.url());
-      }
+    const frames: string[] = [];
+    page.on("websocket", (socket) => {
+      if (socket.url().includes("/ws/terminals")) socket.on("framereceived", ({payload}) => frames.push(payload.toString()));
     });
 
-    const found = await selectDirectAgentConv(page);
-    if (!found) {
-      test.skip();
-      return;
-    }
-    await page.waitForTimeout(3000);
-    // WebSocket connections may or may not be captured as regular requests
-    // depending on Playwright's interception
-    expect(true).toBeTruthy();
+    await selectDirectAgentConv(page);
+    await expect.poll(() => frames.some((frame) => frame.includes("Raw terminal connected"))).toBe(true);
   });
 
   /* ---------------------------------------------------------------------- */
   /*  Reconnection                                                           */
   /* ---------------------------------------------------------------------- */
 
-  test("should show reconnection message on WebSocket failure", async ({
+  test("reconnects the terminal after a dropped socket", async ({
     page,
   }) => {
-    const found = await selectDirectAgentConv(page);
-    if (!found) {
-      test.skip();
-      return;
-    }
-    // The terminal should handle connection failures gracefully
-    // Look for reconnection text
-    await page.waitForTimeout(5000);
-    const reconnectText = page.getByText("reconnect");
-    const hasReconnect = await reconnectText
-      .isVisible({ timeout: 3000 })
-      .catch(() => false);
-    // May or may not be visible depending on connection state
-    expect(typeof hasReconnect).toBe("boolean");
+    const sockets: string[] = [];
+    page.on("websocket", (socket) => {
+      if (socket.url().includes("/ws/terminals/")) sockets.push(socket.url());
+    });
+    await page.evaluate(() => {
+      const NativeSocket = window.WebSocket;
+      window.WebSocket = class extends NativeSocket {
+        constructor(url: string | URL, protocols?: string | string[]) {
+          super(url, protocols);
+          if (String(url).includes("/ws/terminals/")) {
+            (window as unknown as { closeTestTerminal: () => void }).closeTestTerminal = () => this.close(1000, "test disconnect");
+          }
+        }
+      };
+    });
+    await selectDirectAgentConv(page);
+    await expect.poll(() => sockets.length).toBe(1);
+    await page.evaluate(() => (window as unknown as { closeTestTerminal: () => void }).closeTestTerminal());
+    await expect.poll(() => sockets.length, {timeout:10000}).toBeGreaterThan(1);
   });
 
   /* ---------------------------------------------------------------------- */
@@ -256,11 +337,7 @@ test.describe("Terminal view (PTY)", () => {
   /* ---------------------------------------------------------------------- */
 
   test("should focus terminal on click", async ({ page }) => {
-    const found = await selectDirectAgentConv(page);
-    if (!found) {
-      test.skip();
-      return;
-    }
+    await selectDirectAgentConv(page);
     const terminal = page.locator(".xterm, .terminal-container").first();
     await terminal.click();
     // Terminal should receive focus
@@ -269,8 +346,7 @@ test.describe("Terminal view (PTY)", () => {
       return active?.closest(".xterm") !== null ||
         active?.closest(".terminal-container") !== null;
     });
-    // Focus may or may not propagate into xterm's internal textarea
-    expect(typeof hasFocus).toBe("boolean");
+    expect(hasFocus).toBe(true);
   });
 
   /* ---------------------------------------------------------------------- */
@@ -283,11 +359,7 @@ test.describe("Terminal view (PTY)", () => {
     const errors: string[] = [];
     page.on("pageerror", (e) => errors.push(e.message));
 
-    const found = await selectDirectAgentConv(page);
-    if (!found) {
-      test.skip();
-      return;
-    }
+    await selectDirectAgentConv(page);
     await page.waitForTimeout(3000);
     const termErrors = errors.filter(
       (e) =>
@@ -322,7 +394,7 @@ test.describe("Terminal view (PTY)", () => {
 
     const directItem = page.locator(".conv-item").filter({ hasText: terminalAgentName }).first();
     await expect(directItem).toBeVisible({ timeout: 15_000 });
-    await directItem.click();
+    await selectDirectAgentConv(page);
     await expect(page.locator(".terminal-container:visible").first()).toBeVisible({
       timeout: 10_000,
     });

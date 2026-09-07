@@ -570,7 +570,6 @@ mod tests {
     /// Bodies run one at a time, and the previous value comes back even
     /// when a body panics, so parallel tests never see each other's root.
     fn with_runtime_dir<T>(runtime: &Path, body: impl FnOnce() -> T) -> T {
-        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
         struct Restore(Option<std::ffi::OsString>);
         impl Drop for Restore {
             fn drop(&mut self) {
@@ -582,7 +581,7 @@ mod tests {
                 }
             }
         }
-        let _serialized = LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _serialized = crate::TEST_ENV_LOCK.blocking_lock();
         let _restore = Restore(std::env::var_os("CHORUZ_RUNTIME_DIR"));
         unsafe { std::env::set_var("CHORUZ_RUNTIME_DIR", runtime) };
         body()

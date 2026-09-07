@@ -5,6 +5,7 @@ pub mod db_service;
 mod events;
 mod messages;
 mod principals;
+mod rate_limit;
 pub mod schedule;
 mod state;
 mod types;
@@ -16,7 +17,7 @@ use std::sync::{Arc, RwLock};
 
 use choruz_common::{AppError, AppResult, new_id, now};
 use choruz_domain::{AuditLog, EventEnvelope, Principal, PrincipalType};
-use chrono::{Duration, Utc};
+use chrono::Utc;
 use serde_json::Value;
 use state::State;
 
@@ -98,19 +99,11 @@ impl ChatApp {
     }
 
     pub(crate) fn check_rate_limit(&self, state: &mut State, principal_id: &str) -> AppResult<()> {
-        let window_start = Utc::now() - Duration::minutes(1);
         let entries = state
             .rate_limit_windows
             .entry(principal_id.to_owned())
             .or_default();
-        entries.retain(|timestamp| *timestamp > window_start);
-        if entries.len() >= self.rate_limit_per_minute {
-            return Err(AppError::RateLimited {
-                retry_after_ms: 1000,
-            });
-        }
-        entries.push(Utc::now());
-        Ok(())
+        rate_limit::check_window(entries, self.rate_limit_per_minute, Utc::now())
     }
 
     pub(crate) fn record_audit(
@@ -383,7 +376,9 @@ mod tests {
         assert!(app.check_rate_limit(&mut state, "p1").is_ok());
         assert!(app.check_rate_limit(&mut state, "p1").is_ok());
         let err = app.check_rate_limit(&mut state, "p1").unwrap_err();
-        assert!(matches!(err, choruz_common::AppError::RateLimited { .. }));
+        assert!(
+            matches!(err, choruz_common::AppError::RateLimited { retry_after_ms } if retry_after_ms > 1000 && retry_after_ms <= 60_000)
+        );
     }
 
     #[test]

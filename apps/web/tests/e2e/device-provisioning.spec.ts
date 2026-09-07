@@ -6,6 +6,52 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { API_BASE, login, gotoDashboard } from "../fixtures/auth";
 import { createCompany, deleteCompany, uniqueName } from "../fixtures/api";
+import { randomUUID } from "node:crypto";
+import { postgresQueryClient } from "../../lib/groups/group-provisioning-db";
+import { createGroupProvisioningStore } from "../../lib/groups/group-provisioning-store";
+
+test("PostgreSQL excludes competing provisioning leases and scopes retry keys to the company", async ({ page }) => {
+  expect(process.env.CHORUZ_DATABASE_URL, "requires the isolated E2E database").toBeTruthy();
+  const session = await login(page);
+  const company = await createCompany(page, session.token, session.principal.id, uniqueName("lease-owner"));
+  const other = await createCompany(page, session.token, session.principal.id, uniqueName("lease-other"));
+  const pool = await postgresQueryClient();
+  const owner = await pool.connect();
+  const contender = await pool.connect();
+  const store = createGroupProvisioningStore(owner);
+  const competing = createGroupProvisioningStore(contender);
+  let pending: ReturnType<typeof competing.acquireLease> | undefined;
+  try {
+    await contender.query("SET statement_timeout = '10s'");
+    const input = { id: randomUUID(), companyId: company.id, requestedBy: session.principal.id, groupTemplateId: "test", groupTemplateVersion: "1.0.0", idempotencyKey: randomUUID(), planJson: {} };
+    const job = await store.createJobByIdempotencyKey(input);
+    expect((await competing.createJobByIdempotencyKey({ ...input, id: randomUUID() })).id).toBe(job.id);
+    expect((await competing.createJobByIdempotencyKey({ ...input, id: randomUUID(), companyId: other.id })).id).not.toBe(job.id);
+    const ownerPid = (await owner.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0].pid;
+    const contenderPid = (await contender.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0].pid;
+    const now = new Date("2026-01-01T00:00:00Z");
+    const lease = { jobId: job.id, leaseOwner: "owner", leaseToken: randomUUID(), leaseMs: 1000, now };
+    await owner.query("BEGIN");
+    expect((await store.acquireLease(lease))?.leaseToken).toBe(lease.leaseToken);
+    pending = competing.acquireLease({ ...lease, leaseOwner: "contender", leaseToken: randomUUID() });
+    await expect.poll(async () => (await pool.query<{ blockers: number[] }>("SELECT pg_blocking_pids($1) AS blockers", [contenderPid])).rows[0].blockers).toContain(ownerPid);
+    await owner.query("COMMIT");
+    expect(await pending).toBeNull();
+    expect(await competing.releaseLease({ jobId: job.id, leaseToken: "not-the-owner" })).toBeNull();
+    const renewed = await competing.acquireLease({ ...lease, leaseOwner: "successor", leaseToken: randomUUID(), now: new Date(now.getTime() + 1001) });
+    expect(renewed?.leaseOwner).toBe("successor");
+    expect(await store.releaseLease({ jobId: job.id, leaseToken: lease.leaseToken })).toBeNull();
+    expect((await competing.releaseLease({ jobId: job.id, leaseToken: renewed!.leaseToken! }))?.leaseToken).toBeNull();
+  } finally {
+    await owner.query("ROLLBACK");
+    await pending?.catch(() => undefined);
+    await owner.query("DELETE FROM group_provisioning_job WHERE company_id = ANY($1::text[])", [[company.id, other.id]]);
+    owner.release();
+    contender.release();
+    await deleteCompany(page, session.token, company.id);
+    await deleteCompany(page, session.token, other.id);
+  }
+});
 
 test("remote creation reads B's harness and writes B's custom workspace through the real host link", async ({ page }) => {
   test.setTimeout(90_000);

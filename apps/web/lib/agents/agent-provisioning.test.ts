@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   AgentProvisioningError,
@@ -41,6 +41,13 @@ describe("provisionAgent", () => {
   const originalHome = process.env.HOME;
   const originalClaudeBinary = process.env.CHORUZ_CLAUDE_BINARY;
   const runtimeDirs: string[] = [];
+
+  beforeEach(async () => {
+    const runtimeDir = await mkdtemp(path.join(tmpdir(), "choruz-agent-provisioning-"));
+    runtimeDirs.push(runtimeDir);
+    vi.stubEnv("CHORUZ_RUNTIME_DIR", runtimeDir);
+    vi.stubEnv("CHORUZ_GIT_REPO_PATH", "");
+  });
 
   afterEach(async () => {
     vi.restoreAllMocks();

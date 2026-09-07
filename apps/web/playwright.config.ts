@@ -31,9 +31,8 @@ export default defineConfig({
     baseURL: process.env.CHORUZ_WEB_BASE_URL
       ?? `http://127.0.0.1:${process.env.CHORUZ_WEB_PORT ?? "3100"}`,
     channel: process.env.CHORUZ_PLAYWRIGHT_CHANNEL || undefined,
-    // Recording a trace and a video for every test costs time on each one;
-    // on CI (retries: 1) only the retry of a failed test records them.
-    trace: ci ? "on-first-retry" : "retain-on-failure",
+    // Keep the failing first attempt, not only the retry that can pass.
+    trace: ci ? "retain-on-first-failure" : "retain-on-failure",
     screenshot: "only-on-failure",
     video: ci ? "on-first-retry" : "retain-on-failure",
   },

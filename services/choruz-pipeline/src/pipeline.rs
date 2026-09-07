@@ -310,23 +310,3 @@ pub async fn run_pipeline(config: PipelineConfig) {
 
     tracing::warn!("choruz-pipeline shutting down");
 }
-
-#[cfg(test)]
-mod tests {
-    /// Truncate a prompt string (utility used in tests).
-    fn truncate_prompt(s: &str, max: usize) -> &str {
-        if s.len() <= max { s } else { &s[..max] }
-    }
-
-    #[test]
-    fn truncate_prompt_short() {
-        assert_eq!(truncate_prompt("hello", 10), "hello");
-    }
-
-    #[test]
-    fn truncate_prompt_long() {
-        let long = "a".repeat(300);
-        let result = truncate_prompt(&long, 200);
-        assert_eq!(result.len(), 200);
-    }
-}

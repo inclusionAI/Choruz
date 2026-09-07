@@ -467,8 +467,7 @@ mod tests {
 
     /// Tests that set CHORUZ_RUNTIME_DIR or CODEX_HOME run one at a time.
     fn with_env_lock<T>(f: impl FnOnce() -> T) -> T {
-        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _guard = LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _guard = crate::TEST_ENV_LOCK.blocking_lock();
         f()
     }
 

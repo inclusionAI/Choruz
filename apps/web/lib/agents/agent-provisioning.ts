@@ -141,8 +141,8 @@ export type AgentProvisioningFailureDetail = {
 export class AgentProvisioningError extends Error {
   readonly detail: AgentProvisioningFailureDetail;
 
-  constructor(detail: AgentProvisioningFailureDetail) {
-    super(detail.message);
+  constructor(detail: AgentProvisioningFailureDetail, options?: ErrorOptions) {
+    super(detail.message, options);
     this.name = "AgentProvisioningError";
     this.detail = detail;
   }
@@ -487,7 +487,7 @@ export async function provisionAgent(
         step: stepName,
         message: error instanceof Error ? error.message : "Provisioning failed",
         completedSteps,
-      });
+      }, { cause: error });
     }
   }
 

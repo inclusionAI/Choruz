@@ -391,9 +391,8 @@ mod tests {
 
     #[tokio::test]
     async fn concurrent_schedulers_claim_due_job_once() {
-        let Ok(db_url) = std::env::var("CHORUZ_DATABASE_URL") else {
-            return;
-        };
+        let db_url = std::env::var("CHORUZ_TEST_DATABASE_URL")
+            .expect("source infra/host/setup_test_database.sh before database tests");
 
         let job_id = choruz_common::new_id();
         let agent_id = choruz_common::new_id();
@@ -441,9 +440,8 @@ mod tests {
 
     #[tokio::test]
     async fn due_cron_job_inserts_message_and_agent_command() {
-        let Ok(db_url) = std::env::var("CHORUZ_DATABASE_URL") else {
-            return;
-        };
+        let db_url = std::env::var("CHORUZ_TEST_DATABASE_URL")
+            .expect("source infra/host/setup_test_database.sh before database tests");
 
         let workspace_id = choruz_common::new_id();
         let agent_id = choruz_common::new_id();
@@ -589,9 +587,8 @@ mod tests {
 
     #[tokio::test]
     async fn cron_dispatch_rolls_back_message_when_command_insert_fails() {
-        let Ok(db_url) = std::env::var("CHORUZ_DATABASE_URL") else {
-            return;
-        };
+        let db_url = std::env::var("CHORUZ_TEST_DATABASE_URL")
+            .expect("source infra/host/setup_test_database.sh before database tests");
 
         let workspace_id = choruz_common::new_id();
         let agent_id = choruz_common::new_id();
@@ -704,9 +701,8 @@ mod tests {
 
     #[tokio::test]
     async fn cron_dispatch_creates_session_and_recovers_stale_claim_once() {
-        let Ok(db_url) = std::env::var("CHORUZ_DATABASE_URL") else {
-            return;
-        };
+        let db_url = std::env::var("CHORUZ_TEST_DATABASE_URL")
+            .expect("source infra/host/setup_test_database.sh before database tests");
 
         let job_id = choruz_common::new_id();
         let agent_id = choruz_common::new_id();

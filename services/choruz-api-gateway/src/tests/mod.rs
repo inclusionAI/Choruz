@@ -1269,13 +1269,28 @@ fn openapi_documents_channel_task_contract() {
         "generic channel task create must not advertise an unimplemented response"
     );
 
-    for forbidden in [
-        "        description:\n          type: string",
-        "        description:\n          oneOf:",
+    for schema in [
+        "CreateChannelTaskRequest",
+        "CreateChannelTaskFromMessageRequest",
+        "PatchChannelTaskRequest",
     ] {
+        let header = format!("    {schema}:");
+        let section = openapi
+            .split_once(&header)
+            .expect("request schema exists")
+            .1;
+        let properties: Vec<_> = section
+            .lines()
+            .skip(1)
+            .take_while(|line| {
+                !line.starts_with("    ") || line.starts_with("     ") || line.trim().is_empty()
+            })
+            .filter(|line| line.starts_with("        ") && !line.starts_with("         "))
+            .collect();
+        assert!(!properties.is_empty(), "{schema} has properties");
         assert!(
-            !openapi.contains(forbidden),
-            "forbidden channel task contract fragment is present: {forbidden}"
+            !properties.iter().any(|line| line.trim() == "description:"),
+            "{schema} must not accept description"
         );
     }
 }

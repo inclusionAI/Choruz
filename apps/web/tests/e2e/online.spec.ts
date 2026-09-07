@@ -228,6 +228,97 @@ test("Online group invitation exchanges real encrypted messages without granting
   }
 });
 
+test("local-only dashboards stop polling unavailable Online groups", async ({ page }) => {
+  await signup(page, `local-online-${randomUUID().slice(0, 16)}`, "local-test-password");
+  await page.clock.install();
+  let requests = 0;
+  page.on("request", request => {
+    if (new URL(request.url()).pathname === "/api/v1/online/groups") requests += 1;
+  });
+  const unavailable = page.waitForResponse(response =>
+    new URL(response.url()).pathname === "/api/v1/online/groups" && response.status() === 403);
+  await gotoDashboard(page);
+  await unavailable;
+  await expect(page.getByRole("button", { name: "Actions menu" })).toBeVisible();
+  await page.clock.runFor(15_000);
+  expect(requests).toBe(1);
+});
+
+test("Online sidebar resumes on account changes and preserves groups during bounded retries", async ({ page }) => {
+  await signup(page, `poll-online-${randomUUID().slice(0, 16)}`, "local-test-password");
+  await page.clock.install();
+  let signedIn = false;
+  let requests = 0;
+  let failure = false;
+  // Only this UI lifecycle scenario replaces Online responses; the neighboring
+  // journeys exercise the real Worker, identity storage and encrypted groups.
+  await page.route("**/api/v1/online/session", route => {
+    if (route.request().method() === "DELETE") signedIn = false;
+    return route.fulfill({ json: { state: signedIn ? "signed_in" : "signed_out" } });
+  });
+  await page.route("**/api/v1/online/sign-in", route => {
+    signedIn = true;
+    return route.fulfill({ json: { state: "signed_in", display_name: "Polling user" } });
+  });
+  await page.route("**/api/v1/online/groups", route => {
+    requests += 1;
+    if (!signedIn) return route.fulfill({ status: 403, json: { error: "Sign in to Online first" } });
+    if (failure) return route.fulfill({ status: 429, headers: { "Retry-After": "10" }, json: { error: "Try later" } });
+    return route.fulfill({ json: { groups: [{ id: "polling-link", role: "guest", status: "active", name: "Polling design group", conversation_id: "host-conversation" }] } });
+  });
+  await gotoDashboard(page);
+  await expect.poll(() => requests).toBe(1);
+  await page.getByRole("button", { name: "Actions menu" }).click();
+  await page.getByRole("button", { name: "Online", exact: true }).click();
+  await page.getByLabel("Email", { exact: true }).fill("poll@example.test");
+  await page.getByLabel("Password", { exact: true }).fill("test-password");
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  const item = page.locator('[data-conversation-id="online:polling-link"]');
+  await expect(item).toBeVisible();
+  await page.getByRole("dialog").getByRole("button", { name: "Close", exact: true }).click();
+  await expect.poll(() => requests).toBeGreaterThan(1);
+  // Let the explicit dialog-close refresh settle before measuring its timer.
+  await page.clock.runFor(0);
+  failure = true;
+  const throttled = page.waitForResponse(response => response.url().endsWith("/api/v1/online/groups") && response.status() === 429);
+  await page.clock.runFor(3000);
+  await throttled;
+  const beforeRetry = requests;
+  await page.clock.runFor(9000);
+  expect(requests).toBe(beforeRetry);
+  await expect(item).toBeVisible();
+  failure = false;
+  await page.clock.runFor(1000);
+  await expect.poll(() => requests).toBe(beforeRetry + 1);
+  await page.context().setOffline(true);
+  const beforeOffline = requests;
+  await page.clock.runFor(15_000);
+  expect(requests).toBe(beforeOffline);
+  await expect(item).toBeVisible();
+  await page.context().setOffline(false);
+  await expect.poll(() => requests).toBe(beforeOffline + 1);
+  await page.evaluate(() => {
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  const beforeHidden = requests;
+  await page.clock.runFor(15_000);
+  expect(requests).toBe(beforeHidden);
+  await page.evaluate(() => {
+    delete (document as unknown as { visibilityState?: string }).visibilityState;
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  await expect.poll(() => requests).toBe(beforeHidden + 1);
+  await page.getByRole("button", { name: "Actions menu" }).click();
+  await page.getByRole("button", { name: "Online", exact: true }).click();
+  await page.getByRole("button", { name: "Sign out of Online" }).click();
+  await expect(item).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Sign in", exact: true })).toBeVisible();
+  const stopped = requests;
+  await page.clock.runFor(15_000);
+  expect(requests).toBe(stopped);
+});
+
 test("Online signs in through the real Worker, persists locally and revokes on sign-out", async ({ page }) => {
   test.setTimeout(120_000);
   const id = randomUUID();

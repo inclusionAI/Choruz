@@ -1,8 +1,8 @@
 //! Integration tests for choruz-session.
 //!
 //! These tests run against a real PostgreSQL database. The connection string
-//! is read from `CHORUZ_TEST_DATABASE_URL` or falls back to the default local
-//! development database.
+//! must be supplied by `infra/host/setup_test_database.sh` through
+//! `CHORUZ_TEST_DATABASE_URL`; the development database is never a fallback.
 //!
 //! Tables must be created via `V001__message_pipeline_schema.sql` before
 //! running these tests.
@@ -11,10 +11,8 @@ use choruz_session::*;
 use chrono::Utc;
 use uuid::Uuid;
 
-/// `list_dead_letters` returns oldest-first and is LIMITed, so on a shared
-/// dev DB (which accumulates unresolved entries) freshly inserted rows get
-/// pushed past the window. Look them up by source_id through a "since"
-/// window anchored at test start time to keep assertions deterministic.
+/// Scope the disposable suite's bounded dead-letter page to this test's start
+/// and owned source ID; neighboring cases may insert their own rows concurrently.
 async fn find_dead_letter_by_source_id(
     store: &PgSessionStore,
     since: chrono::DateTime<Utc>,
@@ -30,10 +28,10 @@ async fn find_dead_letter_by_source_id(
 
 /// Get the test database URL.
 fn test_database_url() -> String {
-    std::env::var("CHORUZ_TEST_DATABASE_URL").unwrap_or_else(|_| {
-        let user = std::env::var("USER").unwrap_or_else(|_| "postgres".to_string());
-        format!("host=127.0.0.1 port=5432 user={user} dbname=choruz")
-    })
+    std::env::var("CHORUZ_TEST_DATABASE_URL")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .expect("source infra/host/setup_test_database.sh before running database tests")
 }
 
 /// Generate a unique key for test isolation.

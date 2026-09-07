@@ -98,8 +98,7 @@ test.describe("Modals (Create Agent, Create Group, Create Company)", () => {
     await page.waitForTimeout(500);
     // Modal overlay should be visible
     const overlay = page.locator(".modal-overlay, .modal-backdrop");
-    const visible = await overlay.isVisible({ timeout: 3000 }).catch(() => false);
-    expect(typeof visible).toBe("boolean");
+    await expect(overlay.first()).toBeVisible();
   });
 
   test("light theme modal card fully obscures the dashboard beneath it", async ({ page }) => {
@@ -123,10 +122,9 @@ test.describe("Modals (Create Agent, Create Group, Create Company)", () => {
     const closeBtn = page.locator(
       'button:has-text("Cancel"), button:has-text("Close"), button[title="Close"]',
     );
-    if (await closeBtn.isVisible({ timeout: 3000 }).catch(() => false)) {
-      await closeBtn.first().click();
-      await page.waitForTimeout(500);
-    }
+    await expect(closeBtn.first()).toBeVisible();
+    await closeBtn.first().click();
+    await expect(page.locator(".modal-card")).toHaveCount(0);
   });
 
   test("should show agent name validation error when empty", async ({
@@ -136,18 +134,8 @@ test.describe("Modals (Create Agent, Create Group, Create Company)", () => {
     await actionsBtn.click();
     await page.getByText("Create Agent").click();
     await page.waitForTimeout(500);
-    // Try to create without name
-    const createBtn = page.locator(
-      'button:has-text("Create"), button:has-text("Provision")',
-    );
-    if (await createBtn.isVisible({ timeout: 3000 }).catch(() => false)) {
-      await createBtn.first().click();
-      await page.waitForTimeout(500);
-      // Should show error
-      const error = page.getByText("required");
-      const hasError = await error.isVisible({ timeout: 2000 }).catch(() => false);
-      expect(typeof hasError).toBe("boolean");
-    }
+    await page.locator(".modal-card").getByRole("button", { name: "Review & Create", exact: true }).click();
+    await expect(page.getByText("Agent name is required", { exact: true })).toBeVisible();
   });
 
   test("should show driver type options in Create Agent modal", async ({
@@ -776,8 +764,7 @@ test.describe("Modals (Create Agent, Create Group, Create Company)", () => {
     const wsPathOption = page.locator(
       'label:has-text("workspace"), label:has-text("path"), input[type="checkbox"]',
     );
-    const visible = await wsPathOption.isVisible({ timeout: 3000 }).catch(() => false);
-    expect(typeof visible).toBe("boolean");
+    await expect(wsPathOption.first()).toBeVisible();
   });
 
   /* ---------------------------------------------------------------------- */
@@ -796,31 +783,23 @@ test.describe("Modals (Create Agent, Create Group, Create Company)", () => {
   }) => {
     await openCreateGroupModal(page);
     const overlay = page.locator(".modal-overlay, .modal-backdrop");
-    const visible = await overlay.isVisible({ timeout: 3000 }).catch(() => false);
-    expect(typeof visible).toBe("boolean");
+    await expect(overlay.first()).toBeVisible();
   });
 
   test("should show group name input in Create Group modal", async ({
     page,
   }) => {
     await openCreateGroupModal(page);
-    const nameInput = page.locator(
-      'input[placeholder*="group"], input[placeholder*="name"], input[type="text"]',
-    ).first();
-    const visible = await nameInput.isVisible({ timeout: 3000 }).catch(() => false);
-    expect(typeof visible).toBe("boolean");
+    const nameInput = page.getByRole("dialog", { name: "Create Group" }).getByRole("textbox", { name: "Group name", exact: true });
+    await expect(nameInput.first()).toBeVisible();
   });
 
   test("should show member selection in Create Group modal", async ({
     page,
   }) => {
     await openCreateGroupModal(page);
-    // Look for member list/checkboxes
-    const memberList = page.locator(
-      '.member-select, .agent-list, input[type="checkbox"]',
-    );
-    const visible = await memberList.isVisible({ timeout: 3000 }).catch(() => false);
-    expect(typeof visible).toBe("boolean");
+    const memberList = page.getByRole("dialog", { name: "Create Group" }).getByRole("textbox", { name: "Search agents…", exact: true });
+    await expect(memberList.first()).toBeVisible();
   });
 
   test("should validate group name is required", async ({ page }) => {
@@ -923,8 +902,7 @@ test.describe("Modals (Create Agent, Create Group, Create Company)", () => {
     await page.getByText("New Company").click();
     await page.waitForTimeout(500);
     const overlay = page.locator(".modal-overlay, .modal-backdrop");
-    const visible = await overlay.isVisible({ timeout: 3000 }).catch(() => false);
-    expect(typeof visible).toBe("boolean");
+    await expect(overlay.first()).toBeVisible();
   });
 
   test("should show company name input in Create Company modal", async ({
@@ -935,8 +913,7 @@ test.describe("Modals (Create Agent, Create Group, Create Company)", () => {
     await page.getByText("New Company").click();
     await page.waitForTimeout(500);
     const nameInput = page.locator('input[type="text"]').first();
-    const visible = await nameInput.isVisible({ timeout: 3000 }).catch(() => false);
-    expect(typeof visible).toBe("boolean");
+    await expect(nameInput.first()).toBeVisible();
   });
 
   test("Escape closes only the nested folder picker and preserves the company form", async ({ page }) => {
@@ -1013,10 +990,9 @@ test.describe("Modals (Create Agent, Create Group, Create Company)", () => {
     await openCreateGroupModal(page);
     // Click outside the modal (on the backdrop)
     const backdrop = page.locator(".modal-overlay, .modal-backdrop");
-    if (await backdrop.isVisible({ timeout: 3000 }).catch(() => false)) {
-      await backdrop.click({ position: { x: 10, y: 10 } });
-      await page.waitForTimeout(500);
-    }
+    await expect(backdrop).toBeVisible();
+    await backdrop.click({ position: { x: 10, y: 10 } });
+    await expect(backdrop).toHaveCount(0);
   });
 
   /* ---------------------------------------------------------------------- */

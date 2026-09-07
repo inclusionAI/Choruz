@@ -8,9 +8,9 @@ import { directPeerId, isAgent } from "../api/principals";
  * here.
  */
 export function bindingUsesTerminalTranscript(
-  binding: { interaction_mode?: "message" | "terminal" | null },
+  binding: { interaction_mode?: "message" | "terminal" | "session" | null },
 ): boolean {
-  return binding.interaction_mode === "terminal";
+  return binding.interaction_mode === "terminal" || binding.interaction_mode === "session";
 }
 
 /** The agent on the other side of a direct conversation, or null. */

@@ -48,6 +48,21 @@ impl LocalHost {
 }
 
 impl RuntimeHost {
+    pub(crate) async fn session(
+        &self,
+        request: choruz_host_runtime::session::SessionRequest,
+    ) -> Result<choruz_host_runtime::session_protocol::SessionSnapshot, AppError> {
+        match self {
+            Self::Local(local) => {
+                choruz_host_runtime::session::execute(local.terminals.clone(), request).await
+            }
+            Self::Linked(link) => {
+                serde_json::from_value(link.call(LinkRequest::Session { request }).await?)
+                    .map_err(|e| AppError::Internal(format!("decode session state: {e}")))
+            }
+        }
+    }
+
     /// The device that runs `binding`: its `config_json.runtime_host_id`
     /// when it has one, else the gateway's own device.
     pub(crate) fn for_binding(

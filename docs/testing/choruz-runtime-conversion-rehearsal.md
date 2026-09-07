@@ -55,25 +55,28 @@ partially converted copy.
 Run from a clean checkout with PostgreSQL command-line tools available:
 
 ```bash
-bash ./infra/host/runtime_conversion_rehearsal.sh all
+bash ./infra/host/runtime_conversion_rehearsal.sh
 ```
 
 The script creates a new `mktemp` root and an isolated PostgreSQL cluster under
-that root. It refuses derived paths outside the root, starts no repository
+that root, listening only on a private Unix socket. It refuses derived paths outside the root, starts no repository
 service, creates no registered worktree, never reads `.runtime` or
-`.choruz-runtime`, and removes the fixture on exit. It exercises both explicit
-Maildir policies (`drain` and `discard`) and creates only synthetic direct
+`.choruz-runtime`, and removes the fixture after PostgreSQL stops. Failed shutdown
+preserves the fixture for inspection. It exercises the explicit `discard`
+policy and creates only synthetic direct
 terminal-session state, pipeline/group workspace state, Maildir `new`/`cur`/
 `tmp`, result data, an attachment, runtime bindings, external-session
 provenance, PostgreSQL schema/rows, Git session-ref/worktree snapshots, and a
 bootstrap marker.
 
-For each policy, the harness proves a running writer fails closed before queue
+The harness proves a running writer fails closed before queue
 or filesystem conversion; checksums and restores PostgreSQL plus filesystem
 backups; rejects a pre-existing target collision before mutation; records queue
-handling; converts the fixture; scans the target for unintended legacy
+handling by comparing archived command bytes with the backup; converts the fixture; scans the target for unintended legacy
 identifiers; and restores the original fixture state. Its synthetic conversion
-logic is test-only evidence, not a production migration feature.
+logic is test-only evidence, not a production migration feature. It does not
+execute queued commands or prove the `drain` policy; that requires a real command
+executor and its persisted results.
 
 The following remain intentionally outside this rehearsal: live service-manager
 operations; real/private terminal state; webhook, bridge, SDK, and consumer

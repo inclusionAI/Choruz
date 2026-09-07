@@ -1,6 +1,6 @@
 use super::{
-    is_principal_id_like, metadata_for_group_send_command, parse_dev_env_value,
-    process_single_outbox_command, resolve_names_to_ids, send_to_group,
+    is_principal_id_like, metadata_for_group_send_command, process_single_outbox_command,
+    resolve_names_to_ids, send_to_group,
 };
 use choruz_store::EventStore;
 use std::{
@@ -109,29 +109,6 @@ fn assert_envelope_matches(envelope: &serde_json::Value, expected: serde_json::V
 }
 
 #[test]
-fn parses_exported_dev_env_value() {
-    let contents = r#"
-export CHORUZ_SESSION_SECRET=abc
-export CHORUZ_OPERATOR_PASSWORD=local-secret
-"#;
-
-    assert_eq!(
-        parse_dev_env_value(contents, "CHORUZ_OPERATOR_PASSWORD").as_deref(),
-        Some("local-secret")
-    );
-}
-
-#[test]
-fn parses_quoted_dev_env_value() {
-    let contents = r#"export CHORUZ_OPERATOR_PASSWORD="local-secret""#;
-
-    assert_eq!(
-        parse_dev_env_value(contents, "CHORUZ_OPERATOR_PASSWORD").as_deref(),
-        Some("local-secret")
-    );
-}
-
-#[test]
 fn detects_principal_ids_without_treating_long_names_as_ids() {
     assert!(is_principal_id_like("019e1a12-7d40-73f0-9147-676d33ab0c4b"));
     assert!(!is_principal_id_like("backend-dev-1778553877992-s1y4"));
@@ -140,9 +117,8 @@ fn detects_principal_ids_without_treating_long_names_as_ids() {
 
 #[tokio::test]
 async fn uuid_shaped_member_name_resolves_before_raw_id_fallback() {
-    let Ok(db_url) = std::env::var("CHORUZ_DATABASE_URL") else {
-        return;
-    };
+    let db_url = std::env::var("CHORUZ_TEST_DATABASE_URL")
+        .expect("source infra/host/setup_test_database.sh before database tests");
 
     let workspace_id = choruz_common::new_id();
     let principal_id = choruz_common::new_id();
@@ -227,9 +203,8 @@ async fn online_guest_display_names_do_not_resolve_as_local_members() {
 
 #[tokio::test]
 async fn send_to_missing_group_returns_visible_error() {
-    let Ok(db_url) = std::env::var("CHORUZ_DATABASE_URL") else {
-        return;
-    };
+    let db_url = std::env::var("CHORUZ_TEST_DATABASE_URL")
+        .expect("source infra/host/setup_test_database.sh before database tests");
 
     let workspace_id = choruz_common::new_id();
     let agent_id = choruz_common::new_id();
@@ -726,9 +701,8 @@ async fn task_create_command_omits_task_key_when_agent_does_not_supply_one() {
 #[tokio::test]
 #[allow(clippy::type_complexity)]
 async fn task_create_command_resolves_group_and_assignee_name_without_chat_event() {
-    let Ok(db_url) = std::env::var("CHORUZ_DATABASE_URL") else {
-        return;
-    };
+    let db_url = std::env::var("CHORUZ_TEST_DATABASE_URL")
+        .expect("source infra/host/setup_test_database.sh before database tests");
 
     let tmp = tempdir().expect("temp workspace");
     let workspace_id = choruz_common::new_id();
@@ -1748,9 +1722,8 @@ async fn task_create_command_returns_forbidden_envelope_when_gateway_denies_acto
 
 #[tokio::test]
 async fn task_create_command_returns_invalid_assignee_envelope_when_name_cannot_be_resolved() {
-    let Ok(db_url) = std::env::var("CHORUZ_DATABASE_URL") else {
-        return;
-    };
+    let db_url = std::env::var("CHORUZ_TEST_DATABASE_URL")
+        .expect("source infra/host/setup_test_database.sh before database tests");
 
     let tmp = tempdir().expect("temp workspace");
     let workspace_id = choruz_common::new_id();
@@ -1849,9 +1822,8 @@ async fn task_create_command_returns_invalid_assignee_envelope_when_name_cannot_
 
 #[tokio::test]
 async fn task_create_command_does_not_probe_roster_for_direct_conversation_non_member() {
-    let Ok(db_url) = std::env::var("CHORUZ_DATABASE_URL") else {
-        return;
-    };
+    let db_url = std::env::var("CHORUZ_TEST_DATABASE_URL")
+        .expect("source infra/host/setup_test_database.sh before database tests");
 
     let tmp = tempdir().expect("temp workspace");
     let sender_workspace_id = choruz_common::new_id();
@@ -2183,9 +2155,8 @@ async fn task_transfer_command_returns_missing_assignee_envelope_when_assignee_o
 
 #[tokio::test]
 async fn task_transfer_command_resolves_group_and_assignee_name_without_chat_event() {
-    let Ok(db_url) = std::env::var("CHORUZ_DATABASE_URL") else {
-        return;
-    };
+    let db_url = std::env::var("CHORUZ_TEST_DATABASE_URL")
+        .expect("source infra/host/setup_test_database.sh before database tests");
 
     let tmp = tempdir().expect("temp workspace");
     let workspace_id = choruz_common::new_id();
@@ -2456,9 +2427,8 @@ fn internal_provision_token_requires_dedicated_env() {
 
 #[tokio::test]
 async fn process_outbox_commands_delivers_group_send_to_named_group() {
-    let Ok(db_url) = std::env::var("CHORUZ_DATABASE_URL") else {
-        return;
-    };
+    let db_url = std::env::var("CHORUZ_TEST_DATABASE_URL")
+        .expect("source infra/host/setup_test_database.sh before database tests");
 
     let workspace_id = choruz_common::new_id();
     let agent_id = choruz_common::new_id();
@@ -2649,9 +2619,8 @@ async fn process_outbox_commands_delivers_group_send_to_named_group() {
 
 #[tokio::test]
 async fn process_outbox_commands_preserves_group_send_metadata() {
-    let Ok(db_url) = std::env::var("CHORUZ_DATABASE_URL") else {
-        return;
-    };
+    let db_url = std::env::var("CHORUZ_TEST_DATABASE_URL")
+        .expect("source infra/host/setup_test_database.sh before database tests");
 
     let workspace_id = choruz_common::new_id();
     let agent_id = choruz_common::new_id();
@@ -2902,9 +2871,8 @@ async fn process_outbox_commands_preserves_group_send_metadata() {
 
 #[tokio::test]
 async fn send_to_group_resolves_name_within_agent_workspace() {
-    let Ok(db_url) = std::env::var("CHORUZ_DATABASE_URL") else {
-        return;
-    };
+    let db_url = std::env::var("CHORUZ_TEST_DATABASE_URL")
+        .expect("source infra/host/setup_test_database.sh before database tests");
 
     let workspace_a = choruz_common::new_id();
     let workspace_b = choruz_common::new_id();
@@ -2982,9 +2950,8 @@ async fn send_to_group_resolves_name_within_agent_workspace() {
 
 #[tokio::test]
 async fn send_to_group_rejects_non_member_agent() {
-    let Ok(db_url) = std::env::var("CHORUZ_DATABASE_URL") else {
-        return;
-    };
+    let db_url = std::env::var("CHORUZ_TEST_DATABASE_URL")
+        .expect("source infra/host/setup_test_database.sh before database tests");
 
     let workspace_id = choruz_common::new_id();
     let agent_id = choruz_common::new_id();
@@ -3043,9 +3010,8 @@ async fn send_to_group_rejects_non_member_agent() {
 
 #[tokio::test]
 async fn send_to_group_rejects_ambiguous_same_workspace_name() {
-    let Ok(db_url) = std::env::var("CHORUZ_DATABASE_URL") else {
-        return;
-    };
+    let db_url = std::env::var("CHORUZ_TEST_DATABASE_URL")
+        .expect("source infra/host/setup_test_database.sh before database tests");
 
     let workspace_id = choruz_common::new_id();
     let agent_id = choruz_common::new_id();
@@ -3104,9 +3070,8 @@ async fn send_to_group_rejects_ambiguous_same_workspace_name() {
 
 #[tokio::test]
 async fn watcher_session_key_set_cron_uses_binding_conversation_id() {
-    let Ok(db_url) = std::env::var("CHORUZ_DATABASE_URL") else {
-        return;
-    };
+    let db_url = std::env::var("CHORUZ_TEST_DATABASE_URL")
+        .expect("source infra/host/setup_test_database.sh before database tests");
 
     let workspace_id = choruz_common::new_id();
     let agent_id = choruz_common::new_id();
@@ -3509,9 +3474,8 @@ async fn send_to_group_threads_canonicalize_and_gate_unread() {
     // reply_event_id to the thread root via the shared helper,
     // (b) skip the total_msg_count bump when quiet, (c) bump when
     // broadcast, and (d) error on a missing thread target.
-    let Ok(db_url) = std::env::var("CHORUZ_DATABASE_URL") else {
-        return;
-    };
+    let db_url = std::env::var("CHORUZ_TEST_DATABASE_URL")
+        .expect("source infra/host/setup_test_database.sh before database tests");
 
     let workspace = choruz_common::new_id();
     let agent = choruz_common::new_id();

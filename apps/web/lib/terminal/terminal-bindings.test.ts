@@ -12,13 +12,9 @@ const binding = (partial: Partial<RuntimeBindingInfo>): RuntimeBindingInfo =>
 const agents = [agent("ada")];
 
 describe("bindingUsesTerminalTranscript", () => {
-  it("keeps imported native sessions in the dedicated terminal UI", () => {
+  it("keeps structured and terminal sessions out of the group message renderer", () => {
     expect(bindingUsesTerminalTranscript({ interaction_mode: "terminal" })).toBe(true);
-    expect(bindingUsesTerminalTranscript({ interaction_mode: "terminal" })).toBe(true);
-  });
-
-  it("trusts the gateway's interaction_mode, so a plugin driver needs no client list", () => {
-    expect(bindingUsesTerminalTranscript({ interaction_mode: "terminal" })).toBe(true);
+    expect(bindingUsesTerminalTranscript({ interaction_mode: "session" })).toBe(true);
   });
 
   it("excludes message-mode bindings and bindings without a mode", () => {

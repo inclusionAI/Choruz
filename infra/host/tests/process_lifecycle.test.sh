@@ -7,6 +7,10 @@ ROOT_DIR="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 source "${ROOT_DIR}/infra/host/common.sh"
 bash "${SCRIPT_DIR}/http_readiness.test.sh"
 python3 "${SCRIPT_DIR}/web_dev_env.test.py"
+python3 "${SCRIPT_DIR}/test_database_cleanup.test.py"
+python3 "${SCRIPT_DIR}/isolated_smoke.test.py"
+bash "${SCRIPT_DIR}/web_e2e_env.test.sh"
+node --experimental-strip-types --test "${ROOT_DIR}/infra/host/smoke/real-harness-platform-smoke.test.ts"
 
 runtime_path="$(host_service_runtime_dir)"
 if [[ "${runtime_path}" != "$(host_service_runtime_dir)" ]]; then

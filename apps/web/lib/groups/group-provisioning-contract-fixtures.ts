@@ -1,3 +1,5 @@
+// Synthetic schema examples, not captured runner outputs. The runner tests own
+// execution transitions and recovery results.
 import {
   GROUP_PROVISIONING_STATUS_CONTRACT,
   type GroupLaunchPlanContract,
@@ -203,10 +205,10 @@ export const groupProvisioningContractFixtures = {
   }),
   requiredAgentFailure: job({
     id: "job-required-agent-failure",
-    status: "failed",
+    status: "partial_failure",
     stepResults: [happyResults[0]],
     issues: [
-      issue("error", "required_agent_create_failed", "Backend Engineer could not be created.", true, {
+      issue("error", "required_agent_creation_failed", "Backend Engineer could not be created.", true, {
         field: "rolePlans.backend-engineer",
         roleSlotId: "backend-engineer",
         roleTemplateId: "backend-engineer",

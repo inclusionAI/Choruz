@@ -1,6 +1,114 @@
 use super::*;
 
 #[tokio::test]
+async fn remote_completion_does_not_overwrite_a_reconfigured_session_identity() {
+    use choruz_session::{InsertCommand, PgSessionStore};
+    let database = TestDatabase::create().await;
+    let runtime = RuntimeStore::new(database.database_url.clone());
+    let store = PgSessionStore::new(&database.database_url);
+    let app = choruz_application::ChatApp::new();
+    let operator = LocalAuthConfig::from_env()
+        .ensure_operator_sync(&app)
+        .unwrap();
+    let agent = app
+        .create_agent(CreateAgentRequest {
+            actor_id: operator.id.clone(),
+            name: "Identity fence".into(),
+            scopes: vec!["messages:read".into(), "messages:write".into()],
+            workspace_id: None,
+            channel_visibility: None,
+        })
+        .unwrap();
+    let conversation = app
+        .create_direct_conversation(CreateDirectConversationRequest {
+            actor_id: operator.id.clone(),
+            peer_principal_id: agent.principal.id.clone(),
+            workspace_id: None,
+        })
+        .unwrap();
+    seed_principal_to_db(&database.database_url, &operator).await;
+    seed_principal_to_db(&database.database_url, &agent.principal).await;
+    seed_conversation_to_db(&database.database_url, &conversation).await;
+    let host = Uuid::now_v7().to_string();
+    let binding = runtime
+        .create_binding(CreateBindingInput {
+            conversation_id: conversation.id.clone(),
+            agent_principal_id: agent.principal.id.clone(),
+            driver_type: DriverType::ClaudeTerminal,
+            workspace_path: "/test/fenced".into(),
+            git_worktree_path: None,
+            config_json: json!({"runtime_host_id":host}),
+            audit_actor: Some(audit_actor(&operator)),
+        })
+        .await
+        .unwrap();
+    let session = Uuid::now_v7().to_string();
+    store
+        .upsert_session(&session, &agent.principal.id, &conversation.id)
+        .await
+        .unwrap();
+    let client = store.connect().await.unwrap();
+    for changed in [false, true] {
+        let command = store
+            .insert_command(&InsertCommand {
+                command_id: Uuid::now_v7().to_string(),
+                route_id: Uuid::now_v7().to_string(),
+                session_key: session.clone(),
+                agent_id: agent.principal.id.clone(),
+                conversation_id: conversation.id.clone(),
+                message_id: Uuid::now_v7().to_string(),
+                turn_id: Uuid::now_v7().to_string(),
+                prompt: "Inspect workspace".into(),
+                max_attempts: 1,
+                metadata: json!({}),
+            })
+            .await
+            .unwrap();
+        let (claimed, lease) = store
+            .claim_runtime_host_command(&host)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(claimed.command_id, command.command_id);
+        assert_eq!(claimed.metadata["runtime_binding"]["id"], binding.id);
+        if changed {
+            client.execute("UPDATE agent_runtime_bindings SET external_session_id='replacement', config_json=config_json || '{\"terminal_generation\":2}'::jsonb WHERE id=$1", &[&binding.id]).await.unwrap();
+        } else {
+            client.execute("UPDATE agent_runtime_bindings SET config_json=config_json || '{\"terminal_session\":{\"session_id\":\"direct\"}}'::jsonb WHERE id=$1", &[&binding.id]).await.unwrap();
+        }
+        store
+            .complete_runtime_host_command(
+                &host,
+                "Selected device",
+                &command.command_id,
+                &lease.attempt_id,
+                true,
+                &[],
+                None,
+                0,
+                1,
+                Some("headless-result"),
+                false,
+            )
+            .await
+            .unwrap();
+        let current = runtime.get_binding(&binding.id).await.unwrap();
+        assert_eq!(
+            current.external_session_id.as_deref(),
+            Some(if changed {
+                "replacement"
+            } else {
+                "headless-result"
+            })
+        );
+        assert_eq!(
+            current.config_json["terminal_session"]["session_id"],
+            "direct"
+        );
+    }
+}
+
+#[tokio::test]
 async fn headless_progress_tracks_leases_in_binding_snapshots_and_sync() {
     use choruz_session::{CommandStatus, CommandStatusUpdate, InsertCommand, PgSessionStore};
 
@@ -1608,6 +1716,24 @@ async fn remote_control_pairing_redeem_and_revoke_round_trip() {
     assert_eq!(bridge_status, StatusCode::OK);
     assert_eq!(bridge["session_key"], session_key);
     assert_eq!(bridge["revoked_device_ids"], json!([]));
+    let first_room = bridge["transport_session_id"]
+        .as_str()
+        .expect("transport room");
+    let (next_status, next_bridge) = api_json_request(
+        router.clone(),
+        &operator,
+        Method::GET,
+        "/v1/remote-control/bridge-config".into(),
+    )
+    .await;
+    assert_eq!(next_status, StatusCode::OK);
+    let next_room = next_bridge["transport_session_id"]
+        .as_str()
+        .expect("next transport room");
+    assert_ne!(first_room, next_room);
+    assert!(!first_room.is_empty());
+    assert_ne!(first_room, device_id);
+    assert_eq!(next_bridge["session_key"], session_key);
 
     let (revoke_status, _) = api_json_payload_request(
         router.clone(),
@@ -1634,6 +1760,7 @@ async fn remote_control_pairing_redeem_and_revoke_round_trip() {
 #[tokio::test]
 async fn runtime_host_pairing_is_single_use_and_host_token_is_revocable() {
     let _env = ChannelTaskEnvGuard::remote_control();
+    let _runtime_guard = api_test_env_lock().lock().await;
     let database = TestDatabase::create().await;
     let app = choruz_application::ChatApp::new();
     let operator = app
@@ -2254,6 +2381,29 @@ async fn runtime_host_pairing_is_single_use_and_host_token_is_revocable() {
         .unwrap();
     assert_eq!(queued_for_remote.metadata["runtime_host_id"], host_id);
 
+    let mut move_device = connect_host_link(&base_url, &host_id, &host_token)
+        .await
+        .unwrap();
+    let move_ack = tokio::spawn(async move {
+        while let Some(Ok(Message::Text(text))) = move_device.next().await {
+            let call: Value = serde_json::from_str(&text).unwrap();
+            if call["kind"] != "call" {
+                continue;
+            }
+            assert_eq!(call["request"]["call"], "terminal_close");
+            move_device
+                .send(Message::Text(
+                    json!({"kind":"result", "id":call["id"], "ok":null})
+                        .to_string()
+                        .into(),
+                ))
+                .await
+                .unwrap();
+            return true;
+        }
+        false
+    });
+
     let (move_local_status, _) = api_json_payload_request(
         router.clone(),
         &operator,
@@ -2266,6 +2416,7 @@ async fn runtime_host_pairing_is_single_use_and_host_token_is_revocable() {
     )
     .await;
     assert_eq!(move_local_status, StatusCode::NO_CONTENT);
+    assert!(move_ack.await.unwrap());
     let binding_config: Value = client
         .query_one(
             "SELECT config_json FROM agent_runtime_bindings WHERE id = $1",
@@ -2523,7 +2674,7 @@ async fn runtime_host_pairing_is_single_use_and_host_token_is_revocable() {
         "attached-data".as_bytes()
     );
 
-    let (revoke_status, _) = api_json_payload_request(
+    let (offline_revoke_status, _) = api_json_payload_request(
         router.clone(),
         &operator,
         Method::DELETE,
@@ -2531,7 +2682,169 @@ async fn runtime_host_pairing_is_single_use_and_host_token_is_revocable() {
         Value::Null,
     )
     .await;
+    assert_eq!(offline_revoke_status, StatusCode::CONFLICT);
+    client
+        .execute(
+            "UPDATE agent_runtime_bindings SET config_json=jsonb_set(
+          config_json, '{runtime_host_id}', to_jsonb($2::text)) WHERE id=$1",
+            &[&binding["id"].as_str().unwrap(), &host_id],
+        )
+        .await
+        .unwrap();
+    let expected_closes: i64 = client
+        .query_one(
+            "SELECT count(*) FROM agent_runtime_bindings WHERE config_json->>'runtime_host_id'=$1",
+            &[&host_id],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert!(expected_closes > 1);
+    let moved_away_id: String = client.query_one(
+        "SELECT id FROM agent_runtime_bindings WHERE config_json->>'runtime_host_id'=$1 ORDER BY id DESC LIMIT 1",
+        &[&host_id],
+    ).await.unwrap().get(0);
+    let other_host = Uuid::now_v7().to_string();
+    client
+        .execute(
+            "INSERT INTO runtime_host (id, company_id, name, token_hash, status)
+         SELECT $2, company_id, 'Other destination', $2, 'offline' FROM runtime_host WHERE id=$1",
+            &[&host_id, &other_host],
+        )
+        .await
+        .unwrap();
+    let expected_closes = expected_closes - 1;
+    let mut reconnected = connect_host_link(&base_url, &host_id, &host_token)
+        .await
+        .unwrap();
+    let (close_started, observed_close) = tokio::sync::oneshot::channel();
+    let (release_close, wait_for_assignment) = tokio::sync::oneshot::channel();
+    let close_acknowledgements = tokio::spawn(async move {
+        let mut count = 0;
+        let mut close_started = Some(close_started);
+        let mut wait_for_assignment = Some(wait_for_assignment);
+        while let Some(Ok(Message::Text(text))) = reconnected.next().await {
+            let call: Value = serde_json::from_str(&text).unwrap();
+            if call["kind"] != "call" {
+                continue;
+            }
+            assert_eq!(call["request"]["call"], "terminal_close");
+            count += 1;
+            if let Some(started) = close_started.take() {
+                started.send(()).unwrap();
+                wait_for_assignment.take().unwrap().await.unwrap();
+            }
+            reconnected
+                .send(Message::Text(
+                    json!({"kind":"result", "id":call["id"], "ok":null})
+                        .to_string()
+                        .into(),
+                ))
+                .await
+                .unwrap();
+            if count == expected_closes {
+                break;
+            }
+        }
+        count
+    });
+    let revoke_router = router.clone();
+    let revoke_actor = operator.clone();
+    let revoke_id = host_id.clone();
+    let revocation = tokio::spawn(async move {
+        api_json_payload_request(
+            revoke_router,
+            &revoke_actor,
+            Method::DELETE,
+            format!("/v1/runtime-hosts/{revoke_id}"),
+            Value::Null,
+        )
+        .await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(10), observed_close)
+        .await
+        .unwrap()
+        .unwrap();
+    // Revocation has enumerated A's bindings and is waiting for the first
+    // device acknowledgement. Commit a move of a later binding to B under the
+    // same binding lock used by assignment. Revocation must not close B.
+    let mut moving_client = RuntimeStore::new(database.database_url.clone())
+        .connect()
+        .await
+        .unwrap();
+    let moving_tx = moving_client.transaction().await.unwrap();
+    crate::handlers_terminals::lock_terminal_launch(&moving_tx, &moved_away_id)
+        .await
+        .unwrap();
+    moving_tx
+        .execute(
+            "UPDATE agent_runtime_bindings SET config_json=jsonb_set(
+          config_json - 'terminal_session' - 'terminal_capture',
+          '{runtime_host_id}', to_jsonb($2::text)), updated_at=NOW() WHERE id=$1",
+            &[&moved_away_id, &other_host],
+        )
+        .await
+        .unwrap();
+    moving_tx.commit().await.unwrap();
+    let moving_id: String = client.query_one(
+        "SELECT id FROM agent_runtime_bindings WHERE config_json->>'runtime_host_id'=$1 ORDER BY id LIMIT 1",
+        &[&host_id],
+    ).await.unwrap().get(0);
+    let assign_router = router.clone();
+    let assign_actor = operator.clone();
+    let assign_host = host_id.clone();
+    let assign_id = moving_id.clone();
+    let assignment = tokio::spawn(async move {
+        api_json_payload_request(
+            assign_router,
+            &assign_actor,
+            Method::PUT,
+            format!("/v1/runtime/bindings/{assign_id}/host"),
+            json!({"runtime_host_id":assign_host}),
+        )
+        .await
+    });
+    // The device acknowledgement holds revocation open. Wait for the competing
+    // assignment's database lock, not a scheduler-dependent sleep.
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let blocked: bool = client.query_one(
+                "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock')", &[],
+            ).await.unwrap().get(0);
+            if blocked { break; }
+            tokio::task::yield_now().await;
+        }
+    }).await.unwrap();
+    release_close.send(()).unwrap();
+    let (revoke_status, _) = revocation.await.unwrap();
     assert_eq!(revoke_status, StatusCode::NO_CONTENT);
+    assert_eq!(close_acknowledgements.await.unwrap(), expected_closes);
+    let (assign_status, _) = assignment.await.unwrap();
+    assert_eq!(assign_status, StatusCode::BAD_REQUEST);
+    let assigned: Option<String> = client
+        .query_one(
+            "SELECT config_json->>'runtime_host_id' FROM agent_runtime_bindings WHERE id=$1",
+            &[&moving_id],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert!(
+        assigned.is_none(),
+        "a revoked device cannot receive a late assignment"
+    );
+    let kept_host: String = client
+        .query_one(
+            "SELECT config_json->>'runtime_host_id' FROM agent_runtime_bindings WHERE id=$1",
+            &[&moved_away_id],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(
+        kept_host, other_host,
+        "revoking A must leave the moved B binding alone"
+    );
     let rejected = router
         .oneshot(
             Request::builder()
@@ -2836,7 +3149,7 @@ async fn bootstrap_carries_runtime_bindings_and_the_feed_names_new_ones() {
     assert_eq!(bound["conversation_id"], conversation.id);
     assert_eq!(bound["conversation_type"], "direct");
     assert_eq!(bound["agent_name"], "Terminal Dev");
-    assert_eq!(bound["interaction_mode"], "terminal");
+    assert_eq!(bound["interaction_mode"], "session");
     assert!(
         bound["conversation_name"]
             .as_str()

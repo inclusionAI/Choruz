@@ -9,6 +9,10 @@ use chrono::{DateTime, Utc};
 
 use crate::output;
 
+fn replay_limit(from_seq: i64, to_seq: Option<i64>) -> i64 {
+    to_seq.map(|t| t - from_seq).unwrap_or(10_000).max(1)
+}
+
 /// Replay conversation events within a sequence range.
 pub async fn replay_conversation(
     store: &EventStore,
@@ -17,7 +21,7 @@ pub async fn replay_conversation(
     to_seq: Option<i64>,
     json: bool,
 ) -> Result<(), String> {
-    let limit = to_seq.map(|t| t - from_seq).unwrap_or(10_000).max(1);
+    let limit = replay_limit(from_seq, to_seq);
 
     let events = store
         .get_events_after_seq(conversation_id, from_seq, limit)
@@ -157,19 +161,16 @@ pub async fn list_dead_letters(
 
 #[cfg(test)]
 mod tests {
+    use super::replay_limit;
+
     #[test]
     fn limit_calculation() {
-        let from = 10_i64;
-        let to: Option<i64> = Some(50);
-        let limit = to.map(|t| t - from).unwrap_or(10_000).max(1);
-        assert_eq!(limit, 40);
+        assert_eq!(replay_limit(10, Some(50)), 40);
+        assert_eq!(replay_limit(10, Some(10)), 1);
     }
 
     #[test]
     fn limit_calculation_no_upper() {
-        let from = 0_i64;
-        let to: Option<i64> = None;
-        let limit = to.map(|t| t - from).unwrap_or(10_000).max(1);
-        assert_eq!(limit, 10_000);
+        assert_eq!(replay_limit(0, None), 10_000);
     }
 }

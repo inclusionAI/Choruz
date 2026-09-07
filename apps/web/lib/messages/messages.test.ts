@@ -236,12 +236,13 @@ describe("appendIncrementalMessages", () => {
     const existing: MessagesByConv = { c1: [msg("m1", "c1", 1)] };
     const result = appendIncrementalMessages(existing, "c1", []);
     expect(result).toBe(existing);
+    expect(appendIncrementalMessages(existing, "c1", existing.c1)).toBe(existing);
   });
 
   it("seeds an empty conv with all new messages", () => {
     const existing: MessagesByConv = {};
-    const result = appendIncrementalMessages(existing, "c1", [msg("m1", "c1", 1)]);
-    expect(result.c1.map((m) => m.id)).toEqual(["m1"]);
+    const result = appendIncrementalMessages(existing, "c1", [msg("m1", "c1", 1), msg("m2", "c1", 2)]);
+    expect(result.c1.map((m) => m.id)).toEqual(["m1", "m2"]);
   });
 
   it("ignores optimistic tail messages when appending incremental replies", () => {

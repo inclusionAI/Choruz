@@ -14,6 +14,9 @@ import {
 const TerminalView = lazy(() =>
   import("../runtime/terminal-view").then((m) => ({ default: m.TerminalView })),
 );
+const AgentSessionView = lazy(() =>
+  import("../runtime/agent-session-view").then((m) => ({ default: m.AgentSessionView })),
+);
 
 import { trace, endTrace, initTrace, startInteractionTracking, setActivityContext } from "../../lib/api/choruz-trace";
 import { mergePreviewIntoMessages, appendIncrementalMessages, mergeFetchedMessages, maxCachedSeq, messagesMissingFromPrevious, upsertConfirmedMessage } from "../../lib/messages/messages";
@@ -169,6 +172,7 @@ export function ChatApp({ initialSnapshot, sessionToken, runtimeBindings: initia
   const [bootstrapHasMore, setBootstrapHasMore] = useState(initialBootstrapHasMore);
   const [loadingMoreConversations, setLoadingMoreConversations] = useState(false);
   const [messagesByConv, setMessagesByConv] = useState(initialSnapshot.messages_by_conversation);
+  const [localSend, setLocalSend] = useState<{ conversationId: string; messageId: string } | null>(null);
   const [messagePageState, setMessagePageState] = useState<Record<string, {
     hasMoreBefore: boolean;
     loadingBefore: boolean;
@@ -1449,6 +1453,8 @@ export function ChatApp({ initialSnapshot, sessionToken, runtimeBindings: initia
         ...prev,
         [activeConvId]: [...(prev[activeConvId] ?? []), optimisticMsg],
       }));
+      setSearchTarget(null);
+      setLocalSend({ conversationId: activeConvId, messageId: idempotencyKey });
 
       try {
         await apiFetch<ChatMessage>("/v1/messages", sessionToken, {
@@ -1758,6 +1764,8 @@ export function ChatApp({ initialSnapshot, sessionToken, runtimeBindings: initia
           ...prev,
           [convId]: [...(prev[convId] ?? []), optimisticMsg],
         }));
+        setSearchTarget(null);
+        setLocalSend({ conversationId: convId, messageId: idempotencyKey });
 
         await apiFetch<ChatMessage>("/v1/messages", sessionToken, {
           method: "POST",
@@ -2188,7 +2196,9 @@ export function ChatApp({ initialSnapshot, sessionToken, runtimeBindings: initia
                 }
               >
                 <Suspense fallback={null}>
-                  <TerminalView bindingId={bindingId} sessionToken={sessionToken} gatewayBaseUrl={gatewayBaseUrl} />
+                  {runtimeBindings.find((binding) => binding.id === bindingId)?.interaction_mode === "session"
+                    ? <AgentSessionView bindingId={bindingId} sessionToken={sessionToken} gatewayBaseUrl={gatewayBaseUrl} />
+                    : <TerminalView bindingId={bindingId} sessionToken={sessionToken} gatewayBaseUrl={gatewayBaseUrl} />}
                 </Suspense>
               </div>
             ))}
@@ -2215,6 +2225,7 @@ export function ChatApp({ initialSnapshot, sessionToken, runtimeBindings: initia
                     <div className="chat-primary">
                       <MessageList
                         messages={timelineMessages}
+                        localSendId={localSend?.conversationId === activeConv.id ? localSend.messageId : null}
                         principal={principal}
                         principals={displayPrincipals}
                         activeConv={activeConv}

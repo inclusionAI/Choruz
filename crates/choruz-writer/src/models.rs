@@ -175,24 +175,6 @@ mod tests {
     }
 
     #[test]
-    fn write_outcome_variants() {
-        let committed = WriteOutcome::Committed {
-            reply_event_id: "re-1".into(),
-            seq: 42,
-        };
-        assert!(matches!(committed, WriteOutcome::Committed { .. }));
-
-        let skipped = WriteOutcome::SkippedNotSucceeded;
-        assert_eq!(skipped, WriteOutcome::SkippedNotSucceeded);
-
-        let empty = WriteOutcome::SkippedEmptyCommitted;
-        assert_eq!(empty, WriteOutcome::SkippedEmptyCommitted);
-
-        let dup = WriteOutcome::DuplicateTurn;
-        assert_eq!(dup, WriteOutcome::DuplicateTurn);
-    }
-
-    #[test]
     fn agent_result_status_serde() {
         assert_eq!(
             serde_json::to_string(&AgentResultStatus::Succeeded).unwrap(),

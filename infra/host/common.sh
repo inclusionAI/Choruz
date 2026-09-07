@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-ENV_FILE="${ROOT_DIR}/infra/host/.env"
+ENV_FILE="${CHORUZ_HOST_ENV_FILE:-${ROOT_DIR}/infra/host/.env}"
 EXAMPLE_FILE="${ROOT_DIR}/infra/host/env.example"
 CHORUZ_API_GATEWAY_PROCESS_REGEX='(^cchoruz-api-gateway$|^n.*/choruz-api-gateway$)'
 CHORUZ_PIPELINE_PROCESS_REGEX='(^cchoruz-pipeline$|^n.*/choruz-pipeline$)'
@@ -212,7 +212,11 @@ maybe_generate_host_env() {
   echo "generated host port config: ${ENV_FILE}" >&2
 }
 
-maybe_generate_host_env
+if [[ -n "${CHORUZ_HOST_ENV_FILE:-}" ]]; then
+  [[ -f "${ENV_FILE}" ]] || { echo "host environment file does not exist: ${ENV_FILE}" >&2; exit 1; }
+else
+  maybe_generate_host_env
+fi
 
 if [[ -f "${ENV_FILE}" ]]; then
   # shellcheck disable=SC1090
@@ -240,6 +244,9 @@ if [[ -z "${CHORUZ_PG_USER:-}" ]]; then
 fi
 
 RUNTIME_DIR="${ROOT_DIR}/${CHORUZ_RUNTIME_DIR}"
+if [[ "${CHORUZ_RUNTIME_DIR}" == /* ]]; then
+  RUNTIME_DIR="${CHORUZ_RUNTIME_DIR}"
+fi
 DATA_DIR="${ROOT_DIR}/${CHORUZ_DATA_DIR}"
 LOG_DIR="${ROOT_DIR}/${CHORUZ_LOG_DIR}"
 PID_DIR="${RUNTIME_DIR}/pids"

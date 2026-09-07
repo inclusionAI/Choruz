@@ -447,7 +447,8 @@ describe("group provisioning runner", () => {
     });
     const created = await runner.createJob(createInput({ idempotencyKey: "idem-1", plan: basePlan }));
     let completed = await runner.runJob({ sessionToken: "token", actorId: "human-1", jobId: created.id, maxSteps: 10 });
-    while (completed?.status !== "completed") {
+    for (let attempts = 0; completed?.status !== "completed"; attempts++) {
+      expect(attempts, `last runner status: ${completed?.status}`).toBeLessThan(20);
       completed = await runner.runJob({ sessionToken: "token", actorId: "human-1", jobId: created.id, maxSteps: 10 });
     }
     const replayed = await runner.runJob({ sessionToken: "token", actorId: "human-1", jobId: created.id, maxSteps: 10 });
@@ -570,7 +571,8 @@ describe("group provisioning runner", () => {
     };
     const created = await runner.createJob(createInput({ idempotencyKey: "idem-1", plan }));
     let completed = await runner.runJob({ sessionToken: "token", actorId: "human-1", jobId: created.id, maxSteps: 10 });
-    while (completed?.status !== "completed") {
+    for (let attempts = 0; completed?.status !== "completed"; attempts++) {
+      expect(attempts, `last runner status: ${completed?.status}`).toBeLessThan(20);
       completed = await runner.runJob({ sessionToken: "token", actorId: "human-1", jobId: created.id, maxSteps: 10 });
     }
 
@@ -644,7 +646,8 @@ describe("group provisioning runner", () => {
       displayName: "Reusable Operator",
     }));
     let completed = await runner.runJob({ sessionToken: "token", actorId: "human-1", jobId: created.id, maxSteps: 10 });
-    while (completed?.status !== "completed") {
+    for (let attempts = 0; completed?.status !== "completed"; attempts++) {
+      expect(attempts, `last runner status: ${completed?.status}`).toBeLessThan(20);
       completed = await runner.runJob({ sessionToken: "token", actorId: "human-1", jobId: created.id, maxSteps: 10 });
     }
 
@@ -678,7 +681,8 @@ describe("group provisioning runner", () => {
     });
     const created = await runner.createJob(createInput({ idempotencyKey: "idem-1", plan: planWithoutWorkflow }));
     let completed = await runner.runJob({ sessionToken: "token", actorId: "human-1", jobId: created.id, maxSteps: 10 });
-    while (completed?.status !== "completed") {
+    for (let attempts = 0; completed?.status !== "completed"; attempts++) {
+      expect(attempts, `last runner status: ${completed?.status}`).toBeLessThan(20);
       completed = await runner.runJob({ sessionToken: "token", actorId: "human-1", jobId: created.id, maxSteps: 10 });
     }
 
@@ -875,7 +879,8 @@ describe("group provisioning runner", () => {
     };
     const created = await runner.createJob(createInput({ idempotencyKey: "idem-1", plan }));
     let failed = await runner.runJob({ sessionToken: "token", actorId: "human-1", jobId: created.id, maxSteps: 10 });
-    while (failed?.status !== "partial_failure") {
+    for (let attempts = 0; failed?.status !== "partial_failure"; attempts++) {
+      expect(attempts, `last runner status: ${failed?.status}`).toBeLessThan(20);
       failed = await runner.runJob({ sessionToken: "token", actorId: "human-1", jobId: created.id, maxSteps: 10 });
     }
 
@@ -906,7 +911,8 @@ describe("group provisioning runner", () => {
     });
     const created = await runner.createJob(createInput({ idempotencyKey: "idem-1", plan: basePlan }));
     let failed = await runner.runJob({ sessionToken: "token", actorId: "human-1", jobId: created.id, maxSteps: 10 });
-    while (failed?.status !== "failed") {
+    for (let attempts = 0; failed?.status !== "failed"; attempts++) {
+      expect(attempts, `last runner status: ${failed?.status}`).toBeLessThan(20);
       failed = await runner.runJob({ sessionToken: "token", actorId: "human-1", jobId: created.id, maxSteps: 10 });
     }
 
@@ -962,7 +968,8 @@ describe("group provisioning runner", () => {
     };
     const created = await runner.createJob(createInput({ idempotencyKey: "idem-1", plan }));
     let failed = await runner.runJob({ sessionToken: "token", actorId: "human-1", jobId: created.id, maxSteps: 10 });
-    while (failed?.status !== "partial_failure") {
+    for (let attempts = 0; failed?.status !== "partial_failure"; attempts++) {
+      expect(attempts, `last runner status: ${failed?.status}`).toBeLessThan(20);
       failed = await runner.runJob({ sessionToken: "token", actorId: "human-1", jobId: created.id, maxSteps: 10 });
     }
 
@@ -1048,7 +1055,8 @@ describe("group provisioning runner", () => {
     };
     const created = await runner.createJob(createInput({ idempotencyKey: "idem-1", plan }));
     let failed = await runner.runJob({ sessionToken: "token", actorId: "human-1", jobId: created.id, maxSteps: 10 });
-    while (failed?.status !== "partial_failure") {
+    for (let attempts = 0; failed?.status !== "partial_failure"; attempts++) {
+      expect(attempts, `last runner status: ${failed?.status}`).toBeLessThan(20);
       failed = await runner.runJob({ sessionToken: "token", actorId: "human-1", jobId: created.id, maxSteps: 10 });
     }
 
@@ -1077,7 +1085,8 @@ describe("group provisioning runner", () => {
     });
     const created = await runner.createJob(createInput({ idempotencyKey: "idem-1", plan: basePlan }));
     let failed = await runner.runJob({ sessionToken: "token", actorId: "human-1", jobId: created.id, maxSteps: 10 });
-    while (failed?.status !== "partial_failure") {
+    for (let attempts = 0; failed?.status !== "partial_failure"; attempts++) {
+      expect(attempts, `last runner status: ${failed?.status}`).toBeLessThan(20);
       failed = await runner.runJob({ sessionToken: "token", actorId: "human-1", jobId: created.id, maxSteps: 10 });
     }
 
@@ -1119,7 +1128,8 @@ describe("group provisioning runner", () => {
     });
     const created = await runner.createJob(createInput({ idempotencyKey: "idem-1", plan: basePlan }));
     let warned = await runner.runJob({ sessionToken: "token", actorId: "human-1", jobId: created.id, maxSteps: 10 });
-    while (warned?.status !== "completed_with_warning") {
+    for (let attempts = 0; warned?.status !== "completed_with_warning"; attempts++) {
+      expect(attempts, `last runner status: ${warned?.status}`).toBeLessThan(20);
       warned = await runner.runJob({ sessionToken: "token", actorId: "human-1", jobId: created.id, maxSteps: 10 });
     }
 

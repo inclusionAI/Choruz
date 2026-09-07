@@ -20,6 +20,7 @@ mod handlers_runtime_host_onboarding;
 mod handlers_runtime_host_operations;
 mod handlers_runtime_hosts;
 mod handlers_runtime_status;
+mod handlers_sessions;
 mod handlers_ssh;
 mod handlers_sync_ws;
 mod handlers_tasks;
@@ -328,6 +329,14 @@ pub fn router_with_runtime(
         .route(
             "/v1/ws/terminals/{binding_id}",
             get(handlers_terminals::websocket_terminal),
+        )
+        .route(
+            "/v1/runtime/bindings/{binding_id}/session",
+            get(handlers_sessions::read).post(handlers_sessions::open),
+        )
+        .route(
+            "/v1/runtime/bindings/{binding_id}/session/commands",
+            post(handlers_sessions::command),
         )
         .route("/v1/telemetry", post(handlers_events::ingest_telemetry))
         .route("/v1/activity", get(handlers_activity::list))

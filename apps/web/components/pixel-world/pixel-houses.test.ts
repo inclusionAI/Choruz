@@ -137,8 +137,10 @@ describe("generateColors", () => {
     expect(generateColors("alpha")).toEqual(generateColors("alpha"));
   });
 
-  it("accent and accentDark are different shades of the same hue", () => {
+  it("accentDark reduces each accent channel by twenty percent", () => {
     const c = generateColors("g");
-    expect(c.accent).not.toBe(c.accentDark);
+    for (const offset of [1, 3, 5]) {
+      expect(parseInt(c.accentDark.slice(offset, offset + 2), 16)).toBe(Math.round(parseInt(c.accent.slice(offset, offset + 2), 16) * 0.8));
+    }
   });
 });

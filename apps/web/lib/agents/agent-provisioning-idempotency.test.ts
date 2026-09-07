@@ -11,6 +11,8 @@ const rows = new Map<string, {
 
 const queryLog: string[] = [];
 const lockTails = new Map<string, Promise<void>>();
+const released = vi.fn();
+let rejectLock = false;
 const query = async <T extends object>(statement: QueryStatement, values: readonly unknown[] = []) => {
     const sql = typeof statement === "string" ? statement : statement.text;
     queryLog.push(sql);
@@ -46,6 +48,7 @@ const client: QueryClient & {
         const sql = typeof statement === "string" ? statement : statement.text;
         if (sql.includes("pg_advisory_lock")) {
           queryLog.push(sql);
+          if (rejectLock) throw new Error("connection lost acquiring lock");
           const scope = String(values[0]);
           const previous = lockTails.get(scope) ?? Promise.resolve();
           let unlock!: () => void;
@@ -64,6 +67,7 @@ const client: QueryClient & {
         return query<T>(statement, values);
       },
       release() {
+        released();
         unlockHeld?.();
         unlockHeld = null;
       },
@@ -92,6 +96,8 @@ beforeEach(() => {
   rows.clear();
   queryLog.length = 0;
   lockTails.clear();
+  released.mockClear();
+  rejectLock = false;
 });
 
 describe("withProvisioningIdempotency", () => {
@@ -119,7 +125,10 @@ describe("withProvisioningIdempotency", () => {
     });
 
     const first = withProvisioningIdempotency("human-1", body, action);
+    await vi.waitFor(() => expect(resourceCalls).toBe(1));
     const second = withProvisioningIdempotency("human-1", body, action);
+    await vi.waitFor(() => expect(queryLog.filter((sql) => sql.includes("pg_advisory_lock"))).toHaveLength(2));
+    expect(action).toHaveBeenCalledTimes(1);
     release();
 
     await expect(Promise.all([first, second])).resolves.toEqual([
@@ -158,6 +167,15 @@ describe("withProvisioningIdempotency", () => {
     expect(createPrincipalCalls).toBe(1);
     expect(queryLog[0]).toContain("pg_advisory_lock");
     expect(queryLog.at(-1)).toContain("pg_advisory_unlock");
+  });
+
+  it("releases the connection when lock acquisition fails without running the action", async () => {
+    rejectLock = true;
+    const action = vi.fn();
+    await expect(withProvisioningIdempotency("human-1", body, action)).rejects.toThrow("connection lost acquiring lock");
+    expect(action).not.toHaveBeenCalled();
+    expect(released).toHaveBeenCalledOnce();
+    expect(queryLog.some((sql) => sql.includes("pg_advisory_unlock"))).toBe(false);
   });
 
   it("rejects reuse of a key with a different request body", async () => {

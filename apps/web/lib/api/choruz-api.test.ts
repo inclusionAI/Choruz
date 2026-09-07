@@ -146,6 +146,7 @@ describe("gateway error responses", () => {
       expect.objectContaining<ApiRequestError>({
         name: "ApiRequestError",
         status: 401,
+        retryAfter: null,
         message: "invalid or expired session",
       }),
     );

@@ -248,7 +248,7 @@ export function MessageBubble({
   if (msg.content_type === "system") {
     return (
       <div key={msg.id} className="msg-system">
-        <span>{msg.content}</span>
+        <span>{stripAnsi(msg.content)}</span>
       </div>
     );
   }
@@ -301,10 +301,8 @@ export function MessageBubble({
         principals,
         replyMsg.sender_id,
       );
-      const preview =
-        replyMsg.content.length > 80
-          ? replyMsg.content.slice(0, 80) + "…"
-          : replyMsg.content;
+      const quoteContent = stripAnsi(replyMsg.content);
+      const preview = quoteContent.length > 80 ? quoteContent.slice(0, 80) + "…" : quoteContent;
       // Jump only works for messages in the loaded window; a fetched-on-
       // demand original still shows its content but isn't scroll-anchored.
       const jumpable = Boolean(inHistory);
@@ -338,6 +336,8 @@ export function MessageBubble({
     }
   }
 
+  const plainContent = stripAnsi(msg.content);
+  const displayContent = isAgentMsg ? stripChoruzTags(stripTuiChars(plainContent)) : plainContent;
   const groupClass = [
     "msg-group",
     isSelf ? "self" : "",
@@ -390,14 +390,12 @@ export function MessageBubble({
             <AttachmentContent metadata={msg.metadata} />
           ) : (
             <div className="msg-markdown">
-              <Suspense fallback={<span>{isAgentMsg ? stripChoruzTags(stripTuiChars(msg.content)) : msg.content}</span>}>
+              <Suspense fallback={<span>{displayContent}</span>}>
                 <ReactMarkdown
                   remarkPlugins={_remarkGfm ? [_remarkGfm] : []}
                   components={MARKDOWN_COMPONENTS}
                 >
-                  {isAgentMsg
-                    ? stripChoruzTags(stripTuiChars(msg.content))
-                    : msg.content}
+                  {displayContent}
                 </ReactMarkdown>
               </Suspense>
             </div>

@@ -30,7 +30,7 @@ use std::sync::Mutex;
 
 use choruz_common::AppError;
 use choruz_store::EventStore;
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Utc};
 
 // ── In-memory rate limiter (Phase 3A) ──────────────────────────────────
 //
@@ -59,17 +59,9 @@ impl RateLimiter {
     /// Returns `Ok(())` if under the limit, or `Err(RateLimited)` if the
     /// principal has exceeded `limit_per_minute` requests in the last 60s.
     pub fn check(&self, principal_id: &str) -> Result<(), AppError> {
-        let window_start = Utc::now() - Duration::minutes(1);
         let mut windows = self.windows.lock().expect("rate limiter lock");
         let entries = windows.entry(principal_id.to_owned()).or_default();
-        entries.retain(|ts| *ts > window_start);
-        if entries.len() >= self.limit_per_minute {
-            return Err(AppError::RateLimited {
-                retry_after_ms: 1000,
-            });
-        }
-        entries.push(Utc::now());
-        Ok(())
+        crate::rate_limit::check_window(entries, self.limit_per_minute, Utc::now())
     }
 }
 

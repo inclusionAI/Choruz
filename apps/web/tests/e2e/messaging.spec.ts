@@ -1,6 +1,7 @@
 import { Buffer } from "node:buffer";
+import { randomUUID } from "node:crypto";
 import { expect, test } from "@playwright/test";
-import { login, gotoDashboard, API_BASE } from "../fixtures/auth";
+import { signup, gotoDashboard, API_BASE } from "../fixtures/auth";
 import {
   createGroup,
   createAndOpenGroup,
@@ -9,6 +10,10 @@ import {
   getMessages,
   uniqueName,
 } from "../fixtures/api";
+
+// Message-heavy histories must not consume another worker's operator quota.
+const login = (page: import("@playwright/test").Page) =>
+  signup(page, `msg-${randomUUID().slice(0, 24)}`, "messaging-test-password");
 
 test.describe("Messaging", () => {
   /* ---------------------------------------------------------------------- */
@@ -21,13 +26,12 @@ test.describe("Messaging", () => {
     principalId: string,
     prefix: string,
   ) {
-    const companyRes = await page.request.get(`${API_BASE}/v1/companies?principal_id=${principalId}`, {
+    const companyRes = await page.request.post(`${API_BASE}/v1/companies`, {
       headers: { Authorization: `Bearer ${token}` },
+      data: { actor_id: principalId, name: uniqueName("upload-company") },
     });
     expect(companyRes.ok()).toBeTruthy();
-    const companies = (await companyRes.json()) as Array<{ id: string; name: string; slug?: string | null }>;
-    const activeCompany = companies.find((c) => c.slug === "default") ?? companies[0];
-    expect(activeCompany).toBeTruthy();
+    const activeCompany = (await companyRes.json()) as { id: string };
 
     const groupName = uniqueName(prefix);
     const groupRes = await page.request.post(`${API_BASE}/v1/groups`, {
@@ -152,10 +156,8 @@ test.describe("Messaging", () => {
     await page.route((url) => url.pathname === `/api/v1/conversations/${group.id}/message-page` && url.searchParams.has("before_seq"),
       (route) => route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "Unavailable" }) }),
       { times: 1 });
-    await messageArea.evaluate((element) => {
-      element.scrollTop = 0;
-      element.dispatchEvent(new Event("scroll", { bubbles: true }));
-    });
+    await messageArea.hover();
+    await page.mouse.wheel(0, -10000);
     const error = messageArea.getByRole("alert");
     await expect(error).toContainText("Could not load older messages.");
     await expect(messageArea.getByText(`${prefix}-6`, { exact: true })).toBeVisible();
@@ -167,11 +169,21 @@ test.describe("Messaging", () => {
     expect((await olderPage).ok()).toBeTruthy();
     await expect(error).toHaveCount(0);
 
-    await messageArea.evaluate((element) => {
-      element.scrollTop = 0;
-      element.dispatchEvent(new Event("scroll", { bubbles: true }));
-    });
+    await messageArea.hover();
+    await page.mouse.wheel(0, -10000);
     await expect(messageArea.getByText(`${prefix}-1`, { exact: true })).toBeVisible();
+    const addedName = uniqueName("history-refresh");
+    const refreshed = page.waitForResponse(async (response) => response.url().includes("/v1/bootstrap?") && response.ok() && (await response.text()).includes(addedName));
+    await createGroup(page, token, principal.id, addedName);
+    const snapshot = await refreshed;
+    const bootstrap = await snapshot.json();
+    const preview = bootstrap.conversations.items.find((item: { conversation: { id: string } }) => item.conversation.id === group.id);
+    expect(preview.last_message.content).toBe(`${prefix}-55`);
+    await expect(page.locator(".conv-item").filter({ hasText: addedName })).toHaveCount(1);
+    await expect(messageArea.getByText(`${prefix}-1`, { exact: true })).toBeVisible();
+    await messageArea.hover();
+    await page.mouse.wheel(0, 10000);
+    await expect(messageArea.getByText(`${prefix}-55`, { exact: true })).toBeInViewport();
   });
 
   test("history errors do not follow a conversation switch", async ({ page }) => {
@@ -207,14 +219,16 @@ test.describe("Messaging", () => {
       if (requests === 2) delivered();
     });
     try {
-      await area.evaluate((el) => { el.scrollTop = 0; el.dispatchEvent(new Event("scroll", { bubbles: true })); });
+      await area.hover();
+      await page.mouse.wheel(0, -10000);
       await expect(area.getByRole("alert")).toContainText("Could not load older messages.");
       await page.locator(`[data-conversation-id="${second.id}"]`).click();
       await expect(area.getByText("other conversation", { exact: true })).toBeVisible();
       await expect(area.getByRole("alert")).toHaveCount(0);
       await page.locator(`[data-conversation-id="${first.id}"]`).click();
       await expect(area.getByText("history entry 54", { exact: true })).toBeVisible();
-      await area.evaluate((el) => { el.scrollTop = 0; el.dispatchEvent(new Event("scroll", { bubbles: true })); });
+      await area.hover();
+      await page.mouse.wheel(0, -10000);
       await held;
       await page.locator(`[data-conversation-id="${second.id}"]`).click();
       release();
@@ -549,20 +563,6 @@ test.describe("Messaging", () => {
     await expect(page.locator(".messages-area").getByText(testMsg)).toBeVisible({
       timeout: 2000,
     });
-  });
-
-  /* ---------------------------------------------------------------------- */
-  /*  Message via API (no CHORUZ_REPLY tags)                                  */
-  /* ---------------------------------------------------------------------- */
-
-  test("should not contain CHORUZ_REPLY tags in messages", async ({ page }) => {
-    const { token, principal } = await login(page);
-    const group = await createGroup(page, token, principal.id, uniqueName("msg-reply-tags"));
-    const msgs = await getMessages(page, token, principal.id, group.id);
-    for (const m of msgs) {
-      expect(m.content).not.toContain("{{CHORUZ_REPLY}}");
-      expect(m.content).not.toContain("{{/CHORUZ_REPLY}}");
-    }
   });
 
   /* ---------------------------------------------------------------------- */

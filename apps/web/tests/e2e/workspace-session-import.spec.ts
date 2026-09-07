@@ -16,13 +16,15 @@ runtimeTest("imports and resumes default and isolated account sessions on the se
   const workspace = path.join(home, "project");
   await mkdir(workspace);
   const db = await postgresQueryClient();
+  const fixture = path.join(home, "structured-cli");
+  await writeFile(fixture, await readFile(path.resolve("tests/fixtures/structured-cli.py")), { mode: 0o700 });
   const selected = [] as Array<{ harness: string; native_session_id: string; workspace_path: string; harness_account_id: string | null; marker: string }>;
   for (const harness of ["claude", "codex"]) {
     const sessionId = randomUUID();
     const binary = path.join(home, "bin", harness);
     const profileEnv = harness === "claude" ? '${CLAUDE_CONFIG_DIR}' : '${CODEX_HOME}';
     const markerFile = harness === "claude" ? "auth-marker" : "auth.json";
-    await writeFile(binary, `#!/bin/sh\nmarker=$(cat "${profileEnv}/${markerFile}")\nprintf '%s\\n' "$@" > "$PWD/observed-$marker"\nexec cat\n`, { mode: 0o700 });
+    await writeFile(binary, `#!/bin/sh\nmarker=$(cat "${profileEnv}/${markerFile}")\nprintf '%s\\n' "$@" > "$PWD/observed-$marker"\nexec "${fixture}" "$@"\n`, { mode: 0o700 });
     for (const profile of ["default", "isolated"]) {
       const accountId = profile === "isolated" ? randomUUID() : null;
       const root = accountId ? path.join(home, "accounts", accountId, harness) : path.join(home, `.${harness}`);
@@ -71,10 +73,23 @@ runtimeTest("imports and resumes default and isolated account sessions on the se
   }
   await modal.getByRole("button", { name: "Select all", exact: true }).click();
   const importedResponse = page.waitForResponse((response) => response.url().endsWith("/workspace-sessions/import") && response.request().method() === "POST");
+  const openedSession = page.waitForResponse((response) => /\/runtime\/bindings\/[^/]+\/session$/.test(response.url()) && response.request().method() === "POST");
   await modal.getByRole("button", { name: "Import 4 sessions", exact: true }).click();
   const imported = await importedResponse;
   expect(imported.ok(), await imported.text()).toBeTruthy();
   expect((await imported.json()).imported).toHaveLength(4);
+  // Import opens the first DM. Release its structured session before testing native PTY resume.
+  const opened = await openedSession;
+  expect(opened.ok(), await opened.text()).toBe(true);
+  const snapshot = await opened.json();
+  await page.goto("about:blank");
+  await expect.poll(async () => {
+    const response = await page.request.get(opened.url(), { headers });
+    expect(response.ok(), await response.text()).toBe(true);
+    return (await response.json()).status;
+  }).toBe("ready");
+  const closed = await page.request.post(`${opened.url()}/commands`, { headers, data: { action: "close", instance: snapshot.instance } });
+  expect(closed.ok(), await closed.text()).toBe(true);
 
   const retry = await page.request.post(`${API_BASE}/v1/workspace-sessions/import`, { headers, data: { company_id: company.id, runtime_host_id: host.id, workspace_path: workspace, sessions: selected } });
   expect(retry.ok(), await retry.text()).toBeTruthy();

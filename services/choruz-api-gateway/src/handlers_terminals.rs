@@ -200,6 +200,16 @@ async fn terminal_resume_session_id(
     binding_id: &str,
     context: &str,
 ) -> Option<String> {
+    if binding.driver_type == DriverType::ClaudeTerminal
+        && let Some(anchor) = binding.valid_terminal_session_anchor_for_context(
+            None,
+            None,
+            Some(binding.terminal_generation()),
+            None,
+        )
+    {
+        return Some(anchor.session_id);
+    }
     if binding.driver_type == DriverType::CodexTerminal {
         if binding
             .external_session_id
@@ -293,7 +303,7 @@ async fn codex_resume_session_id_from_anchor(
 /// Prepare a Codex terminal's managed home on its device and start the
 /// capture window that attributes the session file it will write. Other
 /// drivers pass through unchanged.
-async fn prepare_codex_spawn_if_needed(
+pub(crate) async fn prepare_codex_spawn_if_needed(
     host: &RuntimeHost,
     runtime: &RuntimeStore,
     binding: RuntimeBinding,
@@ -389,7 +399,7 @@ pub(crate) async fn capture_codex_terminal_before_cleanup(
     reconcile_codex_terminal_session_from_capture(host, runtime, &latest_binding).await
 }
 
-fn terminal_spec(
+pub(crate) fn terminal_spec(
     binding: &RuntimeBinding,
     cols: u16,
     rows: u16,
@@ -422,7 +432,7 @@ fn terminal_spec(
 
 // ── Authorization ─────────────────────────────────────────────────────
 
-async fn authorize_terminal_binding(
+pub(crate) async fn authorize_terminal_binding(
     state: &ApiState,
     principal: &Principal,
     binding_id: &str,
@@ -506,34 +516,6 @@ async fn ensure_terminal_workspace_active(
         Ok(_) | Err(AppError::NotFound(_)) => Ok(()),
         Err(error) => Err(ApiError(error)),
     }
-}
-
-#[cfg(test)]
-fn codex_session_provenance_matches(
-    binding: &RuntimeBinding,
-    binding_id: &str,
-    expected_mode: &str,
-) -> bool {
-    binding
-        .config_json
-        .get("external_session_provenance")
-        .and_then(|v| v.as_str())
-        == Some("process_captured")
-        && binding
-            .config_json
-            .get("external_session_binding_id")
-            .and_then(|v| v.as_str())
-            == Some(binding_id)
-        && binding
-            .config_json
-            .get("external_session_driver_type")
-            .and_then(|v| v.as_str())
-            == Some(binding.driver_type.as_str())
-        && binding
-            .config_json
-            .get("external_session_mode")
-            .and_then(|v| v.as_str())
-            == Some(expected_mode)
 }
 
 // ── WebSocket terminal proxy ──────────────────────────────────────────
@@ -826,7 +808,11 @@ async fn terminal_bridge(
                 "Codex terminal session capture before PTY cleanup failed"
             ),
         }
-    } else {
+    } else if binding.driver_type != DriverType::ClaudeTerminal
+        || binding.terminal_session_anchor().is_none()
+    {
+        // Anchored Claude terminals retain their direct identity; discovery
+        // must not replace a concurrently updated headless identity.
         // Persist the active CLI's exact-workspace session before killing the
         // PTY, while its process context is still intact.
         match sync_session_id_from_device(&host, &runtime, &binding_id).await {
@@ -855,7 +841,7 @@ async fn terminal_bridge(
 
 /// Record transport activity, never terminal contents or reconstructed keystrokes.
 /// A telemetry storage failure is logged without changing the terminal's outcome.
-async fn record_terminal_activity(
+pub(crate) async fn record_terminal_activity(
     state: &ApiState,
     principal: &Principal,
     binding: &RuntimeBinding,
@@ -1018,9 +1004,8 @@ async fn submit_terminal_input(
 #[cfg(test)]
 mod tests {
     use super::{
-        codex_resume_session_id_from_anchor, codex_session_provenance_matches,
-        import_codex_terminal_session, terminal_capture_error_is_permanent,
-        terminal_resume_session_id,
+        codex_resume_session_id_from_anchor, import_codex_terminal_session,
+        terminal_capture_error_is_permanent, terminal_resume_session_id,
     };
     use crate::host_runtime::{LocalHost, RuntimeHost};
     use choruz_agent_runtime::{BindingState, DriverType, RuntimeBinding, RuntimeStore};
@@ -1116,23 +1101,6 @@ mod tests {
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }
-    }
-
-    #[test]
-    fn codex_terminal_provenance_accepts_matching_terminal_binding() {
-        let binding = runtime_binding_with_config(json!({
-            "external_session_provenance": "process_captured",
-            "external_session_driver_type": "codex_terminal",
-            "external_session_binding_id": "binding-1",
-            "external_session_mode": "terminal",
-            "external_session_captured_at": "2026-05-11T00:00:00Z"
-        }));
-
-        assert!(codex_session_provenance_matches(
-            &binding,
-            "binding-1",
-            "terminal"
-        ));
     }
 
     #[test]
@@ -1269,23 +1237,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn codex_terminal_provenance_rejects_headless_mode() {
-        let binding = runtime_binding_with_config(json!({
-            "external_session_provenance": "process_captured",
-            "external_session_driver_type": "codex_terminal",
-            "external_session_binding_id": "binding-1",
-            "external_session_mode": "headless",
-            "external_session_captured_at": "2026-05-11T00:00:00Z"
-        }));
-
-        assert!(!codex_session_provenance_matches(
-            &binding,
-            "binding-1",
-            "terminal"
-        ));
-    }
-
     #[tokio::test]
     async fn codex_terminal_resume_path_rejects_wrong_binding_session_id() {
         let binding = runtime_binding_with_config(json!({
@@ -1297,11 +1248,6 @@ mod tests {
         }));
         let runtime = RuntimeStore::new("host=127.0.0.1 port=1 user=unused dbname=unused");
 
-        assert!(!codex_session_provenance_matches(
-            &binding,
-            "binding-1",
-            "terminal"
-        ));
         assert_eq!(
             terminal_resume_session_id(&local_host(), &runtime, &binding, "binding-1", "test")
                 .await

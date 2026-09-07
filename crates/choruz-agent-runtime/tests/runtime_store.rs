@@ -422,6 +422,103 @@ async fn binding_creation_waits_for_disable_and_rejects_the_disabled_agent() {
 }
 
 #[tokio::test]
+async fn direct_anchor_allows_headless_completion_but_fences_owner_changes() {
+    let database = TestDatabase::create().await;
+    seed_prerequisites(&database.database_url, &["agent-direct"], &["conv-direct"]).await;
+    let store = RuntimeStore::new(database.database_url.clone());
+    let binding = store
+        .create_binding(CreateBindingInput {
+            conversation_id: "conv-direct".into(),
+            agent_principal_id: "agent-direct".into(),
+            driver_type: DriverType::ClaudeTerminal,
+            workspace_path: "/tmp/direct".into(),
+            git_worktree_path: None,
+            config_json: json!({"runtime_host_id":"device-a", "harness_account_profile_kind":"default"}),
+            audit_actor: Some(audit_actor()),
+        })
+        .await
+        .unwrap();
+    let input = TerminalSessionAnchorInput {
+        session_id: Uuid::now_v7().to_string(),
+        source: "native_cli".into(),
+        provenance: "direct_session_reserved".into(),
+        binding_id: binding.id.clone(),
+        conversation_id: binding.conversation_id.clone(),
+        agent_principal_id: binding.agent_principal_id.clone(),
+        company_id: "company-acme".into(),
+        driver_type: "claude_terminal".into(),
+        workspace_id: "workspace-a".into(),
+        workspace_path: binding.workspace_path.clone(),
+        native_home_path: "/accounts/a/claude".into(),
+        native_session_path: String::new(),
+        binding_generation: binding.terminal_generation(),
+        binding_updated_at: binding.updated_at,
+    };
+    let client = store.connect().await.unwrap();
+    client
+        .execute(
+            "UPDATE agent_runtime_bindings SET external_session_id='headless-new',
+        config_json=config_json || '{\"external_session_mode\":\"headless\"}'::jsonb,
+        updated_at=updated_at + interval '1 second' WHERE id=$1",
+            &[&binding.id],
+        )
+        .await
+        .unwrap();
+    let mut authorized = binding.clone();
+    authorized.config_json["agent_workspace_id"] = json!("workspace-a");
+    authorized.config_json["conversation_workspace_id"] = json!("company-acme");
+    let (first, second) = tokio::join!(
+        store.write_direct_session_anchor(&authorized, input.clone()),
+        store.write_direct_session_anchor(&authorized, input.clone())
+    );
+    let reserved = first.unwrap();
+    assert_eq!(
+        second.unwrap().valid_terminal_session_id(),
+        reserved.valid_terminal_session_id(),
+        "identical concurrent native captures are idempotent"
+    );
+    assert_eq!(
+        reserved.external_session_id.as_deref(),
+        Some("headless-new")
+    );
+    assert_eq!(
+        reserved.valid_terminal_session_id().as_deref(),
+        Some(input.session_id.as_str())
+    );
+    assert_eq!(
+        reserved.config_json["terminal_session"]["runtime_host_id"],
+        "device-a"
+    );
+    for (field, value) in [
+        ("runtime_host_id", json!("device-b")),
+        ("harness_account_profile_kind", json!("isolated")),
+        ("terminal_generation", json!(1)),
+        ("terminal_session", json!({"session_id":"replacement"})),
+        ("terminal_capture", json!({"state":"new-capture"})),
+    ] {
+        let mut changed = reserved.config_json.clone();
+        changed[field] = value;
+        client
+            .execute(
+                "UPDATE agent_runtime_bindings SET config_json=$2 WHERE id=$1",
+                &[&binding.id, &changed],
+            )
+            .await
+            .unwrap();
+        assert!(
+            store
+                .write_direct_session_anchor(&reserved, input.clone())
+                .await
+                .is_err(),
+            "must fence {field}"
+        );
+    }
+    let mut moved = reserved;
+    moved.config_json["runtime_host_id"] = json!("device-b");
+    assert_eq!(moved.valid_terminal_session_id(), None);
+}
+
+#[tokio::test]
 async fn terminal_session_anchor_preserves_unrelated_config_and_validates_binding() {
     let database = TestDatabase::create().await;
     seed_prerequisites(

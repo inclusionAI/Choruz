@@ -124,6 +124,20 @@ for (const scenario of ["reports load and delete failures", "keeps skill content
         await expect(readFile(join(ownedDirs[0], "SKILL.md"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
       } else {
         await expect(panel.getByText("audit-a", { exact: true })).toBeVisible();
+        // A native session capture updates the binding through this same sync
+        // trigger. Schedule that update after Skills opens, not by racing startup.
+        const refreshMarker = uniqueName("skills-binding-refresh");
+        const bindingRefreshed = page.waitForResponse(async (response) => {
+          if (response.request().method() !== "GET" || !new URL(response.url()).pathname.startsWith("/api/v1/runtime/bindings/")) return false;
+          const binding = await response.json();
+          return binding.agent_principal_id === agent.agentId && binding.last_error === refreshMarker;
+        });
+        const db = await postgresQueryClient();
+        await db.query("UPDATE agent_runtime_bindings SET last_error = $2, updated_at = NOW() WHERE agent_principal_id = $1", [agent.agentId, refreshMarker]);
+        await bindingRefreshed;
+        await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+        await expect(panel.locator(".detail-tab.active")).toHaveText("Skills");
+        await expect(panel.getByText("audit-a", { exact: true })).toBeVisible();
         let arrived!: () => void;
         let completed!: () => void;
         const held = new Promise<void>((resolve) => { arrived = resolve; });

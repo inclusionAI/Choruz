@@ -59,6 +59,25 @@ Apply the rows the change affects. This is not a Cartesian product of every devi
 | Terminal/editor rendering or theme | Use stable representative output, including relevant ANSI sequences, and assert the affected content-area geometry, foreground/background or visibility in supported affected themes. Add screenshot/recorded-output evidence when DOM assertions cannot capture the defect; inspect expected-output changes rather than blindly updating them. |
 | Harness protocol, login or actual model execution | Keep deterministic protocol fixtures and use the relevant [real-Harness smoke](real-harness-platform-smoke.md) or focused live check in an authorised test environment. A static smoke check or fake CLI run is not a live PASS. Missing credentials or devices are reported as blocked evidence, not silently substituted or counted as passing. |
 
+### Test value and incremental cost
+
+Before adding a test, find the existing owner of the same observable contract. Strengthen or extend that scenario when it can expose the failure. A new test must add a distinguishing state, boundary or outcome; a new file is not required. Apply the PR-type requirements through meaningful coverage, not a quota of tests.
+
+Judge overlap by the contract, setup, execution boundary and assertion together. A fast unit test of a parser and an assembled test of device dispatch serve different purposes. Local and remote cases are not duplicates when they prove different ownership. Similar names, file size and test-to-source ratios alone do not justify removal.
+
+For changed tests and their nearest overlapping scenarios, check:
+
+- Required setup fails explicitly when absent. Conditional assertions, early success returns and swallowed errors must not turn a missing feature into a passing test. An intentionally unavailable live capability is reported as unverified, not acceptance.
+- Assertions prove the named outcome at its owner. A reload test reloads; a persistence test re-reads storage. Mock expectations prove only their stated boundary, not an end-to-end result.
+- Merge or replace obsolete weak coverage when a stronger scenario subsumes it. Identify the retained owner and the unique guarantees before removing coverage; never delete, skip or weaken a failing test merely to get green.
+- Prefer focused cases for state variations and a small number of assembled journeys for boundary wiring. Share repeated setup only where it reduces maintenance without hiding assertions, resource ownership or cleanup.
+- Inspect repeated boot/login work, fixed waits, fixture complexity and runner configuration. Use observed timings when available; distinguish runner time from wall time and estimates from measurements. Do not impose a line-count target or an arbitrary performance budget.
+- When changing CI selection, compare selected and full jobs, including their environments and boundary replacements. Run overlapping suites together only for a named additional guarantee; removing one must preserve the required gate and each distinct environment's coverage.
+
+Record the existing owner, the incremental guarantee and any relevant cost or replacement in the PR's existing test evidence. A small test correction needs only a short explanation, not a repository-wide inventory. Pre-existing debt outside the affected contract is advisory, not an excuse to expand every PR.
+
+An explicitly requested whole-suite audit inventories tracked test files, inline tests, fixtures and runners; groups findings by contract; and records which paths were semantically reviewed versus mechanically scanned. Report confirmed defects separately from candidates needing runtime evidence. Static inspection is not a passing test run. Do not invent a deletion quota or claim all tests are effective from a keyword scan.
+
 ### Evidence at handoff
 
 The PR's Tests section links each affected contract to its owning scenario and assertion. Ran locally records the command, tested revision or working-tree scope, observed result and negative-control result where required. Risk names substitutions, blocked evidence and affected paths not exercised. Keep acceptance pending and do not declare the PR ready while required evidence is missing, unless the user explicitly accepts the limitation or narrows the scope. Even then, the untested path is not verified and the required CI check still applies. This policy does not grant access to accounts, spend or deployment authority.
@@ -74,7 +93,7 @@ The author checks this evidence before declaring the PR ready; the review proced
 | `migrations/**`, `Cargo.*`, `.cargo/**`, `rust-toolchain*` | Rust lint and tests for the whole workspace, DB and API smoke, e2e (P0 set) |
 | `apps/web/**`, `package.json`, `pnpm-lock.yaml` | Web: `vitest related` for the changed source files (the whole suite when the harness changes), typecheck, build; e2e for the touched feature (see below) |
 | `infra/host/**`, `scripts/historical-migrations.sha256` | DB and API smoke, e2e (P0 set) |
-| `services/choruz-bridge/**` | Bridge build |
+| `services/choruz-bridge/**` | Bridge build and tests |
 | `services/remote-control-gateway/**` | Remote Control Gateway check + test |
 | `infra/ops/**` | Ops lint |
 | `scripts/**`, `infra/host/**` | Host lifecycle policy tests |
@@ -83,6 +102,10 @@ The author checks this evidence before declaring the PR ready; the review proced
 | `main` (push) | Everything, plus the full e2e suite, performance smoke and release packaging |
 
 ### Which e2e specs a web change runs
+
+CI retains the first failing attempt's Playwright trace, including when its
+retry passes. Both browser jobs upload reports when they fail or retain a
+failure trace. A retry-passing test is flaky evidence, not a stable pass.
 
 `.github/scripts/select_e2e_specs.py` maps the changed files to Playwright
 specs:

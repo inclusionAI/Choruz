@@ -2,18 +2,18 @@
 # Deterministic, disposable evidence for the offline-only conversion guide.
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 FIXTURE_ROOT=""
-PG_PORT="${CHORUZ_REHEARSAL_PG_PORT:-55438}"
-POLICY="${1:-all}"
+PG_PORT=5432
 
 fail() { echo "conversion rehearsal: $*" >&2; exit 1; }
 require_bin() { command -v "$1" >/dev/null || fail "required executable not found: $1"; }
-sha256() { shasum -a 256 "$1" | awk '{print $1}'; }
 
 cleanup() {
   if [[ -n "$FIXTURE_ROOT" && -f "$FIXTURE_ROOT/postgres/postmaster.pid" ]]; then
-    pg_ctl -D "$FIXTURE_ROOT/postgres" -m immediate stop >/dev/null 2>&1 || true
+    if ! pg_ctl -D "$FIXTURE_ROOT/postgres" -m fast -w stop >/dev/null 2>&1; then
+      echo "conversion rehearsal: PostgreSQL did not stop; preserved $FIXTURE_ROOT" >&2
+      return 1
+    fi
   fi
   [[ -z "$FIXTURE_ROOT" || ! -e "$FIXTURE_ROOT" ]] || rm -rf "$FIXTURE_ROOT"
 }
@@ -34,7 +34,8 @@ assert_present() { [[ -e "$1" ]] || fail "missing expected path: $1"; }
 
 start_postgres() {
   initdb -D "$(fixture_path postgres)" --no-locale --encoding=UTF8 --auth=trust >/dev/null
-  pg_ctl -D "$(fixture_path postgres)" -o "-p $PG_PORT -k $(fixture_path socket)" -w start >/dev/null
+  # A private Unix socket avoids competing for a host-wide TCP port.
+  pg_ctl -D "$(fixture_path postgres)" -o "-c listen_addresses='' -p $PG_PORT -k $(fixture_path socket)" -w start >/dev/null
   createdb -h "$(fixture_path socket)" -p "$PG_PORT" rehearsal
 }
 
@@ -91,15 +92,11 @@ restore_fixture() {
   [[ "$(psql_fixture -Atc 'SELECT external_session_id FROM runtime_bindings WHERE id = '\''binding-direct'\''')" == external-session-fixture ]] || fail "database restoration did not restore provenance"
 }
 
-drain_or_discard() {
-  local policy="$1" queue evidence item relative destination legacy_root
+discard_queue() {
+  local queue evidence item relative destination legacy_root
   verify_stopped_writers
-  evidence="$(fixture_path "evidence/$policy")"; mkdir -p "$evidence"
+  evidence="$(fixture_path evidence/discard)"; mkdir -p "$evidence"
   legacy_root="$(fixture_path legacy)"
-  case "$policy" in
-    drain|discard) ;;
-    *) fail "queue policy must be drain or discard" ;;
-  esac
   while IFS= read -r -d '' queue; do
     while IFS= read -r -d '' item; do
       relative="${item#"$legacy_root"/}"
@@ -152,29 +149,28 @@ convert_fixture() {
   ! find "$new" -print | rg -i 'echat' >/dev/null || fail "target paths contain an unintended legacy identifier"
 }
 
-run_policy() {
-  local policy="$1"
+run_rehearsal() {
   create_fixture
   printf '%s\n' running > "$(fixture_path writers.state)"
-  if (drain_or_discard "$policy") >/dev/null 2>&1; then fail "running writer did not fail closed"; fi
+  if (discard_queue) >/dev/null 2>&1; then fail "running writer did not fail closed"; fi
   printf '%s\n' stopped > "$(fixture_path writers.state)"
   backup_fixture
   restore_fixture
   assert_present "$(fixture_path restored/direct/.echat-outbox/new/command.json)"
   assert_collision_refusal
-  drain_or_discard "$policy"
-  assert_present "$(fixture_path "evidence/$policy/group/.echat-outbox/new/group.json")"
+  discard_queue
+  cmp "$(fixture_path evidence/discard/group/.echat-outbox/new/group.json)" "$(fixture_path backup/filesystem/group/.echat-outbox/new/group.json)"
+  cmp "$(fixture_path evidence/discard/direct/.echat-outbox/new/command.json)" "$(fixture_path backup/filesystem/direct/.echat-outbox/new/command.json)"
   convert_fixture
   assert_present "$(fixture_path choruz/direct/.choruz-outbox/cur/result.json)"
   assert_present "$(fixture_path choruz/direct/.choruz-outbox/tmp/pending.json)"
   restore_fixture
   assert_present "$(fixture_path restored/direct/.echat-outbox/new/command.json)"
-  echo "conversion rehearsal passed: $policy"
+  echo "conversion rehearsal passed: discard archive and verified restore"
 }
 
 require_bin initdb; require_bin pg_ctl; require_bin createdb; require_bin dropdb; require_bin psql; require_bin pg_dump; require_bin shasum; require_bin rg; require_bin perl; require_bin python3
-case "$POLICY" in
-  drain|discard) FIXTURE_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/choruz-conversion.XXXXXX")"; FIXTURE_ROOT="$(cd "$FIXTURE_ROOT" && pwd -P)"; run_policy "$POLICY" ;;
-  all) FIXTURE_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/choruz-conversion.XXXXXX")"; FIXTURE_ROOT="$(cd "$FIXTURE_ROOT" && pwd -P)"; run_policy drain; cleanup; FIXTURE_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/choruz-conversion.XXXXXX")"; FIXTURE_ROOT="$(cd "$FIXTURE_ROOT" && pwd -P)"; run_policy discard ;;
-  *) fail "usage: $0 [drain|discard|all]" ;;
-esac
+[[ "$#" -eq 0 ]] || fail "usage: $0 (rehearses discard only; does not execute queued commands)"
+FIXTURE_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/choruz-conversion.XXXXXX")"
+FIXTURE_ROOT="$(cd "$FIXTURE_ROOT" && pwd -P)"
+run_rehearsal

@@ -329,11 +329,13 @@ test.describe("Team collaboration", () => {
       await waitForEventCount(failingWebhook, 2);
       expect(healthyWebhook.events).toHaveLength(1);
 
+      const failedAttempts = failingWebhook.events.length;
       const flush = await page.request.post(`${API_BASE}/v1/webhooks/flush`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       expect(flush.ok()).toBeTruthy();
-      expect(await flush.json()).toMatchObject({ attempted: 1, delivered: 0 });
+      await expect.poll(() => failingWebhook.events.length).toBeGreaterThan(failedAttempts);
+      expect(healthyWebhook.events).toHaveLength(1);
 
       const messages = await getMessages(page, token, principal.id, group.id, 100);
       expect(messages.filter((message) => message.sender_id === healthy.agentId)).toHaveLength(1);

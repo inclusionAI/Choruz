@@ -112,7 +112,7 @@ Environment read by the gateway ([`config.rs`](../../services/choruz-api-gateway
 - PostgreSQL unreachable at boot: `main.rs` prints `FATAL: cannot connect to database` and exits with status 1. While running, `/readyz` returns `503` with a `common::HostServiceStatus` body (`status: "not_ready"`, `service: "choruz-api-gateway"`, `protocol_version`, `database: false`) whenever `RuntimeStore::health_check` fails; `/healthz` stays `200`.
 - Sync listener not ready: `/v1/ws/sync` waits up to 5 seconds on `SyncWakeupHub::wait_ready` and then answers `500` with detail `dashboard sync unavailable: ...`.
 - Missing or invalid credentials: `401` with `missing credentials`, `invalid local credentials`, or `invalid agent secret`; an agent calling a human control-plane route gets `403 only signed-in people can manage workspace agents`.
-- Rate limit exceeded: `429` with `retry_after_ms: 1000`; the window is per gateway instance and resets on restart.
+- Rate limit exceeded: `429` with `Retry-After` rounded up to seconds until the oldest accepted hit leaves the 60-second window. Rejections do not extend that window. The window is per gateway instance and resets on restart; a configured zero limit remains closed.
 - Internal errors are logged at `tracing::error!` with the redacted message and returned as `500`; operators correlate through `x-request-id` and the `trace_id` field on the request span.
 - Insecure defaults in development are logged as warnings (`CHORUZ_SESSION_SECRET not set, using insecure default`).
 - Gateway restart drops every live PTY in the local `TerminalPool`; terminal clients must reconnect and `ensure_terminal` again.

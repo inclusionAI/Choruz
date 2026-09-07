@@ -738,7 +738,11 @@ impl PgSessionStore {
                         c.conversation_id, c.message_id, c.turn_id,
                         c.status, c.current_attempt_id, c.current_epoch,
                         c.attempt_count, c.max_attempts, c.prompt, c.metadata,
-                        c.next_retry_at, c.last_error, c.created_at, c.updated_at
+                        c.next_retry_at, c.last_error, c.created_at, c.updated_at,
+                        jsonb_build_object('id', b.id, 'driver_type', b.driver_type,
+                          'workspace_path', b.workspace_path,
+                          'external_session_id', b.external_session_id,
+                          'config', b.config_json - 'terminal_session') AS runtime_binding
                  FROM agent_commands c
                  JOIN agent_runtime_bindings b
                    ON b.agent_principal_id = c.agent_id
@@ -764,7 +768,8 @@ impl PgSessionStore {
             tx.commit().await?;
             return Ok(None);
         };
-        let command = command_from_row(&row);
+        let mut command = command_from_row(&row);
+        command.metadata["runtime_binding"] = row.get::<_, serde_json::Value>("runtime_binding");
         let session = tx
             .query_opt(
                 "UPDATE session_registry
@@ -789,7 +794,8 @@ impl PgSessionStore {
         tx.execute(
             "UPDATE agent_commands
              SET status = 'leased', current_attempt_id = $2,
-                 current_epoch = $3, attempt_count = $4, updated_at = $5
+                 current_epoch = $3, attempt_count = $4, updated_at = $5,
+                 metadata = $6
              WHERE command_id = $1",
             &[
                 &command.command_id,
@@ -797,6 +803,7 @@ impl PgSessionStore {
                 &epoch,
                 &attempt_count,
                 &now,
+                &command.metadata,
             ],
         )
         .await?;
@@ -834,7 +841,7 @@ impl PgSessionStore {
         let row = tx
             .query_opt(
                 "SELECT command_id, session_key, agent_id, conversation_id,
-                        turn_id, attempt_count, max_attempts, current_epoch
+                        turn_id, attempt_count, max_attempts, current_epoch, metadata
                  FROM agent_commands
                  WHERE command_id = $1 AND current_attempt_id = $2
                    AND metadata->>'runtime_host_id' = $3
@@ -853,6 +860,8 @@ impl PgSessionStore {
             })?;
         let session_key: String = row.get("session_key");
         let epoch: Option<i32> = row.get("current_epoch");
+        let metadata: serde_json::Value = row.get("metadata");
+        let runtime_binding = &metadata["runtime_binding"];
         if !succeeded {
             if clear_external_session {
                 let agent_id: String = row.get("agent_id");
@@ -868,8 +877,12 @@ impl PgSessionStore {
                          updated_at = $3
                      WHERE agent_principal_id = $1
                        AND config_json->>'runtime_host_id' = $2
-                       AND state <> 'disabled'",
-                    &[&agent_id, &runtime_host_id, &now],
+                       AND state <> 'disabled'
+                       AND id = $4::jsonb->>'id' AND driver_type = $4->>'driver_type'
+                       AND workspace_path = $4->>'workspace_path'
+                       AND external_session_id IS NOT DISTINCT FROM $4->>'external_session_id'
+                       AND (config_json - 'terminal_session') = $4->'config'",
+                    &[&agent_id, &runtime_host_id, &now, runtime_binding],
                 )
                 .await?;
             }
@@ -940,8 +953,18 @@ impl PgSessionStore {
                      updated_at = $4
                  WHERE agent_principal_id = $2
                    AND config_json->>'runtime_host_id' = $3
-                   AND state <> 'disabled'",
-                &[&session_id, &agent_id, &runtime_host_id, &now],
+                   AND state <> 'disabled'
+                   AND id = $5::jsonb->>'id' AND driver_type = $5->>'driver_type'
+                   AND workspace_path = $5->>'workspace_path'
+                   AND external_session_id IS NOT DISTINCT FROM $5->>'external_session_id'
+                   AND (config_json - 'terminal_session') = $5->'config'",
+                &[
+                    &session_id,
+                    &agent_id,
+                    &runtime_host_id,
+                    &now,
+                    runtime_binding,
+                ],
             )
             .await?;
         }

@@ -1,4 +1,5 @@
 import sys
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -50,6 +51,16 @@ class DocsOnlyTest(unittest.TestCase):
 
 
 class SpecsForChangeTest(unittest.TestCase):
+    def test_deleted_spec_is_not_passed_to_playwright(self):
+        result = subprocess.run(
+            [sys.executable, str(Path(__file__).resolve().parents[1] / "select_e2e_specs.py"),
+             "apps/web/tests/e2e/deleted-owner.spec.ts"],
+            capture_output=True, text=True, check=True,
+        )
+        specs = next(line for line in result.stdout.splitlines() if line.startswith("specs="))
+        self.assertNotIn("deleted-owner.spec.ts", specs)
+        self.assertIn(SMOKE, specs)
+
     def test_online_modal_keeps_its_real_worker_regression(self):
         _, specs = specs_for_change(["apps/web/components/online/online-modal.tsx"])
         self.assertIn("tests/e2e/online.spec.ts", specs)
