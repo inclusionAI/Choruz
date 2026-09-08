@@ -9,8 +9,8 @@ use std::{
 };
 
 use choruz_agent_runtime::headless::{
-    HeadlessDriver, ParsedOutput, configure_command_workspace, harness_account_env, parse_output,
-    validate_model,
+    HeadlessDriver, ParsedOutput, configure_command_workspace, parse_output,
+    prepare_harness_account_env, validate_model,
 };
 use choruz_harness_login::{AccountProbe, LoginJob, LoginSink, run_login};
 use choruz_host_runtime::inbox::{
@@ -887,7 +887,7 @@ async fn execute(
             "harness_account_id": account.id,
             "harness_account_profile_kind": account.profile_kind,
         });
-        match harness_account_env(driver, &account_config) {
+        match prepare_harness_account_env(driver, &account_config) {
             Ok(Some((key, value))) => {
                 if let Err(error) = fs::create_dir_all(&value) {
                     let message = format!("create isolated Harness profile: {error}");

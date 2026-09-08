@@ -1,4 +1,5 @@
 pub mod binding;
+pub mod computer_use;
 pub mod headless;
 pub mod policy;
 pub mod session_catalog;

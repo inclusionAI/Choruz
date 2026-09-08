@@ -172,7 +172,7 @@ pub async fn execute(request: HostRequest) -> Result<Value, AppError> {
             harness_account,
         } => {
             blocking(move || {
-                let account_home = choruz_agent_runtime::headless::harness_account_env(
+                let account_home = choruz_agent_runtime::headless::prepare_harness_account_env(
                     choruz_agent_runtime::headless::HeadlessDriver::Codex,
                     &harness_account,
                 )
@@ -233,7 +233,7 @@ pub async fn execute(request: HostRequest) -> Result<Value, AppError> {
             harness_account,
         } => {
             blocking(move || {
-                let account_home = choruz_agent_runtime::headless::harness_account_env(
+                let account_home = choruz_agent_runtime::headless::prepare_harness_account_env(
                     choruz_agent_runtime::headless::HeadlessDriver::Codex,
                     &harness_account,
                 )

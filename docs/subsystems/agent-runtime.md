@@ -56,6 +56,8 @@ Binaries: terminals use `config_json.binary_path` or `default_terminal_binary`, 
 
 ## Entry points
 
+On Unix hosts, Agent launches append the execution user's existing `$HOME/.local/bin` to `PATH`, preserving inherited precedence. `prepare_harness_account_env` links the device-installed `browser-skill` and `cua-driver` into isolated Claude/Codex profiles before execution; discovery and login probes remain read-only. Sources are searched in `.agents/skills`, `.claude/skills`, then `.codex/skills` under that device's home. Existing profile entries take precedence. The runtime shares neither credentials nor Harness settings, downloads nothing and grants no permissions. Default accounts and other Harnesses use their normal installed skill directories. Install the tools and skills separately on each execution device; a headless server without a supported browser or desktop does not acquire those capabilities through pairing. Restart an already-running Harness to discover newly installed skills. See [BrowserSkill](https://github.com/Tencent/BrowserSkill) and [Cua](https://github.com/trycua/cua) for host installation and consent requirements.
+
 Terminal bridges write `terminal.attached` and `terminal.detached` audit rows
 with one attachment ID, binding/device/account context, duration, transferred
 byte counts and successful resize count. The REST input endpoint records

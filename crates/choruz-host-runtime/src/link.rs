@@ -517,6 +517,83 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn device_link_prepares_only_its_own_account_skills() {
+        use std::{fs, path::PathBuf, process::Command};
+        // Separate processes keep device HOME and account stores isolated from
+        // concurrent tests, while running the shipped link dispatcher.
+        if std::env::var_os("CHORUZ_TEST_SKILL_DEVICE").is_none() {
+            let root = tempfile::tempdir().unwrap();
+            for name in ["device-a", "device-b"] {
+                let home = root.path().join(name);
+                let source = home.join(".agents/skills/browser-skill");
+                fs::create_dir_all(&source).unwrap();
+                fs::write(source.join("SKILL.md"), name).unwrap();
+                let output = Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        "link::tests::device_link_prepares_only_its_own_account_skills",
+                        "--nocapture",
+                    ])
+                    .env("CHORUZ_TEST_SKILL_DEVICE", name)
+                    .env("HOME", &home)
+                    .env("CHORUZ_RUNTIME_DIR", home.join("runtime"))
+                    .env("CHORUZ_HARNESS_ACCOUNT_ROOT", home.join("accounts"))
+                    .output()
+                    .unwrap();
+                assert!(
+                    output.status.success(),
+                    "{}\n{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            return;
+        }
+        let home = PathBuf::from(std::env::var_os("HOME").unwrap());
+        let name = std::env::var("CHORUZ_TEST_SKILL_DEVICE").unwrap();
+        let account = "12345678-1234-1234-1234-123456789abc";
+        let profile = home.join("accounts").join(account).join("codex");
+        fs::create_dir_all(&profile).unwrap();
+        fs::write(profile.join("auth.json"), "selected-account").unwrap();
+        let workspace = home.join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        let (controller_tx, mut controller_rx, link) = welcomed_link().await;
+        let (reply, _) = call(&controller_tx, &mut controller_rx, "prepare", LinkRequest::Host {
+            request: HostRequest::CodexPrepareHome {
+                binding_id: "computer-use-binding".into(),
+                workspace_path: workspace.to_string_lossy().into_owned(),
+                harness_account: json!({"harness_account_id": account, "harness_account_profile_kind": "isolated"}),
+            },
+        }).await;
+        drop(controller_tx);
+        assert_eq!(link.await.unwrap(), Ok(()));
+        let DeviceFrame::Result {
+            ok: Some(value),
+            error: None,
+            ..
+        } = reply
+        else {
+            panic!("prepare failed: {reply:?}")
+        };
+        let managed = PathBuf::from(value["home_path"].as_str().unwrap());
+        assert_eq!(
+            fs::read_to_string(managed.join("skills/browser-skill/SKILL.md")).unwrap(),
+            name
+        );
+        assert_eq!(
+            fs::read_to_string(managed.join("auth.json")).unwrap(),
+            "selected-account"
+        );
+        assert!(!managed.join("skills/cua-driver").exists());
+        assert!(
+            fs::canonicalize(managed.join("skills/browser-skill"))
+                .unwrap()
+                .starts_with(fs::canonicalize(&home).unwrap())
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn device_link_streams_an_attached_terminal_and_its_exit() {
         use std::os::unix::fs::PermissionsExt;
 

@@ -8,8 +8,8 @@ use std::sync::Arc;
 use std::time::{Instant, SystemTime};
 
 use choruz_agent_runtime::headless::{
-    HeadlessDriver as LocalCliDriver, configure_command_workspace, harness_account_env,
-    parse_output, pi_message_is_failed,
+    HeadlessDriver as LocalCliDriver, configure_command_workspace, parse_output,
+    pi_message_is_failed, prepare_harness_account_env,
 };
 use choruz_executor::sandbox::{SandboxManager, WorkspaceConfig};
 use choruz_executor::wal::AdapterWal;
@@ -639,7 +639,9 @@ impl ExecutorContext {
             let external_outbox_recovery_started_at = SystemTime::now();
             let mut command = tokio::process::Command::new(cli_path);
             configure_command_workspace(&mut command, cli_driver, &work_dir);
-            if let Some((key, value)) = harness_account_env(cli_driver, &binding.config_json)? {
+            if let Some((key, value)) =
+                prepare_harness_account_env(cli_driver, &binding.config_json)?
+            {
                 command.env(key, value);
             }
             let cli_future = command
