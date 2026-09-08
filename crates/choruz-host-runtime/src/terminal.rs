@@ -11,7 +11,7 @@ use std::{
 
 use choruz_agent_runtime::{
     DriverType,
-    headless::{CLAUDE_PARENT_SESSION_ENV, HeadlessDriver, harness_account_env},
+    headless::{CLAUDE_PARENT_SESSION_ENV, HeadlessDriver, prepare_harness_account_env},
 };
 use choruz_common::AppError;
 use serde::{Deserialize, Serialize};
@@ -417,6 +417,9 @@ pub fn ensure_terminal(
     let binary = terminal_binary(&driver_type, spec.binary_path.as_deref());
     let mut cmd = CommandBuilder::new(binary);
     cmd.cwd(&spec.workspace_path);
+    if let Some(path) = choruz_agent_runtime::computer_use::executable_path() {
+        cmd.env("PATH", path);
+    }
     if driver_type == DriverType::ClaudeTerminal {
         for key in CLAUDE_PARENT_SESSION_ENV {
             cmd.env_remove(key);
@@ -443,8 +446,8 @@ pub fn ensure_terminal(
     }
     if !is_codex
         && let Some(driver) = HeadlessDriver::from_driver_type(driver_type.as_str())
-        && let Some((key, value)) =
-            harness_account_env(driver, &spec.harness_account).map_err(AppError::Validation)?
+        && let Some((key, value)) = prepare_harness_account_env(driver, &spec.harness_account)
+            .map_err(AppError::Validation)?
     {
         cmd.env(key, value);
     }

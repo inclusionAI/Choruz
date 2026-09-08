@@ -56,6 +56,9 @@ pub fn configure_command_workspace(
     workspace: &Path,
 ) {
     command.current_dir(workspace);
+    if let Some(path) = crate::computer_use::executable_path() {
+        command.env("PATH", path);
+    }
     if driver == HeadlessDriver::Claude {
         for key in CLAUDE_PARENT_SESSION_ENV {
             command.env_remove(key);
@@ -92,6 +95,20 @@ pub fn harness_account_env(
         })
         .ok_or_else(|| "HOME is unavailable for harness account profiles".to_owned())?;
     harness_account_env_with_root(driver, config, &root)
+}
+
+/// Prepare the selected account for execution, retaining device-installed
+/// computer-use skills without sharing authentication or settings.
+/// Discovery and account probes use the read-only `harness_account_env`.
+pub fn prepare_harness_account_env(
+    driver: HeadlessDriver,
+    config: &serde_json::Value,
+) -> Result<Option<(&'static str, PathBuf)>, String> {
+    let account = harness_account_env(driver, config)?;
+    if let Some((_, profile)) = &account {
+        crate::computer_use::prepare_profile(profile)?;
+    }
+    Ok(account)
 }
 
 fn harness_account_env_with_root(

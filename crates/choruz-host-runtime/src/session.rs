@@ -3,7 +3,7 @@
 use crate::{ProcessContainer, TerminalPool, TerminalSpec, session_protocol::SessionSnapshot};
 use choruz_agent_runtime::{
     DriverType,
-    headless::{CLAUDE_PARENT_SESSION_ENV, HeadlessDriver, harness_account_env},
+    headless::{CLAUDE_PARENT_SESSION_ENV, HeadlessDriver, prepare_harness_account_env},
 };
 use choruz_common::AppError;
 use serde::{Deserialize, Serialize};
@@ -502,7 +502,10 @@ fn ensure_inner(
         PathBuf::from(&spec.workspace_path).join(".choruz/send"),
     );
     command.env("DISABLE_AUTOUPDATER", "1");
-    if let Some((key, path)) = harness_account_env(
+    if let Some(path) = choruz_agent_runtime::computer_use::executable_path() {
+        command.env("PATH", path);
+    }
+    if let Some((key, path)) = prepare_harness_account_env(
         if codex {
             HeadlessDriver::Codex
         } else {
