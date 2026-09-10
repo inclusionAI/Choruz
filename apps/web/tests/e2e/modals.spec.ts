@@ -226,6 +226,49 @@ test.describe("Modals (Create Agent, Create Group, Create Company)", () => {
     await expect(create.locator(".create-agent-review")).toContainText("CI account");
   });
 
+  test("computer-use diagnostics reach the device through the authenticated API", async ({ page }) => {
+    const { token, principal } = await login(page);
+    const url = `${API_BASE}/v1/companies/${principal.workspace_id}/computer-use`;
+    const unauthorized = await page.request.post(url, { headers: { Authorization: "Bearer invalid" }, data: {} });
+    expect(unauthorized.status()).toBe(401);
+    const missingHost = await page.request.post(url, { headers: { Authorization: `Bearer ${token}` }, data: { runtime_host_id: randomUUID() } });
+    expect(missingHost.status()).toBe(404);
+    await page.locator('[aria-label="Actions menu"]').click();
+    await page.getByRole("button", { name: "Harness Accounts" }).click();
+    const tools = page.getByRole("region", { name: "Computer use" });
+    await expect(tools.getByRole("checkbox", { name: "Browser automation" })).toBeVisible({ timeout: 40_000 });
+    await expect(tools.getByRole("checkbox", { name: "Desktop automation" })).toBeVisible();
+    await expect(tools.getByRole("alert")).toHaveCount(0);
+    await tools.getByRole("button", { name: "Check health again" }).click();
+    await expect(tools.getByRole("checkbox", { name: "Browser automation" })).toBeVisible({ timeout: 40_000 });
+  });
+
+  test("computer-use setup survives panel reopen and shows actionable unhealthy checks", async ({ page }) => {
+    // Replace the device installer boundary: CI must not install software into its shared HOME.
+    let enabled = false;
+    let installing = false;
+    await page.route("**/v1/companies/*/computer-use", async (route) => {
+      const body = route.request().postDataJSON();
+      if (body.tool === "browser") { enabled = body.enabled; installing = enabled; }
+      await route.fulfill({ json: { tools: [{ tool: "browser", enabled, status: installing ? "installing" : "needs_attention", checks: installing ? [] : [{ name: "Extension", ok: false, hint: "Connect the browser extension" }] }] } });
+    });
+    const open = async () => {
+      await page.locator('[aria-label="Actions menu"]').click();
+      await page.getByRole("button", { name: "Harness Accounts" }).click();
+    };
+    await open();
+    const tools = page.getByRole("region", { name: "Computer use" });
+    await tools.getByRole("checkbox", { name: "Browser automation" }).check();
+    await expect(tools.getByText("Installing…", { exact: true })).toBeVisible();
+    await page.locator(".harness-accounts-card").getByRole("button", { name: "Close", exact: true }).click();
+    installing = false;
+    await open();
+    await expect(tools.getByRole("checkbox", { name: "Browser automation" })).toBeChecked();
+    await expect(tools.getByText(/Connect the browser extension/)).toBeVisible();
+    await tools.getByRole("checkbox", { name: "Browser automation" }).uncheck();
+    await expect(tools.getByRole("checkbox", { name: "Browser automation" })).not.toBeChecked();
+  });
+
   test("removing an account stops its real dependent Agent binding", async ({ page }) => {
     const { token, principal } = await login(page);
     const client = await postgresQueryClient();

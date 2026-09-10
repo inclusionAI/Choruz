@@ -848,10 +848,11 @@ async fn terminal_routes_do_not_write_conversation_events() {
     fs::create_dir_all(&workspace).expect("create workspace");
     let fake_cli = root.join("codex-wrapper-without-codex-name");
     let codex_home_seen = root.join("codex-home-seen.txt");
+    // Model slow process startup: ensure acknowledges spawning, not CLI readiness.
     write_executable_script(
         &fake_cli,
         &format!(
-            "#!/bin/sh\nprintf '%s' \"$CODEX_HOME\" > '{}'\nsleep 5\n",
+            "#!/bin/sh\nsleep 1\nprintf '%s' \"$CODEX_HOME\" > '{}'\nsleep 5\n",
             codex_home_seen.display()
         ),
     );
@@ -939,13 +940,18 @@ async fn terminal_routes_do_not_write_conversation_events() {
         .unwrap();
     assert_eq!(input.status(), StatusCode::OK);
 
-    for _ in 0..20 {
-        if fs::read_to_string(&codex_home_seen).is_ok_and(|value| value.contains("/codex-homes/")) {
-            break;
+    let seen_home = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Ok(value) = fs::read_to_string(&codex_home_seen)
+                && value.contains("/codex-homes/")
+            {
+                break value;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
         }
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
-    let seen_home = fs::read_to_string(&codex_home_seen).expect("fake CLI saw CODEX_HOME");
+    })
+    .await
+    .expect("fake CLI did not record its managed CODEX_HOME before the readiness deadline");
     assert!(
         seen_home.contains("/codex-homes/"),
         "Codex terminal wrapper should receive managed CODEX_HOME"
@@ -2062,6 +2068,12 @@ async fn runtime_host_pairing_is_single_use_and_host_token_is_revocable() {
     assert_eq!(binding_status, StatusCode::CREATED);
     assert_eq!(binding["runtime_host_id"], host_id);
 
+    let learned_binding = binding["id"].as_str().unwrap();
+    client.execute("INSERT INTO experience_policy(binding_id,workspace_id,owner_id,analyst_binding_id,enabled,next_check_at) VALUES($1,$2,$3,$4,TRUE,NOW()+INTERVAL '1 day')", &[&learned_binding,&operator.workspace_id,&operator.id,&imported_binding_id]).await.unwrap();
+    client.execute("INSERT INTO experience_revision(id,binding_id,workspace_id,policy_generation,source_digest,source_references,analysis,instruction,disposition,validation) VALUES('remote-learning-test',$1,$2,1,'test','[]','reviewed','Explain the recommendation first.','active','{\"review\":\"passed\"}')", &[&learned_binding,&operator.workspace_id]).await.unwrap();
+    client.execute("UPDATE experience_policy SET active_revision_id='remote-learning-test' WHERE binding_id=$1", &[&learned_binding]).await.unwrap();
+    client.execute("UPDATE experience_revision SET validation=validation || $1 WHERE id='remote-learning-test'", &[&serde_json::json!({"team":{"config":choruz_domain::team::Team::reviewer("Verify changed files.".into()),"review":"passed"}})]).await.unwrap();
+
     let sessions = PgSessionStore::new(&database.database_url);
     let session_key = format!("{}:{}", agent.id, conversation.id);
     sessions
@@ -2126,6 +2138,16 @@ async fn runtime_host_pairing_is_single_use_and_host_token_is_revocable() {
     assert_eq!(claimed["command_id"], command.command_id);
     assert_eq!(claimed["driver_type"], "codex_terminal");
     assert_eq!(claimed["workspace_path"], "/srv/runtime-host-project");
+    let learned_prompt = claimed["prompt"].as_str().unwrap();
+    assert!(learned_prompt.starts_with(
+        "Implement the runtime-host test\n\n[choruz-experience revision=remote-learning-test]"
+    ));
+    assert!(learned_prompt.contains("Explain the recommendation first."));
+    assert_eq!(claimed["preflight"]["revision_id"], "remote-learning-test");
+    assert_eq!(
+        claimed["preflight"]["team"]["members"][0]["prompt"],
+        "Verify changed files."
+    );
     assert!(claimed["model"].is_null());
     assert!(claimed["external_session_id"].is_null());
     let attempt_id = claimed["attempt_id"].as_str().unwrap();

@@ -237,6 +237,24 @@ One official browser sign-in for a harness account. A runtime host's connector c
 
 **Unique:** one open login (`queued`, `awaiting_browser`, `authorizing`) per account_id
 
+### experience_policy and experience_revision
+
+Background learning belongs to one target binding, owner and workspace. `experience_policy` stores the selected analyst binding, opt-in state, active revision, sequential source cursors and cumulative summary. Its generation and expiring lease fence concurrent analysis and settings changes. Deleting the owner or either binding cascades the policy; deleting the policy cascades its revisions.
+
+`experience_revision` stores source references, analysis, optional instruction text and review evidence. The `(binding_id, policy_generation, source_digest)` unique constraint prevents duplicate reports. Report insertion, cursor advancement and optional activation commit together under the live lease. Manual revision selection verifies the same owner and workspace and invalidates outstanding analysis. Review evidence establishes content acceptance, not future task improvement; see [background experience learning](subsystems/agent-runtime.md#background-experience-learning) for runtime behavior. The [schema](../migrations/V052__experience_learning.sql) defines the fields and constraints.
+
+`experience_problem` associates a scoped problem with the first reviewed prompt intervention addressing it. `experience_problem_observation` records distinct work episodes and evidence of revision use. Its episode key prevents repeated analysis of one task from increasing the occurrence count. Observations commit in the same transaction as their report and checkpoint; the [problem schema](../migrations/V053__experience_problems.sql) defines ownership and deletion constraints.
+
+### experience_evaluation
+
+The policy's optional `optimization_settings` holds the suite, budgets and application consent. Automatic evaluations have a unique `(binding_id, policy_generation, revision_id)` attempt, including failed runs. `final_review_reserved` records the extra call before dispatch; `application_status` and `applied_revision_id` retain the decision. Revision creation, problem-intervention linkage and selection commit under the evaluation lease and policy fence. See the [application columns](../migrations/V056__measured_learning_application.sql).
+
+Optional optimization state holds the candidate population, observations, reserved budgets and pending action. The analyst binding and template/configuration fingerprint freeze the proposer alongside the target. The worker checkpoints each completed action transactionally with the existing lease and policy fence; see the [optimization columns](../migrations/V055__experience_optimization.sql).
+
+Candidate snapshots include a typed execution team; the selected revision stores its configuration and review under `validation.team`. The active revision pointer owns guidance and team together. [Execution-team migration](../migrations/V057__execution_teams.sql) converts saved reviewer configurations and cancels unfinished old-format evaluations; it does not create another team table or activation pointer.
+
+An owner-scoped evaluation stores an immutable task suite, baseline and candidate snapshots, policy generation and execution-context fingerprint. Per-case visible output and deterministic score accumulate under an expiring lease. Settings changes fence results; a lost in-flight lease fails rather than repeats a possibly charged call. A partial unique index admits one pending comparison per binding. Deleting its policy or candidate cascades the run. See the [schema](../migrations/V054__experience_evaluation.sql) and [evaluation behavior](subsystems/agent-runtime.md#fixed-task-evaluation).
+
 ### conversation_runtime_policies
 
 Per-conversation agent behavior policies.

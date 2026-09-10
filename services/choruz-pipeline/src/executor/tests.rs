@@ -228,6 +228,7 @@ fn shell_quote(value: &str) -> String {
 fn write_fake_cli(path: &Path, record_path: &Path, stdout_lines: &[&str]) {
     let mut script = String::new();
     script.push_str("#!/bin/sh\n");
+    script.push_str("for arg in \"$@\"; do\n  if [ \"$arg\" = '--ephemeral' ]; then\n    cat >/dev/null\n    printf '%s\\n' '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"{\\\"checks\\\":[\\\"Inspect changes before reporting completion.\\\"]}\"}}'\n    exit 0\n  fi\ndone\n");
     script.push_str("{\n");
     script.push_str("  printf 'cwd=%s\\n' \"$(pwd)\"\n");
     script.push_str("  i=0\n");
@@ -730,6 +731,7 @@ fn ignores_bound_unmatched_old_or_non_tool_outbox_files() {
 
 fn binding_session_state_with_config(config_json: serde_json::Value) -> BindingSessionState {
     BindingSessionState {
+        workspace_id: "test-workspace".into(),
         binding_id: "binding-1".into(),
         workspace_path: "/workspace".into(),
         external_session_id: Some("session-1".into()),
@@ -950,6 +952,14 @@ async fn supported_cli_driver_bindings_execute_with_fake_binaries() {
             .await
             .expect("create runtime binding");
 
+        if case.label == "codex-terminal" {
+            let client = runtime.connect().await.unwrap();
+            client.execute("INSERT INTO experience_policy(binding_id,workspace_id,owner_id,analyst_binding_id,enabled) SELECT $1,'ws-acme','human-1',id,TRUE FROM agent_runtime_bindings WHERE id<>$1 LIMIT 1", &[&binding.id]).await.unwrap();
+            client.execute("INSERT INTO experience_revision(id,binding_id,workspace_id,policy_generation,source_digest,source_references,analysis,instruction,disposition,validation) VALUES('learned-test',$1,'ws-acme',1,'test','[]','reviewed','Explain the recommendation first.','active','{\"review\":\"passed\"}')", &[&binding.id]).await.unwrap();
+            client.execute("UPDATE experience_policy SET active_revision_id='learned-test' WHERE binding_id=$1", &[&binding.id]).await.unwrap();
+            client.execute("UPDATE experience_revision SET validation=validation || $1 WHERE id='learned-test'", &[&serde_json::json!({"team":{"config":{"order":"serial","members":[{"name":"reviewer","prompt":"Verify changed files."}]},"review":"passed"}})]).await.unwrap();
+        }
+
         let script_path = tmp.path().join(format!("{}-fake-cli.sh", case.label));
         let record_path = tmp.path().join(format!("{}-record.txt", case.label));
         let stdout_refs = case
@@ -1028,6 +1038,15 @@ async fn supported_cli_driver_bindings_execute_with_fake_binaries() {
         }
 
         let record = fs::read_to_string(&record_path).expect("fake cli invocation record");
+        assert_eq!(
+            record.contains("[choruz-experience revision=learned-test]"),
+            case.label == "codex-terminal"
+        );
+        if case.label == "codex-terminal" {
+            assert!(record.contains("Explain the recommendation first."));
+            assert!(record.contains("[choruz-team revision=learned-test]"));
+            assert!(record.contains("Inspect changes before reporting completion."));
+        }
         let canonical_workspace = workspace.canonicalize().expect("canonical workspace path");
         assert!(
             record.contains(&format!("cwd={}", canonical_workspace.display())),

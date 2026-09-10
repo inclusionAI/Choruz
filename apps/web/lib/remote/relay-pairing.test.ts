@@ -187,6 +187,21 @@ describe("pairWithHost", () => {
     });
     await expect(slow).rejects.toThrow("Pairing handshake timed out.");
   });
+
+  it("does not open a socket when cancelled during key generation", async () => {
+    const controller = new AbortController();
+    const pairing = pairWithHost({
+      gatewayUrl: "https://gateway.example",
+      credential: CREDENTIAL,
+      deviceName: "Phone",
+      createSocket: FakeWebSocket.create,
+      signal: controller.signal,
+      timeoutMs: 100,
+    });
+    controller.abort();
+    await expect(pairing).rejects.toThrow("Pairing cancelled.");
+    expect(FakeWebSocket.instances).toHaveLength(0);
+  });
 });
 
 describe("remote credential storage", () => {

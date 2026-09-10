@@ -2,12 +2,17 @@ mod attachments;
 mod auth;
 pub mod config;
 mod db_projection;
+mod evaluation_worker;
+mod experience_diagnostics;
+mod experience_worker;
 mod handlers_activity;
 mod handlers_channel_tasks;
 mod handlers_companies;
+mod handlers_computer_use;
 mod handlers_conversations;
 mod handlers_cron;
 mod handlers_events;
+mod handlers_experience;
 mod handlers_filesystem;
 mod handlers_harness_logins;
 mod handlers_messages;
@@ -138,6 +143,16 @@ pub fn router_with_runtime(
             post(handlers_principals::local_signup),
         )
         .route("/v1/me", get(handlers_principals::me))
+        .route(
+            "/v1/runtime/bindings/{binding_id}/experience",
+            get(handlers_experience::get)
+                .put(handlers_experience::configure)
+                .patch(handlers_experience::select),
+        )
+        .route(
+            "/v1/runtime/bindings/{binding_id}/experience/evaluations",
+            get(handlers_experience::evaluations).post(handlers_experience::evaluate),
+        )
         .route("/v1/bootstrap", get(meta_handlers::bootstrap))
         .route("/v1/sync", get(meta_handlers::sync_changes))
         .route("/v1/ws/sync", get(handlers_sync_ws::sync_socket))
@@ -424,6 +439,10 @@ pub fn router_with_runtime(
             get(handlers_filesystem::filesystem_home),
         )
         .route(
+            "/v1/companies/{company_id}/computer-use",
+            post(handlers_computer_use::manage),
+        )
+        .route(
             "/v1/filesystem/read",
             get(handlers_filesystem::filesystem_read),
         )
@@ -443,7 +462,8 @@ pub fn router_with_runtime(
             let (remote_control_bridges, bridge_refreshes) =
                 remote_control_bridge::RemoteControlBridgeHub::new();
             let online = online_groups::OnlineHub::spawn(app.clone(), db.clone());
-            let state = ApiState {
+            let mut state = ApiState {
+                experience_worker: None,
                 app,
                 db,
                 runtime,
@@ -458,6 +478,7 @@ pub fn router_with_runtime(
                 online,
             };
             remote_control_bridge::spawn(state.clone(), bridge_refreshes);
+            state.experience_worker = Some(experience_worker::spawn(state.clone()));
             state
         })
         .layer(axum::middleware::from_fn(

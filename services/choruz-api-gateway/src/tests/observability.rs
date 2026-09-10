@@ -120,6 +120,43 @@ async fn activity_tools_scope_page_aggregate_and_transactionally_prune() {
             .any(|r| r["data"]["outcome"] == "failed")
     );
     assert!(!audit.to_string().contains("private-prompt"));
+    client.execute("UPDATE audit_log SET action='learning.check',metadata=$1 WHERE id='audit-owned'", &[&json!({"trace_id":"tools-trace","stage":"analysis","call_id":"call-one","input":{"input_digest":"input-fingerprint","input_bytes":42},"source_digest":"source-fingerprint","result":{"outcome":"failed","error_category":"internal","error":"model timed out token=private-secret"},"prompt":"private-prompt"})]).await.unwrap();
+    let (_, learning) = api_json_request(
+        router.clone(),
+        &actors[0],
+        Method::GET,
+        format!("/v1/activity?{range}&source=audit"),
+    )
+    .await;
+    let record = learning["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["name"] == "learning.check")
+        .unwrap();
+    assert_eq!(record["data"]["learning"]["stage"], "analysis");
+    assert_eq!(record["data"]["learning"]["call_id"], "call-one");
+    assert_eq!(
+        record["data"]["learning"]["input"]["input_digest"],
+        "input-fingerprint"
+    );
+    assert_eq!(record["data"]["learning"]["input"]["input_bytes"], 42);
+    assert_eq!(
+        record["data"]["learning"]["source_digest"],
+        "source-fingerprint"
+    );
+    assert_eq!(
+        record["data"]["learning"]["result"]["error_category"],
+        "internal"
+    );
+    assert!(
+        record["data"]["learning"]["result"]["error"]
+            .as_str()
+            .unwrap()
+            .contains("model timed out")
+    );
+    assert!(!learning.to_string().contains("private-secret"));
+    assert!(!learning.to_string().contains("private-prompt"));
     client
         .execute(
             "DELETE FROM company_member WHERE company_id='tools-company'",

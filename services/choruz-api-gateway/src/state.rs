@@ -7,6 +7,7 @@ use crate::local_auth::LocalAuthConfig;
 
 #[derive(Clone)]
 pub struct ApiState {
+    pub(crate) experience_worker: Option<std::sync::Arc<crate::experience_worker::WorkerGuard>>,
     pub app: ChatApp,
     /// Stateless DB service — Phase 0 scaffolding for the stateless migration.
     /// Will progressively replace in-memory ChatApp methods.

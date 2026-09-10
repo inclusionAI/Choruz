@@ -7,6 +7,7 @@ import type { RuntimeHost } from "../../lib/remote/remote-control";
 import { DriverSelect } from "./driver-select";
 import { HarnessAccountPicker } from "./harness-account-picker";
 import { Modal } from "../ui/modal";
+import { ComputerUseSettings } from "../runtime/computer-use-settings";
 
 type Props = {
   companyId: string;
@@ -99,6 +100,7 @@ export function HarnessAccountsModal({ companyId, sessionToken, multiHarnessAcco
           mode="manage"
           allowMultiple={enabled}
         />
+        <ComputerUseSettings key={`${companyId}:${hostId}`} sessionToken={sessionToken} companyId={companyId} runtimeHostId={hostId} />
       </div>
     </Modal>
   );

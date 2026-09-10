@@ -69,6 +69,8 @@ test("remote creation reads B's harness and writes B's custom workspace through 
     // Only the external CLI is a deterministic substitute. Pairing, Web/API
     // validation, host dispatch, workspace writes and binding storage are real.
     await writeFile(binary, '#!/bin/sh\ncase "$1" in\n--version) echo device-b-cli;;\nmodels) echo fixture/device-b-model;;\n*) exit 0;;\nesac\n', { mode: 0o700 });
+    await mkdir(path.join(home, ".local/bin"), { recursive: true });
+    await writeFile(path.join(home, ".local/bin/bsk"), '#!/bin/sh\ncase "$1" in\n--version) echo device-b-browser;;\ninstall-skill) mkdir -p "$HOME/.agents/skills/browser-skill"; echo device-b-skill > "$HOME/.agents/skills/browser-skill/SKILL.md";;\ndoctor) echo \'[{"name":"Browser extension on B","ok":false,"hint":"Connect B browser"}]\'; exit 1;;\nesac\n', { mode: 0o700 });
     const pairing = await page.request.post(`${API_BASE}/v1/companies/${company.id}/runtime-host-pairings`, { headers });
     expect(pairing.ok()).toBeTruthy();
     const { code } = await pairing.json();
@@ -76,7 +78,7 @@ test("remote creation reads B's harness and writes B's custom workspace through 
     expect(redeemed.ok()).toBeTruthy();
     const { host, host_token } = await redeemed.json();
     await writeFile(config, JSON.stringify({ api_url: API_BASE, host_id: host.id, host_name: host.name, host_token, max_concurrency: 1 }), { mode: 0o600 });
-    processB = spawn(connector, ["run", "--config", config], { env: { ...process.env, HOME: home, CHORUZ_FS_BROWSE_ROOTS: home, CHORUZ_OPENCODE_BINARY: binary }, stdio: "ignore" });
+    processB = spawn(connector, ["run", "--config", config], { env: { ...process.env, PATH: "/usr/bin:/bin", HOME: home, CHORUZ_FS_BROWSE_ROOTS: home, CHORUZ_OPENCODE_BINARY: binary }, stdio: "ignore" });
     await expect.poll(async () => {
       const response = await page.request.post(`${API_BASE}/v1/runtime-hosts/${host.id}/operations`, { headers, data: { kind: "filesystem.home" } });
       return response.ok() ? (await response.json()).home : null;
@@ -85,6 +87,18 @@ test("remote creation reads B's harness and writes B's custom workspace through 
     await gotoDashboard(page);
     await page.getByRole("button", { name: "Select company" }).click();
     await page.locator(".company-dropdown-item").filter({ hasText: company.name }).locator(".company-dropdown-item-name").click();
+    await page.getByRole("button", { name: "Actions menu" }).click();
+    await page.getByRole("button", { name: "Harness Accounts", exact: true }).click();
+    const accounts = page.getByRole("dialog", { name: "Harness Accounts" });
+    await accounts.getByLabel("Account device").selectOption(host.id);
+    const tools = accounts.getByRole("region", { name: "Computer use" });
+    await expect(tools.getByText(/Connect B browser/)).toBeVisible();
+    await tools.getByRole("checkbox", { name: "Browser automation" }).uncheck();
+    await expect.poll(() => readFile(path.join(home, ".choruz/computer-use/browser-skill.disabled"), "utf8").catch(() => null)).toBe("");
+    await expect(tools.getByRole("checkbox", { name: "Browser automation" })).toBeEnabled();
+    await tools.getByRole("checkbox", { name: "Browser automation" }).check();
+    await expect.poll(() => readFile(path.join(home, ".agents/skills/browser-skill/SKILL.md"), "utf8").catch(() => null)).toBe("device-b-skill\n");
+    await accounts.getByRole("button", { name: "Close", exact: true }).click();
     await page.getByRole("button", { name: "Actions menu" }).click();
     await page.getByRole("button", { name: "Create Agent", exact: true }).click();
     const modal = page.getByRole("dialog", { name: "Create Agent" });

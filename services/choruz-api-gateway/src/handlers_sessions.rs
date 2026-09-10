@@ -220,6 +220,25 @@ pub(crate) async fn command(
     let instance = action.instance;
     let (host, binding) = context(&headers, &state, &id).await?;
     let principal = authenticated_principal(&headers, &state).await?;
+    let context = if matches!(&command, SessionCommand::Send { .. }) {
+        let conversation = state.db.get_conversation(&binding.conversation_id).await?;
+        state
+            .db
+            .experience_for_turn(&conversation.workspace_id, &id)
+            .await?
+    } else {
+        None
+    };
+    let preflight = context.as_ref().and_then(|context| {
+        context
+            .team
+            .as_ref()
+            .map(|focus| choruz_host_runtime::harness::ExecutionTeam {
+                revision_id: context.revision_id.clone(),
+                team: focus.clone(),
+            })
+    });
+    let experience = context.map(|context| (context.revision_id, context.instruction));
     let action = match &command {
         SessionCommand::Send { .. } => "session.send",
         SessionCommand::Respond { .. } => "session.respond",
@@ -232,6 +251,8 @@ pub(crate) async fn command(
             owner: binding_owner(&binding),
             instance,
             command,
+            experience,
+            preflight: preflight.map(Box::new),
         })
         .await;
     crate::handlers_terminals::record_terminal_activity(

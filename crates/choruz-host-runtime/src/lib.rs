@@ -9,8 +9,12 @@
 //! [`terminal`]; [`link`] carries both to a remote device.
 
 pub mod codex;
+pub mod computer_use;
 pub mod drivers;
+pub mod experience;
+pub mod experience_source;
 pub mod filesystem;
+pub mod harness;
 pub mod inbox;
 pub mod instructions;
 pub mod link;
@@ -48,6 +52,49 @@ pub const SEND_HELPER: &str = include_str!("../assets/choruz-send.sh");
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum HostRequest {
+    ExperienceTrace {
+        spec: Box<TerminalSpec>,
+        #[serde(default)]
+        cursor: experience_source::Cursor,
+    },
+    /// Returns projected `experience_source::HistoricalRecord` envelopes from
+    /// the selected source before its committed cursor, never raw reasoning.
+    ExperienceReferences {
+        spec: Box<TerminalSpec>,
+        cursor: experience_source::Cursor,
+        references: Vec<String>,
+    },
+    AnalyzeExperience {
+        spec: Box<TerminalSpec>,
+        prompt: String,
+    },
+    ResearchExperience {
+        spec: Box<TerminalSpec>,
+        categories: Vec<String>,
+    },
+    EvaluateExperience {
+        spec: Box<TerminalSpec>,
+        input: String,
+        instruction: String,
+        preflight: String,
+    },
+    ProposeExperience {
+        spec: Box<TerminalSpec>,
+        prompt: String,
+    },
+    ReviewExperience {
+        spec: Box<TerminalSpec>,
+        prompt: String,
+    },
+    PrepareExecutionTeam {
+        spec: Box<TerminalSpec>,
+        role: harness::ExecutionTeam,
+        request: String,
+    },
+    ComputerUse {
+        tool: Option<computer_use::Tool>,
+        enabled: Option<bool>,
+    },
     DriverCatalog {
         driver_type: Option<String>,
     },
@@ -146,6 +193,56 @@ pub struct CodexHomeReady {
 /// Run one request on this device. Filesystem work runs on a blocking thread.
 pub async fn execute(request: HostRequest) -> Result<Value, AppError> {
     match request {
+        HostRequest::ExperienceTrace { spec, cursor } => {
+            blocking(move || {
+                serde_json::to_value(experience_source::read(&spec, cursor)?)
+                    .map_err(|e| AppError::Internal(format!("encode source window: {e}")))
+            })
+            .await
+        }
+        HostRequest::ExperienceReferences {
+            spec,
+            cursor,
+            references,
+        } => {
+            blocking(move || {
+                serde_json::to_value(experience_source::references(&spec, &cursor, &references)?)
+                    .map_err(|e| AppError::Internal(format!("encode source references: {e}")))
+            })
+            .await
+        }
+        HostRequest::AnalyzeExperience { spec, prompt } => {
+            serde_json::to_value(experience::analyze(*spec, prompt).await?)
+                .map_err(|e| AppError::Internal(format!("encode analysis report: {e}")))
+        }
+        HostRequest::ResearchExperience { spec, categories } => {
+            serde_json::to_value(experience::research(*spec, categories).await?)
+                .map_err(|e| AppError::Internal(format!("encode research: {e}")))
+        }
+        HostRequest::EvaluateExperience {
+            spec,
+            input,
+            instruction,
+            preflight,
+        } => {
+            serde_json::to_value(experience::evaluate(*spec, input, instruction, preflight).await?)
+                .map_err(|e| AppError::Internal(format!("encode evaluation output: {e}")))
+        }
+        HostRequest::ProposeExperience { spec, prompt } => {
+            serde_json::to_value(experience::propose(*spec, prompt).await?)
+                .map_err(|e| AppError::Internal(format!("encode guidance proposal: {e}")))
+        }
+        HostRequest::ReviewExperience { spec, prompt } => {
+            serde_json::to_value(experience::review(*spec, prompt).await?)
+                .map_err(|e| AppError::Internal(format!("encode guidance review: {e}")))
+        }
+        HostRequest::PrepareExecutionTeam {
+            spec,
+            role,
+            request,
+        } => serde_json::to_value(harness::prepare(*spec, &role, &request).await?)
+            .map_err(|e| AppError::Internal(format!("encode execution preview: {e}"))),
+        HostRequest::ComputerUse { tool, enabled } => computer_use::manage(tool, enabled).await,
         HostRequest::DriverCatalog { driver_type } => {
             drivers::inspect(driver_type.as_deref()).await
         }

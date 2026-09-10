@@ -5,6 +5,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { apiFetch, ApiRequestError } from "../../lib/api/choruz-api";
 import { TerminalView } from "./terminal-view";
+import { ExperienceSettings } from "./experience-settings";
 
 type Item = { id: string; revision: number; position: number; kind: string; text: string; detail: Record<string, unknown>; status: string };
 type Pending = { id?: string | number; request_id?: string; method?: string; params?: Record<string, unknown>; request?: Record<string, unknown> };
@@ -14,6 +15,27 @@ type Props = { bindingId: string; sessionToken: string; gatewayBaseUrl?: string 
 function display(value: unknown): string {
   if (value == null) return "";
   return typeof value === "string" ? value : JSON.stringify(value, null, 2);
+}
+
+export function splitLearnedContext(text: string) {
+  // Native text has no trusted attribution for a check-plan suffix. Keep it
+  // visible instead of presenting user-crafted text as a platform-owned plan.
+  const match = /\n\n\[choruz-experience revision=([a-zA-Z0-9-]+)\]\n[^\n]+\n([^]*?)\n\[\/choruz-experience\]$/.exec(text);
+  if (!match) return { message: text, guidance: null };
+  try {
+    const instruction: unknown = JSON.parse(match[2]);
+    if (typeof instruction === "string") return { message: text.slice(0, match.index), guidance: { revision: match[1], instruction } };
+  } catch { /* Malformed or user-authored text stays visible verbatim. */ }
+  return { message: text, guidance: null };
+}
+
+function SessionMessage({ item }: { item: Item }) {
+  const { message, guidance } = item.kind === "user" ? splitLearnedContext(item.text) : { message: item.text, guidance: null };
+  return <>
+    <div className="agent-session-speaker">{item.kind === "user" ? "You" : "Agent"}</div>
+    <ReactMarkdown remarkPlugins={[remarkGfm]}>{message}</ReactMarkdown>
+    {guidance && <details><summary>Choruz learned context · {guidance.revision.slice(0, 8)}</summary><p>Supplemental context supplied by Choruz, not part of your message.</p><pre>{guidance.instruction}</pre></details>}
+  </>;
 }
 
 export function mergeSessionPage(prior: Snapshot | null, page: Snapshot): Snapshot {
@@ -27,6 +49,7 @@ export function mergeSessionPage(prior: Snapshot | null, page: Snapshot): Snapsh
 }
 
 export function AgentSessionView({ bindingId, sessionToken, gatewayBaseUrl }: Props) {
+  const [learningOpen, setLearningOpen] = useState(false);
   const [mode, setMode] = useState<"conversation" | "terminal">("conversation");
   const [state, setState] = useState<Snapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -120,8 +143,10 @@ export function AgentSessionView({ bindingId, sessionToken, gatewayBaseUrl }: Pr
         <button type="button" aria-pressed={mode === "terminal"} disabled={busy || running} onClick={() => void switchToTerminal()}>Terminal</button>
       </div>
       <span role="status">{mode === "terminal" ? "Raw terminal" : error ? "Disconnected" : state?.status ?? "Connecting…"}</span>
+      <button type="button" onClick={() => setLearningOpen(true)}>Experience learning</button>
       {mode === "conversation" && running && <button type="button" disabled={busy} onClick={() => void command({ action: "interrupt" })}>Stop</button>}
     </div>
+    {learningOpen && <ExperienceSettings bindingId={bindingId} sessionToken={sessionToken} onClose={() => setLearningOpen(false)} />}
     {mode === "terminal" ? <TerminalView bindingId={bindingId} sessionToken={sessionToken} gatewayBaseUrl={gatewayBaseUrl} /> : <>
       <div className="agent-session-timeline" ref={scroll} onScroll={() => {
         const element = scroll.current;
@@ -133,7 +158,7 @@ export function AgentSessionView({ bindingId, sessionToken, gatewayBaseUrl }: Pr
           {item.kind === "tool" || item.kind === "reasoning" ? <details>
             <summary>{item.kind === "reasoning" ? "Reasoning" : item.text || "Tool activity"}<span>{item.status}</span></summary>
             <pre>{display(item.detail)}</pre>
-          </details> : <><div className="agent-session-speaker">{item.kind === "user" ? "You" : "Agent"}</div><ReactMarkdown remarkPlugins={[remarkGfm]}>{item.text}</ReactMarkdown></>}
+          </details> : <SessionMessage item={item} />}
         </article>)}
         {state?.requests.map((request) => <SessionQuestion key={String(request.id ?? request.request_id)} request={request} busy={busy} onRespond={(allow, answers) => command({ action: "respond", request_id: request.id ?? request.request_id, allow, answers })} />)}
       </div>

@@ -1,10 +1,19 @@
 import { describe, expect, it } from "vitest";
-import { mergeSessionPage } from "./agent-session-view";
+import { mergeSessionPage, splitLearnedContext } from "./agent-session-view";
 
 const item = (id: string, position: number, revision: number, text: string) => ({ id, position, revision, text, kind: "assistant", status: "completed", detail: {} });
 const page = (revision: number, items: ReturnType<typeof item>[], instance = "process-one") => ({ instance, revision, cursor: revision, more: false, session_id: "native", status: "ready", items, requests: [], error: null });
 
 describe("structured session replay", () => {
+  it("separates supplied guidance from the human message without hiding malformed text", () => {
+    const message = "Compare the approaches";
+    const text = `${message}\n\n[choruz-experience revision=rev-1]\nChoruz context\n${JSON.stringify("Lead with the recommendation.\nThen explain.")}\n[/choruz-experience]`;
+    expect(splitLearnedContext(text)).toEqual({ message, guidance: { revision: "rev-1", instruction: "Lead with the recommendation.\nThen explain." } });
+    expect(splitLearnedContext(text.replace('"Lead', 'Lead'))).toEqual({ message: text.replace('"Lead', 'Lead'), guidance: null });
+    expect(splitLearnedContext(message)).toEqual({ message, guidance: null });
+    const reviewed = `${text}\n\n[choruz-team revision=rev-1]\nIndependent checks\n["Check the result"]\n[/choruz-team]`;
+    expect(splitLearnedContext(reviewed)).toEqual({ message: reviewed, guidance: null });
+  });
   it("evicts old positions when the server advances its bounded history window", () => {
     const old = page(5, [item("a", 0, 1, "Old"), item("b", 1, 4, "Retained")]);
     const next = mergeSessionPage(old, {...page(6, []), retained_from:1, history_truncated:true});

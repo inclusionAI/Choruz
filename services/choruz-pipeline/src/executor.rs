@@ -71,6 +71,7 @@ struct DetectedTask {
 
 #[derive(Debug, Clone)]
 struct BindingSessionState {
+    workspace_id: String,
     binding_id: String,
     workspace_path: String,
     external_session_id: Option<String>,
@@ -408,11 +409,11 @@ impl ExecutorContext {
         // group the agent participates in.
         match client
             .query_opt(
-                "SELECT id, workspace_path, external_session_id, driver_type, config_json
-                 FROM agent_runtime_bindings
-                 WHERE agent_principal_id = $1
-                   AND state NOT IN ('disabled')
-                 ORDER BY updated_at DESC
+                "SELECT b.id, b.workspace_path, b.external_session_id, b.driver_type, b.config_json, c.workspace_id
+                 FROM agent_runtime_bindings b JOIN conversation c ON c.id=b.conversation_id
+                 WHERE b.agent_principal_id = $1
+                   AND b.state NOT IN ('disabled')
+                 ORDER BY b.updated_at DESC
                  LIMIT 1",
                 &[&agent_principal_id],
             )
@@ -432,6 +433,7 @@ impl ExecutorContext {
                     "resolved agent binding from DB"
                 );
                 Ok(Some(BindingSessionState {
+                    workspace_id: row.get("workspace_id"),
                     binding_id,
                     workspace_path,
                     external_session_id,
@@ -586,6 +588,26 @@ impl ExecutorContext {
         //     the agent just reads them; no getFile dance required.
         let effective_prompt =
             stage_incoming_attachments(&cmd, &work_dir, &self.gateway_base_url).await;
+        let context = if let Some(store) = &self.event_store {
+            choruz_application::DbService::new(store.clone())
+                .experience_for_turn(&binding.workspace_id, &binding_id)
+                .await
+                .map_err(|e| format!("read learned context: {e}"))?
+        } else {
+            None
+        };
+        let preflight = context.as_ref().and_then(|context| {
+            context
+                .team
+                .as_ref()
+                .map(|focus| choruz_host_runtime::harness::ExecutionTeam {
+                    revision_id: context.revision_id.clone(),
+                    team: focus.clone(),
+                })
+        });
+        let experience = context.map(|context| (context.revision_id, context.instruction));
+        let mut effective_prompt =
+            choruz_agent_runtime::headless::with_experience(effective_prompt, experience.as_ref());
 
         // 2. Build spawn args — headless mode so process exits after each command.
         //    This prevents 200+ zombie processes from accumulating.
@@ -600,6 +622,28 @@ impl ExecutorContext {
             LocalCliDriver::OpenCode => &self.opencode_cli_path,
             LocalCliDriver::MathCode => &self.mathcode_cli_path,
         };
+        if let Some(role) = preflight {
+            let plan = choruz_host_runtime::harness::prepare(
+                choruz_host_runtime::TerminalSpec {
+                    terminal_id: binding_id.clone(),
+                    driver_type: driver_type.clone(),
+                    binary_path: Some(cli_path.into()),
+                    workspace_path: work_dir.to_string_lossy().into(),
+                    cols: 120,
+                    rows: 40,
+                    resume_session_id: None,
+                    codex_home: None,
+                    model: selected_model.clone(),
+                    harness_account: binding.config_json.clone(),
+                },
+                &role,
+                &effective_prompt,
+            )
+            .await
+            .map_err(|error| format!("execution review: {error}"))?;
+            effective_prompt.push_str("\n\n");
+            effective_prompt.push_str(&plan);
+        }
         let fork_session = cli_driver == LocalCliDriver::Claude
             && resume_session_id.is_some()
             && (binding

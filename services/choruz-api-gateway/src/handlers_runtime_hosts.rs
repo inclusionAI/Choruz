@@ -80,6 +80,7 @@ pub(crate) struct ClaimedCommand {
     fork_session: bool,
     harness_account: Option<ClaimedHarnessAccount>,
     metadata: Value,
+    preflight: Option<choruz_host_runtime::harness::ExecutionTeam>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1021,6 +1022,20 @@ pub(crate) async fn claim_command(
             )));
         }
     }
+    let context = state
+        .db
+        .experience_for_turn(&host.company_id, &binding.id)
+        .await?;
+    let preflight = context.as_ref().and_then(|context| {
+        context
+            .team
+            .as_ref()
+            .map(|focus| choruz_host_runtime::harness::ExecutionTeam {
+                revision_id: context.revision_id.clone(),
+                team: focus.clone(),
+            })
+    });
+    let experience = context.map(|context| (context.revision_id, context.instruction));
     Ok(Json(Some(ClaimedCommand {
         command_id: command.command_id,
         attempt_id: assignment.attempt_id,
@@ -1028,7 +1043,10 @@ pub(crate) async fn claim_command(
         agent_id: command.agent_id,
         conversation_id: command.conversation_id,
         turn_id: command.turn_id,
-        prompt: command.prompt,
+        prompt: choruz_agent_runtime::headless::with_experience(
+            command.prompt,
+            experience.as_ref(),
+        ),
         driver_type: binding.driver_type.as_str().to_owned(),
         workspace_path: binding.workspace_path,
         model,
@@ -1036,6 +1054,7 @@ pub(crate) async fn claim_command(
         fork_session,
         harness_account,
         metadata: command.metadata,
+        preflight,
     })))
 }
 

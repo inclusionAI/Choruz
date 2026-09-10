@@ -88,6 +88,8 @@ struct ClaimedCommand {
     harness_account: Option<ClaimedHarnessAccount>,
     #[serde(default)]
     metadata: serde_json::Value,
+    #[serde(default)]
+    preflight: Option<choruz_host_runtime::harness::ExecutionTeam>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -859,12 +861,6 @@ async fn execute(
         "starting remote Agent turn"
     );
     let prompt = stage_command_attachments(&client, &config, &command, &workspace).await;
-    let args = driver.args_with_session_fork(
-        command.external_session_id.as_deref(),
-        command.model.as_deref(),
-        &prompt,
-        command.fork_session,
-    );
     let outbox_dir = tempfile::Builder::new()
         .prefix("choruz-connector-outbox-")
         .tempdir()
@@ -956,16 +952,58 @@ async fn execute(
             }
         }
     });
-    let process = process_command
-        .args(args)
-        .env("CHORUZ_WORKSPACE", &workspace)
-        .env("CHORUZ_SEND", &connector_executable)
-        .env("CHORUZ_CONNECTOR_OUTBOX", &outbox_path)
-        .env("DISABLE_AUTOUPDATER", "1")
-        .env("PI_SKIP_VERSION_CHECK", "1")
-        .env("CLAUDE_CODE_ENABLE_TASKS", "1")
-        .kill_on_drop(true)
-        .output();
+    let process = async {
+        let mut prompt = prompt;
+        if let Some(role) = &command.preflight {
+            let account = command
+                .harness_account
+                .as_ref()
+                .map(|account| {
+                    serde_json::json!({
+                        "harness_account_id": account.id,
+                        "harness_account_profile_kind": account.profile_kind,
+                    })
+                })
+                .unwrap_or_else(|| serde_json::json!({}));
+            let plan = choruz_host_runtime::harness::prepare(
+                choruz_host_runtime::TerminalSpec {
+                    terminal_id: command.binding_id.clone(),
+                    driver_type: command.driver_type.clone(),
+                    binary_path: None,
+                    workspace_path: command.workspace_path.clone(),
+                    cols: 120,
+                    rows: 40,
+                    resume_session_id: None,
+                    codex_home: None,
+                    model: command.model.clone(),
+                    harness_account: account,
+                },
+                role,
+                &prompt,
+            )
+            .await
+            .map_err(|error| std::io::Error::other(error.to_string()))?;
+            prompt.push_str("\n\n");
+            prompt.push_str(&plan);
+        }
+        let args = driver.args_with_session_fork(
+            command.external_session_id.as_deref(),
+            command.model.as_deref(),
+            &prompt,
+            command.fork_session,
+        );
+        process_command
+            .args(args)
+            .env("CHORUZ_WORKSPACE", &workspace)
+            .env("CHORUZ_SEND", &connector_executable)
+            .env("CHORUZ_CONNECTOR_OUTBOX", &outbox_path)
+            .env("DISABLE_AUTOUPDATER", "1")
+            .env("PI_SKIP_VERSION_CHECK", "1")
+            .env("CLAUDE_CODE_ENABLE_TASKS", "1")
+            .kill_on_drop(true)
+            .output()
+            .await
+    };
     let outcome = tokio::time::timeout(DEFAULT_TIMEOUT, process).await;
     heartbeat_task.abort();
     let _ = heartbeat_task.await;

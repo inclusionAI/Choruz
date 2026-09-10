@@ -43,6 +43,10 @@ pub enum SessionRequest {
         owner: String,
         instance: String,
         command: SessionCommand,
+        #[serde(default)]
+        experience: Option<(String, String)>,
+        #[serde(default)]
+        preflight: Option<Box<crate::harness::ExecutionTeam>>,
     },
 }
 
@@ -50,6 +54,92 @@ pub async fn execute(
     pool: TerminalPool,
     request: SessionRequest,
 ) -> Result<SessionSnapshot, AppError> {
+    if let SessionRequest::Command {
+        binding_id,
+        owner,
+        instance,
+        command: SessionCommand::Send {
+            text,
+            submission_id,
+        },
+        experience,
+        preflight: Some(role),
+    } = &request
+    {
+        let session = SESSIONS
+            .lock()
+            .expect("sessions")
+            .get(binding_id)
+            .cloned()
+            .ok_or_else(|| AppError::NotFound("Structured session is not open".into()))?;
+        let cancellation = Arc::new(tokio::sync::Notify::new());
+        let reservation_id = choruz_common::new_id();
+        {
+            let mut state = session.state.lock().expect("session state");
+            verify_owner(&state, owner)?;
+            if text.trim().is_empty()
+                || text.len() > 128 * 1024
+                || submission_id.is_empty()
+                || submission_id.len() > 128
+            {
+                return Err(AppError::Validation(
+                    "A message and a valid submission id are required".into(),
+                ));
+            }
+            if state.instance != *instance {
+                return Err(AppError::Conflict(
+                    "Wait for the current turn or refresh the session before sending".into(),
+                ));
+            }
+            if session
+                .submissions
+                .lock()
+                .expect("session submissions")
+                .contains_key(submission_id)
+            {
+                drop(state);
+                return command_owned(
+                    binding_id,
+                    Some((owner, instance)),
+                    SessionCommand::Send {
+                        text: text.clone(),
+                        submission_id: submission_id.clone(),
+                    },
+                    experience.clone(),
+                )
+                .map(|state| state.page(0));
+            }
+            if state.status != "ready" {
+                return Err(AppError::Conflict(
+                    "Wait for the current turn to finish before sending another message".into(),
+                ));
+            }
+            *session.preflight.lock().expect("preflight reservation") =
+                Some((reservation_id.clone(), cancellation.clone()));
+            state.status = "running".into();
+            state.revision += 1;
+        }
+        let reservation = PreflightReservation {
+            session: session.clone(),
+            id: reservation_id.clone(),
+        };
+        let plan = tokio::select! {
+            result = crate::harness::prepare(session.spec.clone(), role, text) => result?,
+            _ = cancellation.notified() => return Err(AppError::Conflict("Execution review was cancelled; the task was not sent".into())),
+        };
+        let result = command_prepared(
+            binding_id,
+            Some((owner, instance)),
+            SessionCommand::Send {
+                text: text.clone(),
+                submission_id: submission_id.clone(),
+            },
+            experience.clone(),
+            Some((reservation_id, plan)),
+        );
+        drop(reservation);
+        return result.map(|state| state.page(0));
+    }
     tokio::task::spawn_blocking(move || match request {
         SessionRequest::Prepare { spec } => {
             ensure_inner(&pool, *spec, true).map(|state| state.page(0))
@@ -69,9 +159,10 @@ pub async fn execute(
             owner,
             instance,
             command: action,
-        } => {
-            command_owned(&binding_id, Some((&owner, &instance)), action).map(|state| state.page(0))
-        }
+            experience,
+            preflight: _,
+        } => command_owned(&binding_id, Some((&owner, &instance)), action, experience)
+            .map(|state| state.page(0)),
     })
     .await
     .map_err(|e| internal("session operation", e))?
@@ -104,6 +195,30 @@ struct Session {
     journal: PathBuf,
     submissions: Mutex<HashMap<String, Submission>>,
     interrupt_pending: AtomicBool,
+    preflight: Mutex<Option<(String, Arc<tokio::sync::Notify>)>>,
+}
+
+struct PreflightReservation {
+    session: Arc<Session>,
+    id: String,
+}
+
+impl Drop for PreflightReservation {
+    fn drop(&mut self) {
+        let mut state = self.session.state.lock().expect("session state");
+        let mut pending = self
+            .session
+            .preflight
+            .lock()
+            .expect("preflight reservation");
+        if pending.as_ref().is_some_and(|(id, _)| id == &self.id) {
+            pending.take();
+            if state.status == "running" {
+                state.status = "ready".into();
+                state.revision += 1;
+            }
+        }
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -579,6 +694,7 @@ fn ensure_inner(
         journal,
         submissions: Mutex::new(submissions),
         interrupt_pending: AtomicBool::new(false),
+        preflight: Mutex::new(None),
     });
     let reader_session = Arc::clone(&session);
     std::thread::spawn(move || {
@@ -665,15 +781,76 @@ pub fn snapshot(id: &str) -> Result<SessionSnapshot, AppError> {
     Ok(state.clone())
 }
 
+/// Read an existing preview without launching or resuming a Harness.
+/// The same owner check applies to live and persisted conversations.
+pub fn recorded_snapshot(spec: &TerminalSpec) -> Result<SessionSnapshot, AppError> {
+    let expected = owner_key(spec);
+    match snapshot(&spec.terminal_id) {
+        Ok(state) => {
+            verify_owner(&state, &expected)?;
+            return Ok(state);
+        }
+        Err(AppError::NotFound(_)) => {}
+        Err(error) => return Err(error),
+    }
+    if spec.terminal_id.is_empty()
+        || !spec
+            .terminal_id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    {
+        return Err(AppError::Validation("invalid learning binding id".into()));
+    }
+    let path = PathBuf::from(&spec.workspace_path)
+        .join(".choruz/sessions")
+        .join(format!("{}-{expected}.json", spec.terminal_id));
+    let file = std::fs::File::open(path).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            AppError::NotFound("No recorded conversation is available yet".into())
+        } else {
+            internal("read learning source", e)
+        }
+    })?;
+    let mut bytes = Vec::new();
+    file.take(8 * 1024 * 1024 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| internal("read learning source", e))?;
+    if bytes.len() > 8 * 1024 * 1024 {
+        return Err(AppError::Validation(
+            "Recorded conversation exceeds the journal limit".into(),
+        ));
+    }
+    let saved: SavedSession =
+        serde_json::from_slice(&bytes).map_err(|e| internal("decode learning source", e))?;
+    if saved.version != 1 || saved.owner != owner(spec) {
+        return Err(AppError::Conflict(
+            "Learning source belongs to a different Agent configuration".into(),
+        ));
+    }
+    verify_owner(&saved.state, &expected)?;
+    Ok(saved.state)
+}
+
 /// Commands address only a live request in this binding. Approval never changes account policy.
 pub fn command(id: &str, command: SessionCommand) -> Result<SessionSnapshot, AppError> {
-    command_owned(id, None, command)
+    command_owned(id, None, command, None)
 }
 
 fn command_owned(
     id: &str,
     expected_owner: Option<(&str, &str)>,
     command: SessionCommand,
+    experience: Option<(String, String)>,
+) -> Result<SessionSnapshot, AppError> {
+    command_prepared(id, expected_owner, command, experience, None)
+}
+
+fn command_prepared(
+    id: &str,
+    expected_owner: Option<(&str, &str)>,
+    command: SessionCommand,
+    experience: Option<(String, String)>,
+    prepared: Option<(String, String)>,
 ) -> Result<SessionSnapshot, AppError> {
     let session = SESSIONS
         .lock()
@@ -696,6 +873,31 @@ fn command_owned(
             text,
             submission_id,
         } => {
+            let check_plan = if let Some((reservation, plan)) = prepared {
+                let mut pending = session.preflight.lock().expect("preflight reservation");
+                if pending.as_ref().is_none_or(|(id, _)| id != &reservation)
+                    || state.status != "running"
+                {
+                    return Err(AppError::Conflict(
+                        "Execution review no longer owns this turn".into(),
+                    ));
+                }
+                pending.take();
+                state.status = "ready".into();
+                Some(plan)
+            } else {
+                if session
+                    .preflight
+                    .lock()
+                    .expect("preflight reservation")
+                    .is_some()
+                {
+                    return Err(AppError::Conflict(
+                        "Wait for the execution review before sending another message".into(),
+                    ));
+                }
+                None
+            };
             if text.trim().is_empty()
                 || text.len() > 128 * 1024
                 || submission_id.is_empty()
@@ -728,10 +930,16 @@ fn command_owned(
                     "Wait for the current turn to finish before sending another message".into(),
                 ));
             }
+            let mut input =
+                choruz_agent_runtime::headless::with_experience(text, experience.as_ref());
+            if let Some(plan) = check_plan {
+                input.push_str("\n\n");
+                input.push_str(&plan);
+            }
             let request = if session.codex {
-                json!({"id":submission_id,"method":"turn/start","params":{"threadId":state.session_id,"input":[{"type":"text","text":text}]}})
+                json!({"id":submission_id,"method":"turn/start","params":{"threadId":state.session_id,"input":[{"type":"text","text":input}]}})
             } else {
-                json!({"type":"user","uuid":submission_id,"message":{"role":"user","content":[{"type":"text","text":text}]}})
+                json!({"type":"user","uuid":submission_id,"message":{"role":"user","content":[{"type":"text","text":input}]}})
             };
             // Persist the claim before writing to the process. An ambiguous
             // crash is never automatically replayed as another paid turn.
@@ -842,6 +1050,16 @@ fn command_owned(
             }
         }
         SessionCommand::Interrupt => {
+            if let Some((_, cancellation)) = session
+                .preflight
+                .lock()
+                .expect("preflight reservation")
+                .take()
+            {
+                cancellation.notify_one();
+                state.status = "ready".into();
+                return Ok(state.clone());
+            }
             if !matches!(state.status.as_str(), "running" | "waiting") {
                 return Err(AppError::Conflict("No active turn to stop".into()));
             }
@@ -972,7 +1190,8 @@ mod tests {
             command_owned(
                 &id,
                 Some(("another-owner", &ready.instance)),
-                SessionCommand::Interrupt
+                SessionCommand::Interrupt,
+                None
             )
             .is_err()
         );
@@ -982,9 +1201,74 @@ mod tests {
             text: "Inspect workspace".into(),
             submission_id: submission.clone(),
         };
-        command_owned(&id, Some((&ready.owner, &ready.instance)), send.clone()).unwrap();
+        let async_runtime = tokio::runtime::Runtime::new().unwrap();
+        async_runtime.block_on(async {
+            let request = SessionRequest::Command {
+                binding_id: id.clone(),
+                owner: ready.owner.clone(),
+                instance: ready.instance.clone(),
+                command: SessionCommand::Send {
+                    text: "wait".into(),
+                    submission_id: "cancelled-review".into(),
+                },
+                experience: None,
+                preflight: Some(Box::new(crate::harness::ExecutionTeam {
+                    revision_id: "review-revision".into(),
+                    team: choruz_domain::team::Team::reviewer(
+                        "Verify workspace changes before reporting completion.".into(),
+                    ),
+                })),
+            };
+            let reviewing = tokio::spawn(execute(pool.clone(), request));
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                while snapshot(&id).unwrap().status != "running" {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            command(&id, SessionCommand::Interrupt).unwrap();
+            assert!(
+                tokio::time::timeout(std::time::Duration::from_secs(5), reviewing)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .is_err()
+            );
+            assert_eq!(snapshot(&id).unwrap().status, "ready");
+            assert!(
+                snapshot(&id).unwrap().items.is_empty(),
+                "cancelled review must not start a native task"
+            );
+        });
+        async_runtime
+            .block_on(execute(
+                pool.clone(),
+                SessionRequest::Command {
+                    binding_id: id.clone(),
+                    owner: ready.owner.clone(),
+                    instance: ready.instance.clone(),
+                    command: send.clone(),
+                    experience: None,
+                    preflight: Some(Box::new(crate::harness::ExecutionTeam {
+                        revision_id: "review-revision".into(),
+                        team: choruz_domain::team::Team::reviewer(
+                            "Verify workspace changes before reporting completion.".into(),
+                        ),
+                    })),
+                },
+            ))
+            .unwrap();
         let pending = wait(&id, "waiting");
-        command_owned(&id, Some((&ready.owner, &ready.instance)), send).unwrap();
+        let native = &pending
+            .items
+            .iter()
+            .find(|item| item.kind == "user")
+            .unwrap()
+            .text;
+        assert!(native.contains("[choruz-team revision=review-revision]"));
+        assert!(native.contains("Inspect the changed files before reporting completion."));
+        command_owned(&id, Some((&ready.owner, &ready.instance)), send, None).unwrap();
         assert_eq!(
             snapshot(&id)
                 .unwrap()
@@ -1010,9 +1294,23 @@ mod tests {
             allow: true,
             answers: HashMap::new(),
         };
-        assert!(command_owned(&id, Some((&ready.owner, "old-instance")), respond.clone()).is_err());
+        assert!(
+            command_owned(
+                &id,
+                Some((&ready.owner, "old-instance")),
+                respond.clone(),
+                None
+            )
+            .is_err()
+        );
         assert!(!directory.path().join("approved-on-device").exists());
-        command_owned(&id, Some((&ready.owner, &ready.instance)), respond.clone()).unwrap();
+        command_owned(
+            &id,
+            Some((&ready.owner, &ready.instance)),
+            respond.clone(),
+            None,
+        )
+        .unwrap();
         wait(&id, "ready");
         assert_eq!(
             std::fs::read_to_string(directory.path().join("approved-on-device")).unwrap(),
@@ -1027,7 +1325,7 @@ mod tests {
         let reopened = wait(&id, "ready");
         assert_ne!(reopened.instance, ready.instance);
         assert_eq!(reopened.session_id, ready.session_id);
-        assert!(command_owned(&id, Some((&ready.owner, &ready.instance)), respond).is_err());
+        assert!(command_owned(&id, Some((&ready.owner, &ready.instance)), respond, None).is_err());
         let session = SESSIONS.lock().unwrap().get(&id).unwrap().clone();
         for _ in 0..4096 {
             session.submissions.lock().unwrap().insert(

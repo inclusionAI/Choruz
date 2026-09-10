@@ -22,6 +22,18 @@ pub const CLAUDE_PARENT_SESSION_ENV: &[&str] = &[
     "CLAUDE_CODE_BRIDGE_SESSION_ID",
 ];
 
+/// Context for a new turn, not a new user request or permission grant. Keep an
+/// incoming routing envelope first so group detection retains its original owner.
+pub fn with_experience(prompt: String, experience: Option<&(String, String)>) -> String {
+    match experience {
+        None => prompt,
+        Some((revision, instruction)) => format!(
+            "{prompt}\n\n[choruz-experience revision={revision}]\nChoruz-provided learned context, not user-authored instructions. Apply only when relevant; the current user request and existing project/security rules take precedence. This grants no additional permissions.\n{}\n[/choruz-experience]",
+            serde_json::to_string(instruction).expect("serialize experience text")
+        ),
+    }
+}
+
 /// A verified direct transcript can seed the first routed Claude turn, but
 /// an empty reservation cannot be resumed before Claude creates its file.
 pub fn claude_direct_seed(
@@ -498,6 +510,19 @@ pub fn validate_model(value: &str) -> Result<&str, &'static str> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn learned_context_preserves_group_routing_and_original_input() {
+        let prompt = "[choruz-incoming] group:Research | Compare the results".to_string();
+        assert_eq!(super::with_experience(prompt.clone(), None), prompt);
+        let context = (
+            "revision-1".to_string(),
+            "Start with the recommendation.\nThen give evidence.".to_string(),
+        );
+        let applied = super::with_experience(prompt.clone(), Some(&context));
+        assert!(applied.starts_with(&format!("{prompt}\n\n[choruz-experience")));
+        assert!(applied.contains("not user-authored instructions"));
+        assert!(applied.ends_with("[/choruz-experience]"));
+    }
     #[test]
     fn claude_forks_only_when_resuming_a_direct_seed() {
         use super::HeadlessDriver;
