@@ -121,6 +121,7 @@ export function RemoteDashboard() {
   const [status, setStatus] = useState<RelayStatus>("closed");
   const sessionRef = useRef<RelaySession | null>(null);
   const transportRef = useRef<RelayTransport | null>(null);
+  const entryRef = useRef<RemoteEntryParams | null>(null);
 
   const disconnect = useCallback(() => {
     transportRef.current?.dispose();
@@ -195,7 +196,8 @@ export function RemoteDashboard() {
 
   useEffect(() => {
     const controller = new AbortController();
-    const entry = parseRemoteEntry(window.location.search, window.location.hash);
+    // Keep the launch input when React replays this effect after URL scrubbing.
+    const entry = entryRef.current ??= parseRemoteEntry(window.location.search, window.location.hash);
     const initialDeviceName = entry.deviceName || defaultDeviceName();
     setGatewayUrl(entry.gatewayUrl);
     setCredential(entry.credential);

@@ -11,6 +11,33 @@ if "--version" in sys.argv:
     print("structured-fixture 1.0")
     sys.exit(0)
 
+if "--ephemeral" in sys.argv or "--no-session-persistence" in sys.argv:
+    if "exec" in sys.argv:
+        assert "--ephemeral" in sys.argv and "--ignore-user-config" in sys.argv
+    assert not pathlib.Path(".fixture-native.json").exists()
+    request = json.loads(sys.stdin.read().strip().splitlines()[-1])
+    if "task" in request:
+        assert "expected" not in request and "check" not in request
+        response = "CHECKED" if "Verify required checks" in request["guidance"] else "UNCHECKED"
+        if all(name in request["preflight"] for name in ('"member":"derive"', '"member":"check"')):
+            response = "TEAM_CHECKED"
+    else:
+        assert request["role"] == "Verify workspace changes before reporting completion." or request["role"].startswith("Plan task-specific observable checks")
+        if request["request"] == "wait":
+            import time
+            time.sleep(60)
+        response = request["role"] + " Inspect the changed files before reporting completion."
+    if "exec" in sys.argv:
+        print(json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": response}}))
+    else:
+        print(json.dumps({"type": "result", "is_error": False, "result": response}))
+    sys.exit(0)
+
+if "--dangerously-skip-permissions" in sys.argv and not sys.stdin.isatty():
+    pathlib.Path("headless-review-input.json").write_text(json.dumps({"prompt": sys.argv[-1]}))
+    print(json.dumps({"type": "result", "is_error": False, "result": "Execution fixture completed."}))
+    sys.exit(0)
+
 if sys.stdin.isatty():
     print("Raw terminal connected", flush=True)
     for line in sys.stdin:

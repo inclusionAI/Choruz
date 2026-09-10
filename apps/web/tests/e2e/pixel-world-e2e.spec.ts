@@ -29,10 +29,11 @@ async function loginAndOpenPixelWorld(
   await page.goto(`${WEB_BASE}/dashboard`);
   await page.getByRole('button', { name: 'Actions menu' }).click();
   await page.getByRole('button', { name: 'Pixel World' }).click();
-  await expect(page.locator('.pixel-world-panel canvas')).toBeVisible();
+  // Scene readiness includes loading the lazy game code and its assets.
   await page.waitForFunction(() =>
     (window as any).__PHASER_READY === true && (window as any).__PHASER_PLAYER?.active,
   );
+  await expect(page.locator('.pixel-world-panel canvas')).toBeVisible();
 }
 
 test.describe("Pixel World", () => {

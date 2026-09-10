@@ -85,6 +85,7 @@ async fn exercise_sockets(silent: Option<&str>) {
     let app = choruz_application::ChatApp::new();
     let attachments = tempfile::tempdir().unwrap();
     let state = ApiState {
+        experience_worker: None,
         app: app.clone(),
         db: db.clone(),
         runtime: choruz_agent_runtime::RuntimeStore::new(&database.database_url),

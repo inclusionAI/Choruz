@@ -489,6 +489,83 @@ mod tests {
         };
         assert!(ok["home"].is_string());
 
+        let source = tempfile::tempdir().unwrap();
+        let workspace = source.path().join("workspace");
+        let account = source.path().join("account");
+        let other_account = source.path().join("other-account");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::create_dir_all(account.join("sessions")).unwrap();
+        std::fs::create_dir_all(other_account.join("sessions")).unwrap();
+        let meta = format!(
+            "{}\n",
+            json!({"type":"session_meta","payload":{"id":"history","cwd":workspace}})
+        );
+        let record = format!(
+            "{}\n",
+            json!({"type":"response_item","payload":{"type":"message","role":"user","content":"Check the result"}})
+        );
+        std::fs::write(
+            account.join("sessions/history.jsonl"),
+            format!("{meta}{record}"),
+        )
+        .unwrap();
+        let reference = format!("history:{}", meta.len());
+        let mut spec = TerminalSpec {
+            terminal_id: "history-link".into(),
+            driver_type: "codex_terminal".into(),
+            binary_path: None,
+            workspace_path: workspace.to_string_lossy().into_owned(),
+            cols: 80,
+            rows: 24,
+            resume_session_id: Some("history".into()),
+            codex_home: Some(account.to_string_lossy().into_owned()),
+            model: None,
+            harness_account: json!({}),
+        };
+        for selected_account in [true, false] {
+            if !selected_account {
+                spec.codex_home = Some(other_account.to_string_lossy().into_owned());
+            }
+            let (reply, _) = call(
+                &controller_tx,
+                &mut controller_rx,
+                "history",
+                LinkRequest::Host {
+                    request: HostRequest::ExperienceReferences {
+                        spec: Box::new(spec.clone()),
+                        cursor: crate::experience_source::Cursor {
+                            session: "history".into(),
+                            offset: (meta.len() + record.len()) as u64,
+                        },
+                        references: vec![reference.clone(), "foreign:0".into()],
+                    },
+                },
+            )
+            .await;
+            if selected_account {
+                assert!(
+                    matches!(reply, DeviceFrame::Result { ok: Some(value), error: None, .. }
+                    if value == json!([{
+                        "reference": reference, "session": "history", "offset": meta.len(),
+                        "record": {"timestamp": null, "payload": serde_json::from_str::<serde_json::Value>(&record).unwrap()["payload"]}
+                    }])),
+                    "selected source must survive host-link serialization"
+                );
+            } else {
+                assert!(
+                    matches!(
+                        reply,
+                        DeviceFrame::Result {
+                            ok: None,
+                            error: Some(_),
+                            ..
+                        }
+                    ),
+                    "another account must not recover the selected source"
+                );
+            }
+        }
+
         let (reply, _) = call(
             &controller_tx,
             &mut controller_rx,
@@ -536,6 +613,7 @@ mod tests {
                     ])
                     .env("CHORUZ_TEST_SKILL_DEVICE", name)
                     .env("HOME", &home)
+                    .env("PATH", "/usr/bin:/bin")
                     .env("CHORUZ_RUNTIME_DIR", home.join("runtime"))
                     .env("CHORUZ_HARNESS_ACCOUNT_ROOT", home.join("accounts"))
                     .output()
@@ -565,8 +643,6 @@ mod tests {
                 harness_account: json!({"harness_account_id": account, "harness_account_profile_kind": "isolated"}),
             },
         }).await;
-        drop(controller_tx);
-        assert_eq!(link.await.unwrap(), Ok(()));
         let DeviceFrame::Result {
             ok: Some(value),
             error: None,
@@ -590,6 +666,44 @@ mod tests {
                 .unwrap()
                 .starts_with(fs::canonicalize(&home).unwrap())
         );
+        let (reply, _) = call(
+            &controller_tx,
+            &mut controller_rx,
+            "disable-browser",
+            LinkRequest::Host {
+                request: HostRequest::ComputerUse {
+                    tool: Some(crate::computer_use::Tool::Browser),
+                    enabled: Some(false),
+                },
+            },
+        )
+        .await;
+        assert!(
+            matches!(reply, DeviceFrame::Result { ok: Some(ref value), error: None, .. } if value["tools"][0]["enabled"] == false)
+        );
+        assert!(
+            home.join(".choruz/computer-use/browser-skill.disabled")
+                .is_file()
+        );
+        let (reply, _) = call(&controller_tx, &mut controller_rx, "prepare-disabled", LinkRequest::Host {
+            request: HostRequest::CodexPrepareHome {
+                binding_id: "computer-use-binding".into(),
+                workspace_path: workspace.to_string_lossy().into_owned(),
+                harness_account: json!({"harness_account_id": account, "harness_account_profile_kind": "isolated"}),
+            },
+        }).await;
+        assert!(matches!(
+            reply,
+            DeviceFrame::Result {
+                ok: Some(_),
+                error: None,
+                ..
+            }
+        ));
+        assert!(!managed.join("skills/browser-skill").exists());
+        assert!(home.join(".agents/skills/browser-skill/SKILL.md").is_file());
+        drop(controller_tx);
+        assert_eq!(link.await.unwrap(), Ok(()));
     }
 
     #[cfg(unix)]

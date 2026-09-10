@@ -139,7 +139,7 @@ RULES: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
         ),
     ),
     (
-        ("components/runtime/terminal-view.tsx", "lib/terminal/terminal-write-buffer.ts", "lib/terminal/ansi.ts"),
+        ("components/runtime/terminal-view.tsx", "components/runtime/agent-session-view.tsx", "components/runtime/experience-settings.tsx", "lib/terminal/terminal-write-buffer.ts", "lib/terminal/ansi.ts"),
         ("tests/e2e/terminal.spec.ts",),
     ),
     (

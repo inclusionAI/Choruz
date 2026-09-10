@@ -40,6 +40,7 @@ export async function pairWithHost(options: PairingOptions): Promise<RemoteCrede
   const devicePublicKey = await exportPairingPublicKey(keys.publicKey);
   const deviceNonce = createPairingNonce();
   const deviceCommitment = await derivePairingCommitment(devicePublicKey, deviceNonce);
+  if (options.signal?.aborted) throw new Error("Pairing cancelled.");
   const socket = createSocket(gatewayConnectUrl(options.gatewayUrl, {
     pairing_id: credential.id,
     role: "pair_client",

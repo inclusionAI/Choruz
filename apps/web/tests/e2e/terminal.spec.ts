@@ -7,6 +7,134 @@ import { API_BASE, WEB_BASE, login, gotoDashboard } from "../fixtures/auth";
 import { createGroup, provisionAgent, sendMessage, uniqueName } from "../fixtures/api";
 import { runtimeTest } from "../fixtures/runtime-device";
 
+runtimeTest("background experience follows the selected remote Agent and applies only to later turns", async ({ page, device }) => {
+  test.setTimeout(180_000);
+  const { company, host, headers, home } = device;
+  const cli = path.join(home, "learning-source-cli");
+  const analystCli = path.join(home, "learning-analyst-cli");
+  await writeFile(cli, await readFile(path.resolve("tests/fixtures/structured-cli.py")), { mode: 0o700 });
+  await writeFile(analystCli, await readFile(path.resolve("../../crates/choruz-host-runtime/tests/fixtures/experience-analyst.py")), { mode: 0o700 });
+  const agents = [];
+  for (const [role, driver, binary] of [["source", "claude_terminal", cli], ["analyst", "codex_terminal", analystCli]]) {
+    const response = await page.request.post(`${WEB_BASE}/api/agents/provision`, { data: {
+      name: uniqueName(`learning-${role}`), instructions: "Experience learning acceptance.", driver_type: driver,
+      workspace_id: company.id, ...(role === "source" ? { runtime_host_id: host.id } : {}),
+    } });
+    expect(response.status(), await response.text()).toBe(201);
+    const agent = await response.json();
+    const db = await postgresQueryClient();
+    await db.query("UPDATE harness_account SET models_json=$1::jsonb WHERE company_id=$2 AND id=(SELECT config_json->>'harness_account_id' FROM agent_runtime_bindings WHERE id=$3)", [JSON.stringify([{ id: "learning-fixture", name: "Learning fixture" }]), company.id, agent.binding.id]);
+    await db.query("UPDATE agent_runtime_bindings SET config_json=config_json || $1::jsonb WHERE id=$2", [JSON.stringify({ binary_path: binary, model: "learning-fixture" }),agent.binding.id]);
+    agents.push(agent);
+  }
+  const [target, analyst] = agents;
+  await gotoDashboard(page);
+  await page.getByRole("button", { name: "Select company" }).click();
+  await page.locator(".company-dropdown-item").filter({ hasText: company.name }).locator(".company-dropdown-item-name").click();
+  await page.locator(".conv-item").filter({ hasText: target.agent.name }).first().click();
+  const session = page.getByRole("region", { name: "Agent session" });
+  const send = async (text: string) => {
+    await expect(session.getByRole("status")).toHaveText("ready");
+    await session.getByLabel("Message Agent").fill(text);
+    await session.getByRole("button", { name: "Send", exact: true }).click();
+    await session.getByRole("button", { name: "Allow once" }).click();
+    await expect(session.getByRole("status")).toHaveText("ready");
+  };
+  await send("Your completion claim omitted the required check. Verify the workspace before reporting completion.");
+  await session.getByRole("button", { name: "Experience learning", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Experience learning", exact: true });
+  await dialog.getByLabel("Analysis Agent").selectOption(analyst.binding.id);
+  await dialog.getByLabel("Enable background learning").check();
+  await dialog.getByLabel("Evaluate and optimize against a fixed suite").check();
+  await dialog.getByLabel("Suite name").fill("Verification format");
+  for (let i = 0; i < 3; i++) {
+    await dialog.getByLabel("Task input", { exact: true }).nth(i).fill(`Check independent example ${i}`);
+    await dialog.getByLabel("Expected answer", { exact: true }).nth(i).fill("CHECKED");
+  }
+  await dialog.getByText("Search budget and ordering", { exact: true }).click();
+  await dialog.getByLabel("Maximum task evaluations", { exact: true }).fill("4");
+  await dialog.getByLabel("Automatically apply a measured and reviewed improvement").check();
+  await dialog.getByRole("button", { name: "Save settings", exact: true }).click();
+  await expect(dialog.getByRole("button", { name: "Save settings", exact: true })).toBeEnabled();
+  await dialog.getByRole("button", { name: "Close", exact: true }).click();
+  const endpoint = `${API_BASE}/v1/runtime/bindings/${target.binding.id}/experience`;
+  const status = async () => {
+    const response = await page.request.get(endpoint, { headers });
+    expect(response.ok(), await response.text()).toBe(true);
+    return response.json();
+  };
+  await expect.poll(async () => (await status()).policy?.active_revision_id, { timeout: 45_000 }).toBeTruthy();
+  const learned = await status();
+  expect(learned.policy.optimization_settings.suite.name).toBe("Verification format");
+  const evaluations = await page.request.get(`${endpoint}/evaluations`, { headers });
+  const evaluated = (await evaluations.json()).evaluations[0];
+  expect(evaluated.application_status).toBe("applied");
+  expect(evaluated.search_summary.scores).toEqual([0, 1, 0, 1]);
+  let revision = learned.policy.active_revision_id;
+  expect(learned.revisions[0].validation.research).toContain("observable check evidence");
+  expect(learned.revisions[0].source_references[0]).toMatch(/^[a-zA-Z0-9-]+:\d+$/);
+  await send("Compare the next approaches.");
+  await expect(session.getByText(`Choruz learned context · ${revision.slice(0,8)}`, { exact: true })).toHaveCount(1);
+  const native = JSON.parse(await readFile(path.join(target.workspace_path, ".fixture-native.json"), "utf8"));
+  const userInputs = native.claude.filter((row: { type: string; message: { content: { type: string }[] } }) => row.type === "user" && row.message.content[0].type === "text");
+  expect(userInputs[0].message.content[0].text).not.toContain("choruz-experience");
+  expect(userInputs[1].message.content[0].text).toContain(`revision=${revision}`);
+  expect(userInputs[1].message.content[0].text).toContain("Verify required checks before reporting completion.");
+  await send("For that separate task, your completion claim again missed the required check.");
+  // A second fixed suite distinguishes actual collaborator execution from the
+  // prompt-only improvement. Only external model generation is replaced.
+  await session.getByRole("button", { name: "Experience learning", exact: true }).click();
+  await expect(dialog.getByRole("region", { name: "Evaluation history" })).toContainText("Application: applied");
+  await expect(dialog.getByRole("table")).toContainText("Selected winner");
+  for (let i = 0; i < 3; i++) {
+    await dialog.getByLabel("Expected answer", { exact: true }).nth(i).fill("TEAM_CHECKED");
+  }
+  await dialog.getByLabel("Evolve the internal execution team").check();
+  await dialog.getByLabel("Maximum total agents per task").fill("3");
+  await dialog.getByText("Search budget and ordering", { exact: true }).click();
+  await dialog.getByLabel("Maximum task evaluations", { exact: true }).fill("24");
+  await dialog.getByLabel("Maximum proposals", { exact: true }).fill("2");
+  await dialog.getByRole("button", { name: "Save settings", exact: true }).click();
+  await expect(dialog.getByRole("button", { name: "Save settings", exact: true })).toBeEnabled();
+  await dialog.getByRole("button", { name: "Close", exact: true }).click();
+  const schedulingDb = await postgresQueryClient();
+  await expect.poll(async () => {
+    await schedulingDb.query("UPDATE experience_policy SET next_check_at=NOW() WHERE binding_id=$1 AND lease_token IS NULL", [target.binding.id]);
+    const result = await status();
+    return result.revisions.find((row: { id: string }) => row.id === result.policy.active_revision_id)?.validation.team?.review;
+  }, { timeout: 75_000 }).toBe("passed");
+  revision = (await status()).policy.active_revision_id;
+  const selected = (await status()).revisions.find((row: { id: string }) => row.id === revision);
+  expect(selected.validation.team.config.members.map((member: { name: string }) => member.name)).toEqual(["derive", "check"]);
+  await send("Inspect the next workspace change.");
+  await expect(session.getByText(`Independent check plan · ${revision.slice(0,8)}`, { exact: true })).toHaveCount(0);
+  await expect(session.getByText(`[choruz-team revision=${revision}]`, { exact: false })).toBeVisible();
+  const reviewedNative = JSON.parse(await readFile(path.join(target.workspace_path, ".fixture-native.json"), "utf8"));
+  expect(JSON.stringify(reviewedNative)).toContain(`[choruz-team revision=${revision}]`);
+  expect(JSON.stringify(reviewedNative)).toContain("Plan task-specific observable checks for the task.");
+  await writeFile(path.join(home, "bin", "claude"), await readFile(cli), { mode: 0o700 });
+  const group = await createGroup(page, device.session.token, device.session.principal.id, uniqueName("reviewed-group"), [target.agent.id], company.id);
+  await sendMessage(page, device.session.token, device.session.principal.id, group.id, `@${target.agent.name} Inspect the next group task.`);
+  await expect.poll(async () => readFile(path.join(target.workspace_path, "headless-review-input.json"), "utf8").catch(() => ""), { timeout: 30_000 }).toContain(`[choruz-team revision=${revision}]`);
+  await session.getByRole("button", { name: "Experience learning", exact: true }).click();
+  await dialog.getByLabel("Enable background learning").uncheck();
+  await dialog.getByRole("button", { name: "Refresh history", exact: true }).click();
+  await expect(dialog.getByLabel("Enable background learning")).not.toBeChecked();
+  await dialog.getByRole("button", { name: "Save settings", exact: true }).click();
+  await expect.poll(async () => (await status()).policy.enabled).toBe(false);
+  await dialog.getByRole("button", { name: "Clear active revision", exact: true }).click();
+  await expect.poll(async () => (await status()).policy.active_revision_id).toBeNull();
+  const revisionDetails = dialog.locator(`[data-revision-id="${revision}"]`);
+  await revisionDetails.locator("summary").click();
+  await revisionDetails.getByRole("button", { name: "Restore this revision", exact: true }).click();
+  await expect.poll(async () => (await status()).policy.active_revision_id).toBe(revision);
+  await dialog.getByRole("button", { name: "Close", exact: true }).click();
+  await send("Learning is disabled for this turn.");
+  const after = JSON.parse(await readFile(path.join(target.workspace_path, ".fixture-native.json"), "utf8"));
+  const last = after.claude.filter((row: { type: string; message: { content: { type: string }[] } }) => row.type === "user" && row.message.content[0].type === "text").at(-1);
+  expect(last.message.content[0].text).toBe("Learning is disabled for this turn.");
+});
+
 for (const driver of ["claude_terminal", "codex_terminal"]) {
   for (const remote of [false, true]) {
     runtimeTest(`structured ${driver} on ${remote ? "device B" : "this computer"} preserves approvals across reload`, async ({ page, device }) => {

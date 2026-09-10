@@ -39,18 +39,38 @@ pub fn prepare_profile(profile: &Path) -> Result<(), String> {
 fn link_skills(home: &Path, profile: &Path) -> std::io::Result<()> {
     use std::{fs, os::unix::fs::symlink};
     for name in ["browser-skill", "cua-driver"] {
+        let disabled = home
+            .join(".choruz/computer-use")
+            .join(format!("{name}.disabled"))
+            .exists();
+        let target = profile.join("skills").join(name);
+        let ownership = profile.join(".choruz-computer-use").join(name);
+        if disabled {
+            if let Ok(recorded) = fs::read_link(&ownership) {
+                if fs::read_link(&target).ok().as_ref() == Some(&recorded) {
+                    fs::remove_file(&target)?;
+                }
+                fs::remove_file(&ownership)?;
+            }
+            continue;
+        }
         let source = [".agents/skills", ".claude/skills", ".codex/skills"]
             .into_iter()
             .map(|root| home.join(root).join(name))
             .find(|path| path.join("SKILL.md").is_file());
         let Some(source) = source else { continue };
-        let target = profile.join("skills").join(name);
         if fs::symlink_metadata(&target).is_ok() {
             continue;
         }
         fs::create_dir_all(profile.join("skills"))?;
-        match symlink(source, target) {
-            Ok(()) => {}
+        match symlink(&source, target) {
+            Ok(()) => {
+                fs::create_dir_all(profile.join(".choruz-computer-use"))?;
+                if fs::symlink_metadata(&ownership).is_ok() {
+                    fs::remove_file(&ownership)?;
+                }
+                symlink(source, ownership)?;
+            }
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
             Err(error) => return Err(error),
         }
@@ -99,6 +119,36 @@ mod tests {
         assert_eq!(
             fs::read_to_string(custom.join("SKILL.md")).unwrap(),
             "account override"
+        );
+        let switches = home.join(".choruz/computer-use");
+        fs::create_dir_all(&switches).unwrap();
+        for name in ["browser-skill", "cua-driver"] {
+            fs::write(switches.join(format!("{name}.disabled")), "").unwrap();
+        }
+        link_skills(&home, &profile).unwrap();
+        assert!(!profile.join("skills/browser-skill").exists());
+        assert_eq!(
+            fs::read_to_string(custom.join("SKILL.md")).unwrap(),
+            "account override"
+        );
+        fs::remove_file(switches.join("browser-skill.disabled")).unwrap();
+        link_skills(&home, &profile).unwrap();
+        assert!(profile.join("skills/browser-skill/SKILL.md").is_file());
+        let user_profile = root.path().join("custom-profile");
+        fs::create_dir_all(user_profile.join("skills")).unwrap();
+        std::os::unix::fs::symlink(&source, user_profile.join("skills/browser-skill")).unwrap();
+        link_skills(&home, &user_profile).unwrap();
+        fs::write(switches.join("browser-skill.disabled"), "").unwrap();
+        fs::remove_file(source.join("SKILL.md")).unwrap();
+        fs::remove_dir(&source).unwrap();
+        link_skills(&home, &profile).unwrap();
+        link_skills(&home, &user_profile).unwrap();
+        assert!(fs::symlink_metadata(profile.join("skills/browser-skill")).is_err());
+        assert!(
+            fs::symlink_metadata(user_profile.join("skills/browser-skill"))
+                .unwrap()
+                .file_type()
+                .is_symlink()
         );
     }
 

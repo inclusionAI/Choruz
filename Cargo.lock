@@ -333,7 +333,7 @@ dependencies = [
 
 [[package]]
 name = "choruz-agent-runtime"
-version = "0.1.2"
+version = "0.2.1"
 dependencies = [
  "choruz-common",
  "chrono",
@@ -352,7 +352,7 @@ dependencies = [
 
 [[package]]
 name = "choruz-api-gateway"
-version = "0.1.2"
+version = "0.2.1"
 dependencies = [
  "aes-gcm",
  "axum",
@@ -397,7 +397,7 @@ dependencies = [
 
 [[package]]
 name = "choruz-application"
-version = "0.1.2"
+version = "0.2.1"
 dependencies = [
  "choruz-auth",
  "choruz-common",
@@ -419,7 +419,7 @@ dependencies = [
 
 [[package]]
 name = "choruz-auth"
-version = "0.1.2"
+version = "0.2.1"
 dependencies = [
  "base64",
  "hmac 0.12.1",
@@ -432,7 +432,7 @@ dependencies = [
 
 [[package]]
 name = "choruz-cli"
-version = "0.1.2"
+version = "0.2.1"
 dependencies = [
  "dirs",
  "libc",
@@ -446,7 +446,7 @@ dependencies = [
 
 [[package]]
 name = "choruz-common"
-version = "0.1.2"
+version = "0.2.1"
 dependencies = [
  "chrono",
  "prometheus",
@@ -457,7 +457,7 @@ dependencies = [
 
 [[package]]
 name = "choruz-connector"
-version = "0.1.2"
+version = "0.2.1"
 dependencies = [
  "axum",
  "choruz-agent-runtime",
@@ -481,7 +481,7 @@ dependencies = [
 
 [[package]]
 name = "choruz-domain"
-version = "0.1.2"
+version = "0.2.1"
 dependencies = [
  "chrono",
  "serde",
@@ -490,7 +490,7 @@ dependencies = [
 
 [[package]]
 name = "choruz-events"
-version = "0.1.2"
+version = "0.2.1"
 dependencies = [
  "choruz-ids",
  "chrono",
@@ -500,7 +500,7 @@ dependencies = [
 
 [[package]]
 name = "choruz-executor"
-version = "0.1.2"
+version = "0.2.1"
 dependencies = [
  "async-trait",
  "choruz-events",
@@ -532,14 +532,16 @@ dependencies = [
 
 [[package]]
 name = "choruz-host-runtime"
-version = "0.1.2"
+version = "0.2.1"
 dependencies = [
  "base64",
  "choruz-agent-runtime",
  "choruz-common",
+ "choruz-domain",
  "choruz-harness-login",
  "choruz-ids",
  "chrono",
+ "futures-util",
  "hex",
  "libc",
  "portable-pty",
@@ -554,7 +556,7 @@ dependencies = [
 
 [[package]]
 name = "choruz-ids"
-version = "0.1.2"
+version = "0.2.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -563,7 +565,7 @@ dependencies = [
 
 [[package]]
 name = "choruz-infrastructure"
-version = "0.1.2"
+version = "0.2.1"
 dependencies = [
  "tracing",
  "tracing-subscriber",
@@ -571,7 +573,7 @@ dependencies = [
 
 [[package]]
 name = "choruz-pipeline"
-version = "0.1.2"
+version = "0.2.1"
 dependencies = [
  "async-trait",
  "axum",
@@ -605,7 +607,7 @@ dependencies = [
 
 [[package]]
 name = "choruz-relay-client"
-version = "0.1.2"
+version = "0.2.1"
 dependencies = [
  "aes-gcm",
  "base64",
@@ -626,7 +628,7 @@ dependencies = [
 
 [[package]]
 name = "choruz-replay"
-version = "0.1.2"
+version = "0.2.1"
 dependencies = [
  "choruz-common",
  "choruz-ids",
@@ -642,7 +644,7 @@ dependencies = [
 
 [[package]]
 name = "choruz-router"
-version = "0.1.2"
+version = "0.2.1"
 dependencies = [
  "choruz-common",
  "choruz-events",
@@ -661,7 +663,7 @@ dependencies = [
 
 [[package]]
 name = "choruz-server"
-version = "0.1.2"
+version = "0.2.1"
 dependencies = [
  "choruz-infrastructure",
  "choruz-supervisor",
@@ -672,7 +674,7 @@ dependencies = [
 
 [[package]]
 name = "choruz-session"
-version = "0.1.2"
+version = "0.2.1"
 dependencies = [
  "choruz-events",
  "choruz-ids",
@@ -690,7 +692,7 @@ dependencies = [
 
 [[package]]
 name = "choruz-store"
-version = "0.1.2"
+version = "0.2.1"
 dependencies = [
  "choruz-common",
  "choruz-events",
@@ -709,7 +711,7 @@ dependencies = [
 
 [[package]]
 name = "choruz-supervisor"
-version = "0.1.2"
+version = "0.2.1"
 dependencies = [
  "choruz-common",
  "dirs",
@@ -726,7 +728,7 @@ dependencies = [
 
 [[package]]
 name = "choruz-tools"
-version = "0.1.2"
+version = "0.2.1"
 dependencies = [
  "async-trait",
  "choruz-common",
@@ -743,7 +745,7 @@ dependencies = [
 
 [[package]]
 name = "choruz-writer"
-version = "0.1.2"
+version = "0.2.1"
 dependencies = [
  "choruz-common",
  "choruz-events",

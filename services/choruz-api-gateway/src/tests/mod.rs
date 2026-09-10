@@ -56,6 +56,7 @@ mod agents;
 mod channel_tasks;
 mod contracts;
 mod conversations;
+mod experience;
 mod filesystem;
 mod harness_logins;
 mod messages;

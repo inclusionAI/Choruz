@@ -2109,6 +2109,210 @@ paths:
       responses:
         "200":
           description: Binding host assigned
+  /v1/runtime/bindings/{bindingId}/experience:
+    parameters:
+      - name: bindingId
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      operationId: getExperienceLearning
+      description: Returns the human owner's learning settings and recent revisions for an authorized Agent. Source traces are not returned by this endpoint.
+      responses:
+        "200":
+          description: Settings and revision history
+    patch:
+      operationId: selectExperienceRevision
+      description: Selects a previously reviewed revision for future tasks, or clears the active revision. Fences any in-flight learning result.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [revision_id]
+              properties:
+                revision_id:
+                  type: [string, "null"]
+      responses:
+        "200":
+          description: Updated learning settings
+    put:
+      operationId: configureExperienceLearning
+      description: Enables or disables asynchronous experience learning with a separately selected analysis Agent in the same workspace. Changes fence pending analysis; foreground execution never waits for learning.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [enabled, analyst_binding_id]
+              properties:
+                enabled:
+                  type: boolean
+                analyst_binding_id:
+                  type: string
+                optimization_settings:
+                  type: [object, 'null']
+                  additionalProperties: false
+                  required: [suite, config, auto_apply]
+                  description: Opt-in fixed-suite background optimization of each newly reviewed candidate. The suite is user supplied, never inferred from research success claims. Auto-apply requires validation improvement, held-out non-regression and final content review. Null uses content-review learning without measured search.
+                  properties:
+                    suite:
+                      $ref: '#/paths/~1v1~1runtime~1bindings~1{bindingId}~1experience~1evaluations/post/requestBody/content/application~1json/schema/properties/suite'
+                    config:
+                      $ref: '#/paths/~1v1~1runtime~1bindings~1{bindingId}~1experience~1evaluations/post/requestBody/content/application~1json/schema/properties/optimization'
+                    auto_apply:
+                      type: boolean
+      responses:
+        "200":
+          description: Saved settings and revision history
+  /v1/runtime/bindings/{bindingId}/experience/evaluations:
+    parameters:
+      - name: bindingId
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      operationId: listExperienceEvaluations
+      description: Returns the owner's twenty most recent comparison summaries, reserved call counts and application status. Supply id for one full run with frozen snapshots, ancestry and per-case results. Only an opted-in automatic run can apply its reviewed winner. Results do not establish performance outside this tool-free task suite.
+      parameters:
+        - name: id
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Evaluation history
+    post:
+      operationId: createExperienceEvaluation
+      description: Queues an asynchronous comparison of a reviewed candidate against the current guidance on the target account. Freezes the supplied suite and both revisions. Each task runs in a fresh tool-free scratch conversation, never the live session. Each candidate/case uses one final executor call plus one call per internal team member. An interrupted call is not retried. Settings or execution-context changes cancel the run.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [revision_id, suite]
+              properties:
+                revision_id:
+                  type: string
+                optimization:
+                  type: object
+                  additionalProperties: false
+                  required: [max_metric_calls, max_proposals, minibatch_size, seed, merge]
+                  properties:
+                    max_metric_calls:
+                      type: integer
+                      minimum: 1
+                      maximum: 512
+                    max_proposals:
+                      type: integer
+                      minimum: 1
+                      maximum: 32
+                    minibatch_size:
+                      type: integer
+                      minimum: 1
+                    seed:
+                      type: integer
+                      minimum: 0
+                    merge:
+                      type: boolean
+                    cache_evaluations:
+                      type: boolean
+                      default: false
+                      description: Reuse previous candidate/case observations; otherwise measure each comparison afresh.
+                    evolve_team:
+                      type: boolean
+                      default: false
+                      description: Allow bounded internal team changes after a documented recurring problem; analysis standards remain fixed.
+                    max_agents:
+                      type: integer
+                      minimum: 1
+                      maximum: 4
+                      default: 4
+                      description: Maximum total agents per task, including the final executor; all use the target's existing device and account.
+                suite:
+                  type: object
+                  additionalProperties: false
+                  required: [name, cases]
+                  properties:
+                    name:
+                      type: string
+                      maxLength: 120
+                    cases:
+                      type: array
+                      minItems: 3
+                      maxItems: 64
+                      items:
+                        type: object
+                        additionalProperties: false
+                        required: [id, split, input, check]
+                        properties:
+                          id:
+                            type: string
+                            maxLength: 80
+                          split:
+                            type: string
+                            enum: [train, validation, test]
+                          input:
+                            type: string
+                            maxLength: 16000
+                          check:
+                            oneOf:
+                              - type: object
+                                additionalProperties: false
+                                required: [type, expected]
+                                properties:
+                                  type:
+                                    const: exact
+                                  expected:
+                                    type: string
+                              - type: object
+                                additionalProperties: false
+                                required: [type, expected]
+                                properties:
+                                  type:
+                                    const: json
+                                  expected: {}
+      responses:
+        "202":
+          description: Immutable comparison queued
+        "409":
+          description: An evaluation is already pending or the candidate is not eligible
+  /v1/companies/{companyId}/computer-use:
+    parameters:
+      - name: companyId
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      operationId: manageComputerUse
+      description: Checks device browser and desktop tools. An optional tool and enabled boolean persist automatic skill provisioning and start missing tool installation on the selected runtime_host_id, or the local device when omitted. Installation continues independently of the browser request. Only human company members may use this operation. Disabling does not uninstall tools or revoke operating-system permissions.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                runtime_host_id:
+                  type: string
+                tool:
+                  type: string
+                  enum: [browser, desktop]
+                enabled:
+                  type: boolean
+      responses:
+        "200":
+          description: Device-local tool installation and health state
   /v1/workspace-sessions/import:
     post:
       operationId: importWorkspaceSessions

@@ -227,6 +227,7 @@ async function startSoftwareTeamScreenshotSmokeWebhook(
 ) {
   let appMentionCount = 0;
   let emittedCount = 0;
+  let emissionStarted = false;
   const serverErrors: string[] = [];
   const server = createServer((req, res) => {
     if (req.method !== "POST") {
@@ -245,7 +246,7 @@ async function startSoftwareTeamScreenshotSmokeWebhook(
           event_type?: string;
           payload?: { content?: string };
         } : {};
-        if (payload.event_type === "app_mention" && emittedCount === 0) {
+        if (payload.event_type === "app_mention" && !emissionStarted) {
           const content = payload.payload?.content ?? "";
           if (!content.includes("software team screenshot smoke")) {
             res.writeHead(200, { "content-type": "application/json" });
@@ -257,6 +258,8 @@ async function startSoftwareTeamScreenshotSmokeWebhook(
             throw new Error("software team screenshot smoke webhook config is incomplete");
           }
 
+          // Reserve before awaiting a subprocess: webhook deliveries can overlap.
+          emissionStarted = true;
           for (const task of script.taskCreates) {
             await writeAgentOutboxCommand(workspacePath, {
               type: "task_create",
@@ -713,7 +716,7 @@ function softwareTeamSmokePlan(options: {
       {
         slotId: "backend-engineer",
         action: "create",
-        agentName: "backend-engineer",
+        agentName: uniqueName("backend-engineer"),
         roleTemplateId: roleTemplateIdForSoftwareTeamSlot("backend-engineer"),
         roleTemplateVersion: version,
         driver: "codex_terminal",
@@ -725,7 +728,7 @@ function softwareTeamSmokePlan(options: {
       {
         slotId: "code-reviewer",
         action: "create",
-        agentName: "code-reviewer",
+        agentName: uniqueName("code-reviewer"),
         roleTemplateId: roleTemplateIdForSoftwareTeamSlot("code-reviewer"),
         roleTemplateVersion: version,
         driver: "codex_terminal",
@@ -1474,7 +1477,7 @@ test.describe("Channel tasks board", () => {
     const { token, principal } = await login(page);
     await ensureKanbanPluginEnabled(page, token);
 
-    const runId = Date.now();
+    const runId = uniqueName("smoke");
     const skippedRolePattern = /\b(frontend-engineer|qa-tester|devops-engineer|Frontend Engineer|QA Tester|DevOps Engineer)\b/i;
     const webhookConfig: {
       workspacePath?: string;

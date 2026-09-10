@@ -880,6 +880,21 @@ export async function importWorkspaceSessions(
   );
 }
 
+export type ComputerUseState = { tools: Array<{
+  tool: "browser" | "desktop";
+  enabled: boolean;
+  status: "ready" | "installing" | "error" | "needs_attention";
+  checks: Array<{ name: string; ok: boolean; hint?: string | null }>;
+}> };
+
+export async function manageComputerUse(sessionToken: string, companyId: string, runtimeHostId: string, mutation?: { tool: "browser" | "desktop"; enabled: boolean }, signal?: AbortSignal): Promise<ComputerUseState> {
+  return apiJson<ComputerUseState>(`/v1/companies/${encodeURIComponent(companyId)}/computer-use`, {
+    method: "POST",
+    body: JSON.stringify({ ...(runtimeHostId ? { runtime_host_id: runtimeHostId } : {}), ...mutation }),
+    signal,
+  }, sessionToken);
+}
+
 export async function executeRuntimeHostOperation<T>(
   sessionToken: string,
   runtimeHostId: string,

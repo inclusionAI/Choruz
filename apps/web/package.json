@@ -33,7 +33,7 @@
     "@xterm/xterm": "^6.0.0",
     "class-variance-authority": "^0.7.1",
     "dexie": "^4.4.2",
-    "next": "16.2.11",
+    "next": "16.3.3",
     "next-themes": "^0.4.6",
     "pg": "^8.13.0",
     "phaser": "^3.90.0",

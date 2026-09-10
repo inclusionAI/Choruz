@@ -240,8 +240,10 @@ test("local-only dashboards stop polling unavailable Online groups", async ({ pa
   await gotoDashboard(page);
   await unavailable;
   await expect(page.getByRole("button", { name: "Actions menu" })).toBeVisible();
+  // Strict Mode may cancel an initial request; no new polls may follow the 403.
+  const requestsAtBlock = requests;
   await page.clock.runFor(15_000);
-  expect(requests).toBe(1);
+  expect(requests).toBe(requestsAtBlock);
 });
 
 test("Online sidebar resumes on account changes and preserves groups during bounded retries", async ({ page }) => {
@@ -267,7 +269,7 @@ test("Online sidebar resumes on account changes and preserves groups during boun
     return route.fulfill({ json: { groups: [{ id: "polling-link", role: "guest", status: "active", name: "Polling design group", conversation_id: "host-conversation" }] } });
   });
   await gotoDashboard(page);
-  await expect.poll(() => requests).toBe(1);
+  await expect.poll(() => requests).toBeGreaterThanOrEqual(1);
   await page.getByRole("button", { name: "Actions menu" }).click();
   await page.getByRole("button", { name: "Online", exact: true }).click();
   await page.getByLabel("Email", { exact: true }).fill("poll@example.test");
