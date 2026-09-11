@@ -6,6 +6,7 @@ import { displayUsageWindows } from "../../lib/agents/harness-account-display";
 import type { HarnessAccount } from "../../lib/agents/harness-accounts";
 import type { DriverId } from "../../lib/groups/team-templates";
 import { transportFetch } from "../../lib/api/transport";
+import { TerminalView } from "../runtime/terminal-view";
 
 type ApiErrorBody = { error?: string | { detail?: string } };
 
@@ -35,6 +36,7 @@ export function HarnessAccountPicker({
   onChange,
   mode = "select",
   allowMultiple = false,
+  sessionToken,
 }: {
   companyId: string | null | undefined;
   runtimeHostId: string;
@@ -45,6 +47,7 @@ export function HarnessAccountPicker({
   mode?: "select" | "manage";
   /** The company's multi-account switch: adding, choosing and removing device sign-ins. */
   allowMultiple?: boolean;
+  sessionToken?: string;
 }) {
   const supported = driver === "claude_terminal" || driver === "codex_terminal";
   const [accounts, setAccounts] = useState<HarnessAccount[]>([]);
@@ -258,6 +261,7 @@ export function HarnessAccountPicker({
       {mode === "select" && selected ? <p className="field-hint">This Agent will use the selected account&apos;s verified models.</p> : null}
       {mode === "manage" && loginAccount ? (
         <HarnessLoginPanel
+          sessionToken={sessionToken}
           account={loginAccount}
           companyId={companyId!}
           onVerified={(account) => {
@@ -275,12 +279,12 @@ export function HarnessAccountPicker({
             <input value={name} onChange={(event) => setName(event.target.value)} placeholder="Work account" maxLength={80} />
           </label>
           <p className="field-hint">
-            Choruz starts the official {harnessLabel} sign-in and shows the link here. Credentials stay on the {deviceWord}; removing the account later hides it in Choruz and leaves them there.
+            {driver === "claude_terminal" ? "Open Claude Code to sign in directly in its terminal." : `Choruz starts the official ${harnessLabel} browser sign-in.`} Credentials stay on the {deviceWord}; removing the account later hides it in Choruz and leaves them there.
           </p>
           <div className="modal-actions compact">
             <button type="button" className="btn-secondary" onClick={() => setAdding(false)}>Cancel</button>
             <button type="button" className="btn-primary" disabled={loading || !name.trim()} onClick={() => void addAccount()}>
-              {loading ? "Adding…" : "Add and sign in"}
+              {loading ? "Adding…" : driver === "claude_terminal" ? "Open Claude Code to sign in" : "Add and sign in"}
             </button>
           </div>
         </div>
@@ -301,9 +305,10 @@ type HarnessLogin = {
 };
 
 /** Starts the official harness sign-in for a local or remote account and polls it until it verifies. */
-function HarnessLoginPanel({ account, companyId, onVerified, onClose }: {
+function HarnessLoginPanel({ account, companyId, sessionToken, onVerified, onClose }: {
   account: HarnessAccount;
   companyId: string;
+  sessionToken?: string;
   onVerified: (account: HarnessAccount) => void;
   onClose: () => void;
 }) {
@@ -313,6 +318,23 @@ function HarnessLoginPanel({ account, companyId, onVerified, onClose }: {
   const onVerifiedRef = useRef(onVerified);
   onVerifiedRef.current = onVerified;
   const [error, setError] = useState<string | null>(null);
+  const [checking, setChecking] = useState(false);
+  const isClaude = account.driverType === "claude_terminal";
+
+  const complete = async () => {
+    if (!login) return;
+    setChecking(true);
+    setError(null);
+    try {
+      const response = await transportFetch(`/api/harness-accounts/${encodeURIComponent(account.id)}/login/${encodeURIComponent(login.id)}/complete?company_id=${encodeURIComponent(companyId)}`, { method: "POST" });
+      if (!response.ok) {
+        const body = await response.json() as ApiErrorBody;
+        throw new Error(apiErrorMessage(body, "Claude Code is not signed in"));
+      }
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Unable to check sign-in");
+    } finally { setChecking(false); }
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -380,19 +402,15 @@ function HarnessLoginPanel({ account, companyId, onVerified, onClose }: {
     <section className="harness-account-setup" aria-live="polite">
       <strong>Sign in to {harnessLabel} account “{account.name}”</strong>
       {!login ? <p>Starting the sign-in…</p> : null}
-      {login?.state === "queued" || login?.state === "authorizing" ? <p>Preparing the official sign-in flow…</p> : null}
-      {login?.state === "awaiting_browser" ? (
-        account.driverType === "claude_terminal" ? (
-          <>
-            <p>Open the official Claude sign-in page. When it finishes, paste the complete value shown after &ldquo;Paste this into Claude Code&rdquo; below.</p>
-            {login.authorization_url ? <a className="btn-secondary" href={login.authorization_url} target="_blank" rel="noreferrer">Open sign-in link</a> : null}
-            <label>
-              Claude Code authentication value
-              <input data-activity="claude_authentication" data-activity-value="private" value={code} onChange={(event) => setCode(event.target.value)} autoComplete="off" />
-              <button type="button" className="btn-secondary" disabled={!code.trim()} onClick={() => void submitCode()}>Finish sign-in</button>
-            </label>
-          </>
-        ) : (
+      {!isClaude && (login?.state === "queued" || login?.state === "authorizing") ? <p>Preparing the official sign-in flow…</p> : null}
+      {isClaude && login?.state === "authorizing" ? <>
+        <p>Sign in directly inside official Claude Code below. Paste any authentication code into that terminal, then click Done.</p>
+        {sessionToken ? <div style={{ height: 420 }} data-activity-value="private">
+          <TerminalView bindingId={login.id} sessionToken={sessionToken} reconnect={false} socketEndpoint={`/v1/ws/harness-logins/${encodeURIComponent(companyId)}/${encodeURIComponent(account.id)}/${encodeURIComponent(login.id)}`} />
+        </div> : <p role="alert">Reopen account management to connect the sign-in terminal.</p>}
+        <button type="button" className="btn-primary" disabled={checking || !sessionToken} onClick={() => void complete()}>{checking ? "Checking sign-in…" : "Done"}</button>
+      </> : null}
+      {!isClaude && login?.state === "awaiting_browser" ? (
           <>
             <p>Open the official Codex browser sign-in page.</p>
             {login.authorization_url ? <a className="btn-secondary" href={login.authorization_url} target="_blank" rel="noreferrer">Open sign-in link</a> : null}
@@ -403,7 +421,6 @@ function HarnessLoginPanel({ account, companyId, onVerified, onClose }: {
               <button type="button" className="btn-secondary" disabled={!code.trim()} onClick={() => void submitCode()}>Finish sign-in</button>
             </label>
           </>
-        )
       ) : null}
       {login?.state === "failed" || login?.state === "expired" ? <p className="create-agent-warning" role="alert">{login.error || "Sign-in did not complete. Start it again."}</p> : null}
       {error ? <p className="create-agent-warning" role="alert">{error}</p> : null}

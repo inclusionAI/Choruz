@@ -111,6 +111,7 @@ mod tests {
             .unwrap();
             std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
             let spec = TerminalSpec {
+                authentication: false,
                 terminal_id: "team-test".into(),
                 driver_type: "codex_terminal".into(),
                 binary_path: Some(binary.to_string_lossy().into()),

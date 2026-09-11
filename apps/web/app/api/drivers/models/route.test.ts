@@ -43,12 +43,8 @@ describe("/api/drivers/models", () => {
         expires_at_epoch_s: 1,
       },
     });
-    vi.mocked(discoverDriverModels).mockResolvedValue({
-      driverId: "claude_terminal",
-      status: "available",
-      models: [{ id: "sonnet", label: "Sonnet" }],
-      message: "1 models discovered from the installed harness.",
-    });
+    const request = vi.fn(async () => Response.json({ models: [{ id: "sonnet", label: "Sonnet" }] }));
+    vi.stubGlobal("fetch", request);
 
     const response = await GET(new NextRequest("http://localhost/api/drivers/models?driver_type=claude_terminal"));
 
@@ -57,7 +53,8 @@ describe("/api/drivers/models", () => {
       status: "available",
       models: [{ id: "sonnet" }],
     });
-    expect(discoverDriverModels).toHaveBeenCalledWith("claude_terminal");
+    expect(discoverDriverModels).not.toHaveBeenCalled();
+    expect(request).toHaveBeenCalledWith(expect.stringContaining("/v1/drivers/models?driver_type=claude_terminal"), expect.objectContaining({ headers: { Authorization: "Bearer session-token" } }));
   });
 
   it("rejects unknown drivers before spawning a harness", async () => {

@@ -4,7 +4,7 @@ This checklist records launch blockers separately from the product rename. Compl
 
 ## Blockers requiring an owner decision
 
-- [x] Root `LICENSE`: MIT, matching `[workspace.package] license` in `Cargo.toml` and the `license` field of every `package.json`; GitHub detects the repository license as MIT.
+- [x] Root `LICENSE`: Apache-2.0, matching `[workspace.package] license` in `Cargo.toml` and package license metadata. `NOTICE` retains the incorporated MIT copyright and permission notice; dependency and visual-asset terms remain separate.
 - [ ] Obtain the repository owner’s trademark/name-collision review for Choruz.
 - [x] Screenshots and documentation reviewed (2026-09-03): the nine `apps/web/public/docs-img` screenshots show only the seeded `operator` principal and fictional conversations. Re-run the review before the external cutover.
 - [x] Third-party Pixel World assets: the two runtime tilesets are exact matches to CC0 Ninja Adventure files and are recorded in `assets/THIRD_PARTY.md`; unconsumed sprite collections with unknown or unnecessary provenance are absent from the release tree.

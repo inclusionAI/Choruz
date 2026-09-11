@@ -1,7 +1,5 @@
 import { spawn } from "node:child_process";
 
-import { query, type ModelInfo } from "@anthropic-ai/claude-agent-sdk";
-
 import { resolveDriverBinary } from "./driver-registry";
 import type { DriverId } from "../groups/team-templates";
 
@@ -37,7 +35,6 @@ export type ModelCommandRunner = (
 type DriverModelDiscoveryOptions = {
   env?: Record<string, string | undefined>;
   runCommand?: ModelCommandRunner;
-  discoverClaude?: (binary: string) => Promise<DriverModel[]>;
   discoverCodex?: (binary: string) => Promise<DriverModel[]>;
   bypassCache?: boolean;
 };
@@ -99,8 +96,7 @@ async function discoverDriverModelsUncached(
     let models: DriverModel[];
     switch (driverId) {
       case "claude_terminal":
-        models = await (options.discoverClaude ?? discoverClaudeModels)(binary);
-        break;
+        return unavailable(driverId, "Claude model discovery is provided by the device API.");
       case "codex_exec":
       case "codex_terminal":
         models = await (options.discoverCodex ?? discoverCodexModels)(binary);
@@ -224,61 +220,6 @@ export function parseCodexModelListResult(result: unknown): {
   return {
     models,
     nextCursor: typeof record.nextCursor === "string" ? record.nextCursor : null,
-  };
-}
-
-async function discoverClaudeModels(binary: string): Promise<DriverModel[]> {
-  let finishInput: ((result: IteratorResult<never>) => void) | undefined;
-  const input: AsyncIterable<never> & AsyncIterator<never> = {
-    [Symbol.asyncIterator]() {
-      return this;
-    },
-    next() {
-      return new Promise<IteratorResult<never>>((resolve) => {
-        finishInput = resolve;
-      });
-    },
-    return() {
-      finishInput?.({ done: true, value: undefined as never });
-      return Promise.resolve({ done: true, value: undefined as never });
-    },
-  };
-  const session = query({
-    prompt: input,
-    options: {
-      pathToClaudeCodeExecutable: binary,
-      cwd: process.cwd(),
-      settingSources: ["user", "project", "local"],
-    },
-  });
-  try {
-    const models = await withTimeout(
-      session.supportedModels(),
-      15_000,
-      "Claude model discovery timed out",
-    );
-    return models.map(claudeModelInfo);
-  } finally {
-    await input.return?.();
-    session.close();
-  }
-}
-
-function claudeModelInfo(model: ModelInfo): DriverModel {
-  const capabilities = {
-    ...(model.supportedEffortLevels?.length
-      ? { effortLevels: [...model.supportedEffortLevels] }
-      : {}),
-    ...(model.supportsAdaptiveThinking ? { adaptiveThinking: true } : {}),
-    ...(model.supportsFastMode ? { fastMode: true } : {}),
-    ...(model.supportsAutoMode ? { autoMode: true } : {}),
-  };
-  return {
-    id: model.value,
-    label: model.displayName,
-    description: model.description,
-    ...(model.resolvedModel ? { resolvedModel: model.resolvedModel } : {}),
-    ...(Object.keys(capabilities).length ? { capabilities } : {}),
   };
 }
 
@@ -464,18 +405,4 @@ function dedupeModels(models: DriverModel[]): DriverModel[] {
 
 function unavailable(driverId: DriverId, message: string): DriverModelDiscovery {
   return { driverId, status: "unavailable", models: [], message };
-}
-
-async function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      promise,
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error(message)), ms);
-      }),
-    ]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
 }

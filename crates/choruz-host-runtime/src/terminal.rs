@@ -22,6 +22,9 @@ use crate::process::ProcessContainer;
 /// builds it from the binding; the connector receives it over the host link.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TerminalSpec {
+    /// Official Claude sign-in: no agent arguments, helper or outbox processing.
+    #[serde(default)]
+    pub authentication: bool,
     /// Pool key; the gateway uses the binding id.
     pub terminal_id: String,
     pub driver_type: String,
@@ -44,6 +47,7 @@ pub struct TerminalSpec {
 }
 
 pub struct TerminalSession {
+    pub authentication: bool,
     /// The workspace the Harness runs in; a remote device ships this
     /// workspace's outbox while the terminal lives.
     pub workspace_path: PathBuf,
@@ -56,6 +60,7 @@ pub struct TerminalSession {
     /// Kills the whole child process tree, not just the direct child, when
     /// the last `Arc<TerminalSession>` drops.
     _container: ProcessContainer,
+    _login_directory: Option<tempfile::TempDir>,
 }
 
 impl TerminalSession {
@@ -206,8 +211,16 @@ pub fn close_terminal(pool: &TerminalPool, terminal_id: &str) -> Result<(), AppE
     crate::session::close(terminal_id)?;
     if let Some(session) = sessions.get(terminal_id) {
         session._container.kill_all();
-        match session.child.lock().expect("child lock").try_wait() {
+        let mut child = session.child.lock().expect("child lock");
+        match child.try_wait() {
             Ok(Some(_)) => {}
+            Ok(None) if session.authentication => {
+                // Authentication IDs are single-use: reap before releasing the
+                // pool claim so its private directory cannot remain orphaned.
+                child.kill().and_then(|()| child.wait()).map_err(|error| {
+                    AppError::Internal(format!("stop authentication terminal: {error}"))
+                })?;
+            }
             Ok(None) => {
                 return Err(AppError::Conflict(
                     "terminal process has not stopped".into(),
@@ -377,6 +390,16 @@ pub fn ensure_terminal(
     use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 
     validate_terminal_size(spec.cols, spec.rows)?;
+    if spec.authentication
+        && (spec.driver_type != "claude_terminal"
+            || spec.model.is_some()
+            || spec.resume_session_id.is_some()
+            || spec.codex_home.is_some())
+    {
+        return Err(AppError::Validation(
+            "authentication terminals require Claude Code".into(),
+        ));
+    }
     let driver_type = spec
         .driver_type
         .parse::<DriverType>()
@@ -393,6 +416,11 @@ pub fn ensure_terminal(
     }
     if let Some(session) = sessions.get(terminal_id) {
         if session.is_child_alive() {
+            if spec.authentication || session.authentication {
+                return Err(AppError::Conflict(
+                    "This sign-in terminal is already open".into(),
+                ));
+            }
             session.touch();
             return Ok(EnsureOutcome {
                 session: Arc::clone(session),
@@ -416,7 +444,21 @@ pub fn ensure_terminal(
     let is_codex = driver_type == DriverType::CodexTerminal;
     let binary = terminal_binary(&driver_type, spec.binary_path.as_deref());
     let mut cmd = CommandBuilder::new(binary);
-    cmd.cwd(&spec.workspace_path);
+    let login_directory = if spec.authentication {
+        Some(
+            tempfile::Builder::new()
+                .prefix("choruz-login-")
+                .tempdir()
+                .map_err(|e| AppError::Internal(format!("create login directory: {e}")))?,
+        )
+    } else {
+        None
+    };
+    let workspace = login_directory
+        .as_ref()
+        .map(|d| d.path())
+        .unwrap_or_else(|| std::path::Path::new(&spec.workspace_path));
+    cmd.cwd(workspace);
     if let Some(path) = choruz_agent_runtime::computer_use::executable_path() {
         cmd.env("PATH", path);
     }
@@ -428,12 +470,17 @@ pub fn ensure_terminal(
     // A capable terminal type prevents modern harnesses from pausing on a
     // TERM=dumb confirmation prompt.
     cmd.env("TERM", "xterm-256color");
-    cmd.env(
-        "CHORUZ_SEND",
-        PathBuf::from(&spec.workspace_path)
-            .join(".choruz")
-            .join("send"),
-    );
+    if !spec.authentication {
+        cmd.env(
+            "CHORUZ_SEND",
+            PathBuf::from(&spec.workspace_path)
+                .join(".choruz")
+                .join("send"),
+        );
+    } else {
+        cmd.env_remove("CHORUZ_SEND");
+        cmd.env_remove("CHORUZ_OUTBOX_DIR");
+    }
     // Each CLI has its own auto-update switch: Claude Code reads
     // DISABLE_AUTOUPDATER, Codex takes the `--config` flag appended in
     // `codex_terminal_args`, Pi reads PI_SKIP_VERSION_CHECK.
@@ -469,7 +516,11 @@ pub fn ensure_terminal(
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty());
-    let mut args = terminal_cli_args(&driver_type, resume_session_id, model);
+    let mut args = if spec.authentication {
+        Vec::new()
+    } else {
+        terminal_cli_args(&driver_type, resume_session_id, model)
+    };
     if driver_type == DriverType::ClaudeTerminal
         && let Some(id) = resume_session_id
     {
@@ -548,7 +599,8 @@ pub fn ensure_terminal(
     });
 
     let session = Arc::new(TerminalSession {
-        workspace_path: PathBuf::from(&spec.workspace_path),
+        authentication: spec.authentication,
+        workspace_path: workspace.to_path_buf(),
         writer: Arc::new(StdMutex::new(writer)),
         output_tx,
         replay,
@@ -556,6 +608,7 @@ pub fn ensure_terminal(
         master: Arc::new(StdMutex::new(pair.master)),
         last_accessed: StdMutex::new(Instant::now()),
         _container: container,
+        _login_directory: login_directory,
     });
 
     sessions.insert(terminal_id.to_string(), Arc::clone(&session));
@@ -633,6 +686,7 @@ mod tests {
         let attached = ensure_terminal(
             &pool,
             &TerminalSpec {
+                authentication: false,
                 terminal_id: "owned-close-test".into(),
                 driver_type: "mathcode_terminal".into(),
                 binary_path: Some("/bin/cat".into()),
@@ -729,6 +783,7 @@ mod tests {
             let ensured = ensure_terminal(
                 &pool,
                 &TerminalSpec {
+                    authentication: false,
                     terminal_id: format!("binding-fake-pty-{label}"),
                     driver_type: driver.as_str().to_string(),
                     binary_path: Some(cli.to_str().unwrap().to_string()),

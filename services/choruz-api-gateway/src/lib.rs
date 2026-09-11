@@ -45,6 +45,7 @@ mod remote_control_executor;
 mod remote_control_pairing_host;
 mod state;
 mod sync_wakeup;
+mod task_quality;
 mod webhook;
 
 pub use config::Config;
@@ -259,6 +260,10 @@ pub fn router_with_runtime(
             post(handlers_harness_logins::probe_harness_account),
         )
         .route(
+            "/v1/drivers/models",
+            get(handlers_harness_logins::local_driver_models),
+        )
+        .route(
             "/v1/companies/{company_id}/harness-accounts/{account_id}/logins",
             post(handlers_harness_logins::start_harness_account_login),
         )
@@ -273,6 +278,14 @@ pub fn router_with_runtime(
         .route(
             "/v1/companies/{company_id}/harness-accounts/{account_id}/logins/{login_id}/cancel",
             post(handlers_harness_logins::cancel_harness_account_login),
+        )
+        .route(
+            "/v1/companies/{company_id}/harness-accounts/{account_id}/logins/{login_id}/complete",
+            post(handlers_harness_logins::complete_claude_login),
+        )
+        .route(
+            "/v1/ws/harness-logins/{company_id}/{account_id}/{login_id}",
+            get(handlers_harness_logins::websocket_claude_login),
         )
         .merge(plugins::router())
         .route(

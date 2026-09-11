@@ -10,8 +10,11 @@ assert "--resume" not in sys.argv and "--model" in sys.argv
 assert not os.listdir("."), "evaluation must use an empty scratch workspace"
 data = json.loads(sys.stdin.read().strip().splitlines()[-1])
 team_search = sys.argv[sys.argv.index("--model") + 1] == "team-evaluation-fixture"
-assert "expected" not in data and "check" not in data
-if "proposed_instruction" in data:
+if "candidate_output" in data:
+    assert "guidance" not in data and "preflight" not in data
+    assert data["check"]["type"] == "judge"
+    answer = json.dumps({"verdict": "inconclusive" if data["check"]["expected"] == "unverifiable" else "pass" if data["check"]["expected"] in data["candidate_output"] else "fail", "reason": "Compared the candidate result with the required increment."})
+elif "proposed_instruction" in data:
     assert "suite" not in data, "held-out answers must not drive content review"
     if data["seed_evidence"]["analysis"] == "Review unavailable":
         raise RuntimeError("final review fixture unavailable")
@@ -25,7 +28,12 @@ elif "component" in data:
     answer = json.dumps({"text": json.dumps(team) if data["component"] == "team" else "Return the number only."})
 elif "role" in data:
     answer = data["role"]
+elif data.get("task", "").startswith("Solve the task in the isolated"):
+    task = json.loads(data["task"].splitlines()[-1])
+    assert "expected" not in task and "check" not in task
+    answer = json.dumps({"action": "finish", "output": "done"} if task["observations"] else {"action": "command", "command": "printf 2 > number.txt"})
 else:
+    assert "expected" not in data and "check" not in data
     number = int(data["task"].split()[1])
     answer = str(number + 1)
     if team_search:

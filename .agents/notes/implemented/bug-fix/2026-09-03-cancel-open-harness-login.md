@@ -8,6 +8,8 @@ The sign-in panel's Cancel button only closed the panel. The `harness_account_lo
 
 ## Decision
 
+For Claude, the OAuth relay and runner lifecycle below are superseded by [official CLI authentication](../architecture/2026-09-10-official-claude-authentication-terminal.md). The shared account rows and Codex behavior remain applicable.
+
 `POST /v1/companies/{c}/harness-accounts/{id}/logins/{login_id}/cancel` moves an open login (`queued`, `awaiting_browser`, `authorizing`) to `cancelled`, clears the link, device code and callback, and answers 204; a login that is not open answers 409. The web proxy `POST /api/harness-accounts/{id}/login/{login_id}/cancel` forwards it, and the panel's Cancel button calls it before closing when a login is still open. `DbLoginSink::take_callback` now reports an error once the row is no longer open, so the gateway's Claude driver stops at its next one-second poll; `fail_login` only touches open rows, so the cancelled row and the account keep their state.
 
 ## Alternatives considered

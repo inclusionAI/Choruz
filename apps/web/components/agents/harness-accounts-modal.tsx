@@ -91,6 +91,7 @@ export function HarnessAccountsModal({ companyId, sessionToken, multiHarnessAcco
           <DriverSelect aria-label="Account harness" value={driver} onChange={(next) => setDriver(next as typeof driver)} drivers={["claude_terminal", "codex_terminal"]} />
         </label>
         <HarnessAccountPicker
+          sessionToken={sessionToken}
           key={`${companyId}:${hostId}:${driver}`}
           companyId={companyId}
           runtimeHostId={hostId}

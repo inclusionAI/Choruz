@@ -81,4 +81,4 @@ Contributors appear in the order defined in [`CONTRIBUTORS.md`](CONTRIBUTORS.md)
 
 ## License
 
-Source code and software documentation are licensed under the [MIT License](LICENSE). Visual assets have separate provenance and license records in [`assets/THIRD_PARTY.md`](assets/THIRD_PARTY.md) and [`assets/brand/README.md`](assets/brand/README.md). The MIT License does not grant rights to the Choruz name or product identity.
+Source code and software documentation are distributed under the [Apache License 2.0](LICENSE), with incorporated-code notices retained in [NOTICE](NOTICE). Dependencies and agent CLIs retain their own licenses and service terms. Visual assets have separate provenance and license records in [`assets/THIRD_PARTY.md`](assets/THIRD_PARTY.md) and [`assets/brand/README.md`](assets/brand/README.md). This license does not grant rights to the Choruz name or product identity.

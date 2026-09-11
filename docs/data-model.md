@@ -228,9 +228,9 @@ One official browser sign-in for a harness account. A runtime host's connector c
 | runtime_host_id | TEXT | FK → runtime_host(id) CASCADE | NULL when the gateway runs the sign-in |
 | driver_type | TEXT | NOT NULL | |
 | state | TEXT | DEFAULT 'queued' | `queued`, `awaiting_browser`, `authorizing`, `verified`, `failed`, `cancelled`, `expired` |
-| authorization_url | TEXT | | Official sign-in link |
-| user_code | TEXT | | Codex device code |
-| callback_code | TEXT | | Claude `code#state` pasted by the user, consumed once |
+| authorization_url | TEXT | | Codex official sign-in link; unused for Claude |
+| user_code | TEXT | | Legacy Codex device code |
+| callback_code | TEXT | | Codex loopback callback handoff, consumed once; unused for Claude |
 | error | TEXT | | Sanitized failure |
 | created_by | TEXT | FK → principal(id) | |
 | claimed_at, expires_at, completed_at | TIMESTAMPTZ | | 15-minute TTL from creation |

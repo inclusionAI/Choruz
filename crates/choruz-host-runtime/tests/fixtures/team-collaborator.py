@@ -12,7 +12,9 @@ data = json.loads(sys.stdin.read().strip().splitlines()[-1])
 request = json.loads(data["request"])
 directory = Path(request["directory"])
 name = data["member"]
-(directory / name).write_text(str(os.getpid()))
+ready = directory / f"{name}.pending"
+ready.write_text(str(os.getpid()))
+ready.replace(directory / name)
 if request["order"] == "parallel":
     assert data["prior_findings"] == []
     deadline = time.monotonic() + 5

@@ -50,6 +50,8 @@ runtimeTest("background experience follows the selected remote Agent and applies
   for (let i = 0; i < 3; i++) {
     await dialog.getByLabel("Task input", { exact: true }).nth(i).fill(`Check independent example ${i}`);
     await dialog.getByLabel("Expected answer", { exact: true }).nth(i).fill("CHECKED");
+    await dialog.getByLabel("Assessment", { exact: true }).nth(i).selectOption("judge");
+    await dialog.getByLabel("Acceptance criteria", { exact: true }).nth(i).fill("The answer must report the verified check result.");
   }
   await dialog.getByText("Search budget and ordering", { exact: true }).click();
   await dialog.getByLabel("Maximum task evaluations", { exact: true }).fill("4");
@@ -66,6 +68,7 @@ runtimeTest("background experience follows the selected remote Agent and applies
   await expect.poll(async () => (await status()).policy?.active_revision_id, { timeout: 45_000 }).toBeTruthy();
   const learned = await status();
   expect(learned.policy.optimization_settings.suite.name).toBe("Verification format");
+  expect(learned.policy.optimization_settings.suite.cases[0].check).toEqual({ type: "judge", expected: "CHECKED", rubric: "The answer must report the verified check result." });
   const evaluations = await page.request.get(`${endpoint}/evaluations`, { headers });
   const evaluated = (await evaluations.json()).evaluations[0];
   expect(evaluated.application_status).toBe("applied");
@@ -128,6 +131,25 @@ runtimeTest("background experience follows the selected remote Agent and applies
   await revisionDetails.locator("summary").click();
   await revisionDetails.getByRole("button", { name: "Restore this revision", exact: true }).click();
   await expect.poll(async () => (await status()).policy.active_revision_id).toBe(revision);
+  await dialog.getByLabel("Automatically build tasks from work episodes").check();
+  await expect(dialog.getByLabel("Task input", { exact: true })).toHaveCount(0);
+  await dialog.getByRole("button", { name: "Save settings", exact: true }).click();
+  await expect.poll(async () => (await status()).policy.optimization_settings.trace_cases).toBe(true);
+  // The worker-to-report contract is covered by the gateway integration test;
+  // this owned revision exercises report delivery and rendering in the dialog.
+  const reportDb = await postgresQueryClient();
+  await reportDb.query("UPDATE experience_revision SET validation=jsonb_set(validation,'{dataset}',$1::jsonb) WHERE id=$2 AND binding_id=$3", [JSON.stringify({
+    version: "curation-ui-version", previous_version: "previous", total: 12, added: 3, updated: 2,
+    withdrawn: 1, unevaluable: 2, duplicate_groups: 2, conflicting_groups: 1,
+    categories: { math: 8, coding: 4 }, outcomes: { direct: 8, incomplete: 4 }, variants: 2,
+  }), revision, target.binding.id]);
+  await dialog.getByRole("button", { name: "Refresh history", exact: true }).click();
+  const quality = revisionDetails.getByRole("region", { name: "Dataset quality report" });
+  await expect(quality).toContainText("12 objectives");
+  await expect(quality).toContainText("3 added · 2 updated · 1 withdrawn");
+  await expect(quality).toContainText("incomplete: 4");
+  await expect(quality).toContainText("2 reviewed training paraphrases");
+  await expect(dialog.getByRole("region", { name: "Measured task difficulty" })).toContainText("No matching completed training trials yet");
   await dialog.getByRole("button", { name: "Close", exact: true }).click();
   await send("Learning is disabled for this turn.");
   const after = JSON.parse(await readFile(path.join(target.workspace_path, ".fixture-native.json"), "utf8"));

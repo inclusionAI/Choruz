@@ -1,13 +1,23 @@
 use super::*;
 
-/// A stand-in for `claude` speaking the stream-json control protocol the
-/// login driver uses. It hands out one authorization link, records the code
-/// it is given, and reports a signed-in account.
+/// Interactive sign-in and read-only account probing share an isolated profile.
 const FAKE_CLAUDE: &str = r#"#!/usr/bin/env python3
 import json, os, sys
 with open(os.path.join(os.environ["FAKE_CLAUDE_DIR"], "pid"), "w") as sink:
     sink.write(str(os.getpid()))
-authenticated = False
+profile = os.environ.get("CLAUDE_CONFIG_DIR", os.environ["FAKE_CLAUDE_DIR"])
+marker = os.path.join(profile, "signed-in")
+if len(sys.argv) == 1:
+    with open(os.path.join(os.environ["FAKE_CLAUDE_DIR"], "cwd"), "w") as sink: sink.write(os.getcwd())
+    assert "CHORUZ_SEND" not in os.environ
+    assert sys.stdin.isatty()
+    print("Official CLI sign-in fixture", flush=True)
+    if input().strip() == "private-code#state":
+        with open(marker, "w") as sink: sink.write("yes")
+        print("Signed in", flush=True)
+        input()
+    sys.exit(0)
+authenticated = os.path.exists(marker) or os.environ.get("FAKE_CLAUDE_SIGNED_IN")
 for line in sys.stdin:
     message = json.loads(line)
     request_id = message["request_id"]
@@ -17,23 +27,11 @@ for line in sys.stdin:
     outcome = "success"
     if subtype == "initialize":
         response = {
-            "account": {"email": "dev@example.test", "subscriptionType": "max"},
+            "account": {"email": "dev@example.test", "subscriptionType": "max"} if authenticated else None,
             "models": [],
         }
         if (authenticated or os.environ.get("FAKE_CLAUDE_SIGNED_IN")) and not os.environ.get("FAKE_CLAUDE_NO_SNAPSHOT"):
             response["models"] = [{"value": "claude-sonnet-4-5", "displayName": "Sonnet 4.5"}]
-    elif subtype == "claude_authenticate":
-        response = {"manualUrl": "https://claude.ai/oauth/authorize?state=state-1"}
-    elif subtype == "claude_oauth_callback":
-        with open(os.path.join(os.environ["FAKE_CLAUDE_DIR"], "callback.json"), "w") as sink:
-            json.dump(request, sink)
-        if request.get("authorizationCode") != "code-1":
-            outcome = "error"
-        else:
-            authenticated = True
-    elif subtype == "claude_oauth_wait_for_completion":
-        outcome = "error"
-        response = "No active claude_authenticate flow"
     elif subtype == "get_usage":
         response = {"subscription_type": "max", "rate_limits": {}}
         if not os.environ.get("FAKE_CLAUDE_NO_SNAPSHOT"):
@@ -258,6 +256,16 @@ impl LoginFixture {
         .await
         .0
     }
+
+    async fn complete(&self, account_id: &str, login_id: &str) -> (StatusCode, Value) {
+        api_json_request(
+            self.router.clone(),
+            &self.operator,
+            Method::POST,
+            format!("{}/{login_id}/complete", self.logins_uri(account_id)),
+        )
+        .await
+    }
 }
 
 #[tokio::test]
@@ -352,119 +360,187 @@ async fn codex_gateway_login(paste_callback: bool) {
 }
 
 #[tokio::test]
-async fn local_claude_login_accepts_the_complete_callback_and_verifies_the_account() {
+async fn claude_terminal_input_signs_in_the_selected_profile_without_relay_storage() {
     let _env = api_test_env_lock().lock().await;
-    let dir = isolated_test_dir("harness-login");
+    let dir = isolated_test_dir("claude-pty-sign-in");
     let binary = dir.join("claude");
     write_executable_script(&binary, FAKE_CLAUDE);
     let _binary = EnvVarGuard::set_path("CHORUZ_CLAUDE_BINARY", &binary);
-    let _fake_dir = EnvVarGuard::set_path("FAKE_CLAUDE_DIR", &dir);
+    let _fake = EnvVarGuard::set_path("FAKE_CLAUDE_DIR", &dir);
     let _profiles = EnvVarGuard::set_path("CHORUZ_HARNESS_ACCOUNT_ROOT", &dir.join("accounts"));
+    let fixture = LoginFixture::create().await;
+    let account = fixture.account(None).await;
+    let (_, login) = fixture.start(&account).await;
+    let id = login["id"].as_str().unwrap();
+    assert_eq!(
+        fixture.complete(&account, id).await.0,
+        StatusCode::BAD_REQUEST
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let router = fixture.router.clone();
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let url = format!(
+        "ws://{addr}/v1/ws/harness-logins/{}/{account}/{id}?token={}",
+        fixture.operator.workspace_id,
+        session_token(&fixture.operator)
+    );
+    let (mut socket, _) = connect_async(&url).await.unwrap();
+    let mut output = String::new();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !output.contains("Official CLI sign-in fixture") {
+            let frame = socket.next().await.unwrap().unwrap();
+            output.push_str(&String::from_utf8_lossy(&frame.into_data()));
+        }
+    })
+    .await
+    .unwrap();
+    let (mut second, _) = connect_async(&url).await.unwrap();
+    let closed = tokio::time::timeout(Duration::from_secs(5), second.next())
+        .await
+        .unwrap();
+    assert!(matches!(
+        closed,
+        Some(Ok(tokio_tungstenite::tungstenite::Message::Close(_))) | None
+    ));
+    socket
+        .send(tokio_tungstenite::tungstenite::Message::Text(
+            "private-code#state\r".into(),
+        ))
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !output.contains("Signed in") {
+            let frame = socket.next().await.unwrap().unwrap();
+            output.push_str(&String::from_utf8_lossy(&frame.into_data()));
+        }
+    })
+    .await
+    .unwrap();
+    let signed_in_pid = fs::read_to_string(dir.join("pid")).unwrap();
+    let login_directory = fs::read_to_string(dir.join("cwd")).unwrap();
+    assert_eq!(
+        fixture.complete(&account, id).await.0,
+        StatusCode::NO_CONTENT
+    );
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while std::process::Command::new("kill")
+            .args(["-0", signed_in_pid.trim()])
+            .output()
+            .unwrap()
+            .status
+            .success()
+        {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("Done must stop the still-interactive official CLI");
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while std::path::Path::new(&login_directory).exists() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("Done must release the login session and its private directory");
+    assert_eq!(fixture.login(&account, id).await["state"], "verified");
+    assert_eq!(
+        fixture
+            .account_row(&account)
+            .await
+            .get::<_, String>("status"),
+        "active"
+    );
+    let secrets: i64 = fixture.client.query_one("SELECT COUNT(*) FROM harness_account_login WHERE authorization_url IS NOT NULL OR user_code IS NOT NULL OR callback_code IS NOT NULL", &[]).await.unwrap().get(0);
+    assert_eq!(secrets, 0);
+    let _ = socket.close(None).await;
+    for expire in [false, true] {
+        let (_, login) = fixture.start(&account).await;
+        let id = login["id"].as_str().unwrap();
+        let url = format!(
+            "ws://{addr}/v1/ws/harness-logins/{}/{account}/{id}?token={}",
+            fixture.operator.workspace_id,
+            session_token(&fixture.operator)
+        );
+        let (mut socket, _) = connect_async(url).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let mut text = String::new();
+            while !text.contains("Official CLI sign-in fixture") {
+                text.push_str(&String::from_utf8_lossy(
+                    &socket.next().await.unwrap().unwrap().into_data(),
+                ));
+            }
+        })
+        .await
+        .unwrap();
+        let pid = fs::read_to_string(dir.join("pid")).unwrap();
+        let login_directory = fs::read_to_string(dir.join("cwd")).unwrap();
+        if expire {
+            fixture.client.execute("UPDATE harness_account_login SET expires_at = NOW() - INTERVAL '1 second' WHERE id = $1", &[&id]).await.unwrap();
+        } else {
+            assert_eq!(fixture.cancel(&account, id).await, StatusCode::NO_CONTENT);
+        }
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if matches!(
+                    socket.next().await,
+                    None | Some(Ok(tokio_tungstenite::tungstenite::Message::Close(_)))
+                        | Some(Err(_))
+                ) {
+                    break;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while std::process::Command::new("kill")
+                .args(["-0", pid.trim()])
+                .output()
+                .unwrap()
+                .status
+                .success()
+            {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("closed authentication terminal must stop its CLI");
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while std::path::Path::new(&login_directory).exists() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("cancelled or expired login must release its private directory");
+    }
+    server.abort();
+    let _ = server.await;
+}
+
+#[tokio::test]
+async fn claude_login_does_not_start_an_oauth_relay_or_store_callback_material() {
     let fixture = LoginFixture::create().await;
     let account_id = fixture.account(None).await;
     let (status, login) = fixture.start(&account_id).await;
-    assert_eq!(status, StatusCode::CREATED, "{login}");
+    assert_eq!(status, StatusCode::CREATED);
     assert_eq!(login["state"], "authorizing");
-    assert_eq!(login["runtime_host_id"], Value::Null);
-    assert_eq!(login["driver_type"], "claude_terminal");
-    let login_id = login["id"].as_str().unwrap().to_owned();
-
-    let (resumed_status, resumed) = fixture.start(&account_id).await;
-    assert_eq!(resumed_status, StatusCode::OK);
-    assert_eq!(resumed["id"], login["id"]);
-
-    let waiting = fixture
-        .wait_for_state(&account_id, &login_id, "awaiting_browser")
-        .await;
+    assert!(login["authorization_url"].is_null());
+    let id = login["id"].as_str().unwrap();
     assert_eq!(
-        waiting["authorization_url"],
-        "https://claude.ai/oauth/authorize?state=state-1"
+        fixture
+            .submit_callback(&account_id, id, "private-code#state")
+            .await,
+        StatusCode::CONFLICT
     );
-    assert_eq!(waiting["user_code"], Value::Null);
-    assert!(
-        dir.join("accounts").exists(),
-        "the isolated profile directory is created before the Harness starts"
-    );
-
-    let wrong_state = fixture
-        .submit_callback(
-            &account_id,
-            &login_id,
-            "https://localhost/callback?code=code-1&state=other",
-        )
-        .await;
-    assert_eq!(wrong_state, StatusCode::NO_CONTENT);
-    let failed = fixture
-        .wait_for_state(&account_id, &login_id, "failed")
-        .await;
+    let row = fixture.client.query_one("SELECT authorization_url, user_code, callback_code FROM harness_account_login WHERE id = $1", &[&id]).await.unwrap();
+    for column in ["authorization_url", "user_code", "callback_code"] {
+        assert!(row.get::<_, Option<String>>(column).is_none());
+    }
     assert_eq!(
-        failed["error"],
-        "The callback does not belong to this Claude login"
+        fixture.cancel(&account_id, id).await,
+        StatusCode::NO_CONTENT
     );
-    assert!(!dir.join("callback.json").exists());
-
-    let (status, retry) = fixture.start(&account_id).await;
-    assert_eq!(status, StatusCode::CREATED, "{retry}");
-    let retry_id = retry["id"].as_str().unwrap().to_owned();
-    fixture
-        .wait_for_state(&account_id, &retry_id, "awaiting_browser")
-        .await;
-    let submitted = fixture
-        .submit_callback(&account_id, &retry_id, "code-1#state-1")
-        .await;
-    assert_eq!(submitted, StatusCode::NO_CONTENT);
-    let again = fixture
-        .submit_callback(&account_id, &retry_id, "code-1")
-        .await;
-    assert_eq!(again, StatusCode::CONFLICT);
-
-    let verified = fixture
-        .wait_for_state(&account_id, &retry_id, "verified")
-        .await;
-    assert_eq!(verified["authorization_url"], Value::Null);
-    assert_eq!(verified["error"], Value::Null);
-    let callback: Value =
-        serde_json::from_str(&fs::read_to_string(dir.join("callback.json")).unwrap()).unwrap();
-    assert_eq!(callback["authorizationCode"], "code-1");
-    assert_eq!(callback["state"], "state-1");
-
-    let row = fixture
-        .client
-        .query_one(
-            "SELECT status, account_fingerprint, subscription_type, models_json, usage_json,
-                    probed_at IS NOT NULL AS probed
-               FROM harness_account WHERE id = $1",
-            &[&account_id],
-        )
-        .await
-        .unwrap();
-    assert_eq!(row.get::<_, String>("status"), "active");
-    assert_eq!(row.get::<_, String>("account_fingerprint").len(), 64);
-    assert_eq!(
-        row.get::<_, Option<String>>("subscription_type").as_deref(),
-        Some("max")
-    );
-    assert_eq!(
-        row.get::<_, Value>("models_json"),
-        json!([{ "id": "claude-sonnet-4-5", "label": "Sonnet 4.5" }])
-    );
-    assert_eq!(
-        row.get::<_, Value>("usage_json")["windows"][0]["usedPercent"],
-        12.5
-    );
-    assert!(row.get::<_, bool>("probed"));
-    let secrets: i64 = fixture
-        .client
-        .query_one(
-            "SELECT COUNT(*) FROM harness_account_login WHERE callback_code IS NOT NULL",
-            &[],
-        )
-        .await
-        .unwrap()
-        .get(0);
-    assert_eq!(secrets, 0, "the pasted code is consumed, never retained");
-    drop(fixture);
-    fs::remove_dir_all(&dir).ok();
 }
 
 #[tokio::test]
@@ -476,6 +552,7 @@ async fn local_claude_login_stays_active_when_catalog_refresh_fails() {
     let _binary = EnvVarGuard::set_path("CHORUZ_CLAUDE_BINARY", &binary);
     let _fake_dir = EnvVarGuard::set_path("FAKE_CLAUDE_DIR", &dir);
     let _no_snapshot = EnvVarGuard::set_path("FAKE_CLAUDE_NO_SNAPSHOT", std::path::Path::new("1"));
+    let _signed_in = EnvVarGuard::set_path("FAKE_CLAUDE_SIGNED_IN", std::path::Path::new("1"));
     let _profiles = EnvVarGuard::set_path("CHORUZ_HARNESS_ACCOUNT_ROOT", &dir.join("accounts"));
     let fixture = LoginFixture::create().await;
     let account_id = fixture.account(None).await;
@@ -496,13 +573,8 @@ async fn local_claude_login_stays_active_when_catalog_refresh_fails() {
     let (status, login) = fixture.start(&account_id).await;
     assert_eq!(status, StatusCode::CREATED, "{login}");
     let login_id = login["id"].as_str().unwrap().to_owned();
-    fixture
-        .wait_for_state(&account_id, &login_id, "awaiting_browser")
-        .await;
     assert_eq!(
-        fixture
-            .submit_callback(&account_id, &login_id, "code-1#state-1")
-            .await,
+        fixture.complete(&account_id, &login_id).await.0,
         StatusCode::NO_CONTENT
     );
     fixture
@@ -536,43 +608,24 @@ async fn local_claude_login_stays_active_when_catalog_refresh_fails() {
 }
 
 #[tokio::test]
-async fn local_claude_login_marks_the_account_failed_when_the_binary_is_missing() {
+async fn missing_claude_binary_does_not_claim_the_account_is_signed_in() {
     let _env = api_test_env_lock().lock().await;
     let dir = isolated_test_dir("harness-login-missing");
-    let _binary = EnvVarGuard::set_path("CHORUZ_CLAUDE_BINARY", &dir.join("no-such-claude"));
-    let _profiles = EnvVarGuard::set_path("CHORUZ_HARNESS_ACCOUNT_ROOT", &dir.join("accounts"));
+    let _binary = EnvVarGuard::set_path("CHORUZ_CLAUDE_BINARY", &dir.join("missing"));
     let fixture = LoginFixture::create().await;
-    let account_id = fixture.account(None).await;
-
-    let (status, login) = fixture.start(&account_id).await;
-    assert_eq!(status, StatusCode::CREATED, "{login}");
-    let login_id = login["id"].as_str().unwrap().to_owned();
-    let failed = fixture
-        .wait_for_state(&account_id, &login_id, "failed")
-        .await;
-    let error = failed["error"].as_str().unwrap();
-    assert!(
-        error.starts_with("start Claude Code control session:"),
-        "{error}"
+    let account = fixture.account(None).await;
+    let (_, login) = fixture.start(&account).await;
+    let id = login["id"].as_str().unwrap();
+    let (status, _) = fixture.complete(&account, id).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        fixture
+            .account_row(&account)
+            .await
+            .get::<_, String>("status"),
+        "pending"
     );
-    let callback = fixture
-        .submit_callback(&account_id, &login_id, "code-1")
-        .await;
-    assert_eq!(callback, StatusCode::CONFLICT);
-    let account = fixture
-        .client
-        .query_one(
-            "SELECT status, last_error FROM harness_account WHERE id = $1",
-            &[&account_id],
-        )
-        .await
-        .unwrap();
-    let status: String = account.get(0);
-    let last_error: Option<String> = account.get(1);
-    assert_eq!(status, "error");
-    assert_eq!(last_error.as_deref(), Some(error));
-    drop(fixture);
-    fs::remove_dir_all(&dir).ok();
+    fixture.cancel(&account, id).await;
 }
 
 #[tokio::test]
@@ -673,74 +726,32 @@ async fn concurrent_login_starts_resume_one_authoritative_job() {
 }
 
 #[tokio::test]
-async fn cancelling_a_local_claude_login_stops_the_driver_and_keeps_the_account_pending() {
-    let _env = api_test_env_lock().lock().await;
-    let dir = isolated_test_dir("harness-login-cancel");
-    let binary = dir.join("claude");
-    write_executable_script(&binary, FAKE_CLAUDE);
-    let _binary = EnvVarGuard::set_path("CHORUZ_CLAUDE_BINARY", &binary);
-    let _fake_dir = EnvVarGuard::set_path("FAKE_CLAUDE_DIR", &dir);
-    let _profiles = EnvVarGuard::set_path("CHORUZ_HARNESS_ACCOUNT_ROOT", &dir.join("accounts"));
+async fn cancelling_claude_login_prevents_done_from_activating_the_account() {
     let fixture = LoginFixture::create().await;
-    let account_id = fixture.account(None).await;
-
-    let (status, login) = fixture.start(&account_id).await;
-    assert_eq!(status, StatusCode::CREATED, "{login}");
-    let login_id = login["id"].as_str().unwrap().to_owned();
-    fixture
-        .wait_for_state(&account_id, &login_id, "awaiting_browser")
-        .await;
-
+    let account = fixture.account(None).await;
+    let (_, login) = fixture.start(&account).await;
+    let id = login["id"].as_str().unwrap();
+    assert_eq!(fixture.cancel(&account, id).await, StatusCode::NO_CONTENT);
     assert_eq!(
-        fixture.cancel(&account_id, &login_id).await,
-        StatusCode::NO_CONTENT
+        fixture.complete(&account, id).await.0,
+        StatusCode::NOT_FOUND
     );
-    let pid = std::fs::read_to_string(dir.join("pid")).expect("login driver started");
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    while std::process::Command::new("kill")
-        .args(["-0", pid.trim()])
-        .output()
-        .unwrap()
-        .status
-        .success()
-    {
-        if std::time::Instant::now() >= deadline {
-            let _ = std::process::Command::new("kill")
-                .args(["-KILL", pid.trim()])
-                .output();
-            panic!("cancelled login driver remains alive");
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    let cancelled = fixture.login(&account_id, &login_id).await;
-    assert_eq!(cancelled["state"], "cancelled");
-    assert_eq!(cancelled["error"], Value::Null);
-    let account_status: String = fixture
-        .client
-        .query_one(
-            "SELECT status FROM harness_account WHERE id = $1",
-            &[&account_id],
-        )
-        .await
-        .unwrap()
-        .get(0);
-    assert_eq!(account_status, "pending");
-    let (status, replacement) = fixture.start(&account_id).await;
-    assert_eq!(status, StatusCode::CREATED, "{replacement}");
     assert_eq!(
         fixture
-            .cancel(&account_id, replacement["id"].as_str().unwrap())
-            .await,
-        StatusCode::NO_CONTENT
+            .account_row(&account)
+            .await
+            .get::<_, String>("status"),
+        "pending"
     );
-    drop(fixture.database);
 }
 
 #[tokio::test]
 async fn remote_harness_login_waits_for_the_connector_and_expires() {
     let fixture = LoginFixture::create().await;
     let host_id = fixture.runtime_host().await;
-    let account_id = fixture.account(Some(&host_id)).await;
+    let account_id = fixture
+        .account_for_driver(Some(&host_id), "codex_terminal")
+        .await;
     let other_company_account = Uuid::now_v7().to_string();
 
     let (missing, _) = fixture.start(&other_company_account).await;

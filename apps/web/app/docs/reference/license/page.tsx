@@ -6,7 +6,7 @@ export default function Page() {
       <h1>License</h1>
       <p className="subtitle">Open-source readiness and licensing status for Choruz.</p>
 
-      <p>Choruz does not currently include a root <code>LICENSE</code> file. Do not assume permission to use, redistribute, or contribute until the repository owner selects and adds one. See the repository&apos;s open-source-readiness checklist for the remaining launch requirements.</p>
+      <p>Choruz source code and software documentation are distributed under Apache License 2.0. The repository&apos;s LICENSE contains the terms, and NOTICE retains incorporated-code attribution and permission notices. Dependencies, agent CLIs, visual assets, and trademarks are governed separately.</p>
 
       <h2>Third-Party Licenses</h2>
       <p>Choruz is built on top of several open-source libraries and frameworks, including:</p>

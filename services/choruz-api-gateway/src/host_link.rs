@@ -74,6 +74,16 @@ pub(crate) struct HostLink {
 impl HostLink {
     /// Send one request to the device and wait for its reply.
     pub(crate) async fn call(&self, request: LinkRequest) -> Result<Value, AppError> {
+        let timeout = if matches!(
+            &request,
+            LinkRequest::Host {
+                request: choruz_host_runtime::HostRequest::ReplayExperience { .. }
+            }
+        ) {
+            Duration::from_secs(180)
+        } else {
+            CALL_TIMEOUT
+        };
         let id = choruz_common::new_id();
         let (reply_tx, reply_rx) = oneshot::channel();
         self.pending
@@ -90,7 +100,7 @@ impl HostLink {
             self.pending.lock().expect("pending calls lock").remove(&id);
             return Err(offline(&self.host_name));
         }
-        match tokio::time::timeout(CALL_TIMEOUT, reply_rx).await {
+        match tokio::time::timeout(timeout, reply_rx).await {
             Ok(Ok(outcome)) => outcome,
             Ok(Err(_)) => Err(offline(&self.host_name)),
             Err(_) => {

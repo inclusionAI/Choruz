@@ -22,4 +22,15 @@ it("shows the configured per-run cost and disables edits while saving", () => {
   expect(html).toContain("at most 192 execution calls including collaborators");
   expect(html).toContain("5 proposal calls and one final review");
   expect(html).toContain("not a token or billing limit");
+  expect(html).toContain("48 independent judge calls");
+});
+
+it("retains a judged reference and shows its separate acceptance criteria", () => {
+  const settings = emptyOptimization();
+  settings.suite.cases[0].check = { type: "judge", expected: "A supported plan", rubric: "Use the supplied measurements" };
+  const html = renderToStaticMarkup(createElement(OptimizationFields, { value: settings, onChange: () => {}, disabled: false }));
+  expect(html).toContain("Acceptance criteria");
+  expect(html).toContain("Use the supplied measurements");
+  expect(html).toContain("A supported plan");
+  expect(html).toContain("Inconclusive judgments stop the run without assigning a failure score");
 });

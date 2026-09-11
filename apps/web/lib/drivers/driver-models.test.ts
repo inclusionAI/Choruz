@@ -27,75 +27,75 @@ describe("driver model discovery", () => {
     expect(discoverCodex).toHaveBeenCalledWith("/runtime/codex");
   });
 
-  it("uses Claude SDK model metadata without sending a prompt", async () => {
-    const discoverClaude = vi.fn(async () => [
+  it("preserves CLI model metadata without sending a prompt", async () => {
+    const discoverCodex = vi.fn(async () => [
       {
-        id: "sonnet",
-        label: "Sonnet",
-        resolvedModel: "claude-sonnet-5",
+        id: "test-model",
+        label: "Test model",
+        resolvedModel: "test-model-v1",
         capabilities: { effortLevels: ["low", "high"], adaptiveThinking: true },
       },
     ]);
     const runCommand = vi.fn();
 
-    const result = await discoverDriverModels("claude_terminal", {
-      env: { CHORUZ_CLAUDE_BINARY: "/opt/claude" },
-      discoverClaude,
+    const result = await discoverDriverModels("codex_terminal", {
+      env: { CHORUZ_CODEX_BINARY: "/opt/codex" },
+      discoverCodex,
       runCommand,
     });
 
     expect(result).toMatchObject({
       status: "available",
-      models: [{ id: "sonnet", resolvedModel: "claude-sonnet-5" }],
+      models: [{ id: "test-model", resolvedModel: "test-model-v1" }],
     });
-    expect(discoverClaude).toHaveBeenCalledWith("/opt/claude");
+    expect(discoverCodex).toHaveBeenCalledWith("/opt/codex");
     expect(runCommand).not.toHaveBeenCalled();
   });
 
   it("caches successful scans by driver", async () => {
-    const discoverClaude = vi.fn(async () => [{ id: "opus", label: "Opus" }]);
+    const discoverCodex = vi.fn(async () => [{ id: "test-model", label: "Test model" }]);
     const options = {
-      env: { CHORUZ_CLAUDE_BINARY: "claude" },
-      discoverClaude,
+      env: { CHORUZ_CODEX_BINARY: "codex" },
+      discoverCodex,
     };
 
-    await discoverDriverModels("claude_terminal", options);
-    await discoverDriverModels("claude_terminal", options);
+    await discoverDriverModels("codex_terminal", options);
+    await discoverDriverModels("codex_terminal", options);
 
-    expect(discoverClaude).toHaveBeenCalledTimes(1);
+    expect(discoverCodex).toHaveBeenCalledTimes(1);
   });
 
   it("shares one in-flight scan between concurrent requests", async () => {
     let resolveModels: ((models: [{ id: string; label: string }]) => void) | undefined;
-    const discoverClaude = vi.fn(() => new Promise<[{ id: string; label: string }]>(
+    const discoverCodex = vi.fn(() => new Promise<[{ id: string; label: string }]>(
       (resolve) => { resolveModels = resolve; },
     ));
     const options = {
-      env: { CHORUZ_CLAUDE_BINARY: "claude" },
-      discoverClaude,
+      env: { CHORUZ_CODEX_BINARY: "codex" },
+      discoverCodex,
     };
 
-    const first = discoverDriverModels("claude_terminal", options);
-    const second = discoverDriverModels("claude_terminal", options);
-    resolveModels?.([{ id: "opus", label: "Opus" }]);
+    const first = discoverDriverModels("codex_terminal", options);
+    const second = discoverDriverModels("codex_terminal", options);
+    resolveModels?.([{ id: "test-model", label: "Test model" }]);
 
     await expect(Promise.all([first, second])).resolves.toEqual([
       expect.objectContaining({ status: "available" }),
       expect.objectContaining({ status: "available" }),
     ]);
-    expect(discoverClaude).toHaveBeenCalledTimes(1);
+    expect(discoverCodex).toHaveBeenCalledTimes(1);
   });
 
   it("classifies harness authentication failures without exposing raw errors", async () => {
-    const result = await discoverDriverModels("claude_terminal", {
-      env: { CHORUZ_CLAUDE_BINARY: "claude" },
-      discoverClaude: async () => {
-        throw new Error("OAuth session expired at /Users/alice/.claude");
+    const result = await discoverDriverModels("codex_terminal", {
+      env: { CHORUZ_CODEX_BINARY: "codex" },
+      discoverCodex: async () => {
+        throw new Error("OAuth session expired at /Users/alice/.codex");
       },
     });
 
     expect(result).toEqual({
-      driverId: "claude_terminal",
+      driverId: "codex_terminal",
       status: "auth_required",
       models: [],
       message: "Sign in to this harness before scanning its models.",

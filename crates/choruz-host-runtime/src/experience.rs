@@ -4,6 +4,7 @@ use choruz_agent_runtime::headless::{
     HeadlessDriver, configure_command_workspace, harness_account_env, parse_output,
 };
 use choruz_common::AppError;
+use choruz_domain::evaluation::{JudgeResult, OutputCheck};
 use serde::{Deserialize, Serialize};
 use std::{
     process::Stdio,
@@ -18,6 +19,8 @@ use tokio::{
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Analysis {
+    #[serde(default)]
+    pub evaluation_cases: Vec<choruz_domain::evaluation::TraceCase>,
     pub summary: String,
     pub instruction: Option<String>,
     pub evidence: Vec<String>,
@@ -45,6 +48,82 @@ pub async fn analyze(spec: TerminalSpec, prompt: String) -> Result<Analysis, App
 pub struct Review {
     pub accepted: bool,
     pub evidence: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskRepair {
+    pub input: String,
+    pub check: OutputCheck,
+    pub reason: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskDecision {
+    pub episode_ref: String,
+    pub accepted: bool,
+    pub sensitive: bool,
+    pub evidence: Vec<String>,
+    pub reason: String,
+    pub repair: Option<TaskRepair>,
+}
+
+pub const TASK_REVIEW_SKILL: &str = include_str!("../../../agent-templates/task-quality-review.md");
+
+pub async fn review_tasks(
+    spec: TerminalSpec,
+    prompt: String,
+) -> Result<Vec<TaskDecision>, AppError> {
+    let text = run_with_role(
+        spec,
+        format!("{TASK_REVIEW_SKILL}\n{prompt}"),
+        false,
+        TASK_REVIEW_SKILL,
+    )
+    .await?;
+    decode_task_decisions(&text)
+}
+
+fn decode_task_decisions(text: &str) -> Result<Vec<TaskDecision>, AppError> {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Response {
+        decisions: Vec<TaskDecision>,
+    }
+    let response: Response = serde_json::from_str(text.trim()).map_err(|_| {
+        AppError::Validation("Task review did not return per-task decisions".into())
+    })?;
+    if response.decisions.len() > 20
+        || response.decisions.iter().any(|d| {
+            d.episode_ref.len() > 256
+                || d.reason.trim().is_empty()
+                || d.reason.len() > 2000
+                || d.evidence.len() > 100
+                || d.evidence.iter().any(|r| r.len() > 256)
+                || (d.accepted && d.repair.is_some())
+                || (d.accepted && d.sensitive)
+                || d.repair.as_ref().is_some_and(|repair| {
+                    choruz_domain::evaluation::TraceCase {
+                        variant: None,
+                        group_ref: None,
+                        classification: None,
+                        episode_ref: d.episode_ref.clone(),
+                        evidence: vec![d.episode_ref.clone()],
+                        input: repair.input.clone(),
+                        check: Some(repair.check.clone()),
+                        reason: repair.reason.clone(),
+                    }
+                    .validate()
+                    .is_err()
+                })
+        })
+    {
+        return Err(AppError::Validation(
+            "Invalid task quality decisions".into(),
+        ));
+    }
+    Ok(response.decisions)
 }
 
 /// Judge the immutable candidate without rewriting it. This also admits a
@@ -120,7 +199,7 @@ pub async fn evaluate(
     instruction: String,
     preflight: String,
 ) -> Result<String, AppError> {
-    if input.trim().is_empty() || input.len() > 16_000 || instruction.len() > 12_000 {
+    if input.trim().is_empty() || input.len() > 48_000 || instruction.len() > 12_000 {
         return Err(AppError::Validation("Invalid evaluation input".into()));
     }
     if preflight.len() > 8_000 {
@@ -133,6 +212,31 @@ pub async fn evaluate(
         serde_json::json!({"guidance":instruction,"preflight":preflight,"task":input})
     );
     run_with_role(spec, prompt, false, "You are executing a self-contained evaluation task in an empty, tool-free scratch conversation. Complete the supplied task without reading files, using tools or assuming access to the live workspace.").await
+}
+
+pub const JUDGE_SKILL: &str = include_str!("../../../agent-templates/evaluation-judge.md");
+
+/// Start a separate tool-free conversation without candidate guidance or memory.
+pub async fn judge(
+    spec: TerminalSpec,
+    input: String,
+    check: OutputCheck,
+    output: String,
+) -> Result<JudgeResult, AppError> {
+    check.validate().map_err(AppError::Validation)?;
+    if !matches!(check, OutputCheck::Judge { .. }) || input.len() > 16_000 || output.len() > 16_000
+    {
+        return Err(AppError::Validation("Invalid judge task or output".into()));
+    }
+    let prompt = format!(
+        "{JUDGE_SKILL}\n\n{}",
+        serde_json::json!({"task":input,"check":check,"candidate_output":output})
+    );
+    let text = run_with_role(spec, prompt, false, JUDGE_SKILL).await?;
+    let result: JudgeResult = serde_json::from_str(text.trim())
+        .map_err(|_| AppError::Validation("Judge did not return a verdict and rationale".into()))?;
+    result.validate().map_err(AppError::Validation)?;
+    Ok(result)
 }
 
 async fn run_with_role(
@@ -364,7 +468,16 @@ fn decode(text: &str) -> Result<Analysis, AppError> {
     let value: Analysis = serde_json::from_str(text.trim()).map_err(|_| {
         AppError::Validation("Analysis did not return the required JSON report".into())
     })?;
-    if value.summary.is_empty()
+    if value.evaluation_cases.len() > 20
+        || serde_json::to_vec(&value.evaluation_cases)
+            .map_err(|e| AppError::Validation(e.to_string()))?
+            .len()
+            > 48 * 1024
+        || value
+            .evaluation_cases
+            .iter()
+            .any(|case| case.validate().is_err())
+        || value.summary.is_empty()
         || value.summary.len() > 16000
         || value
             .instruction
@@ -417,6 +530,27 @@ fn decode(text: &str) -> Result<Analysis, AppError> {
 #[cfg(test)]
 mod tests {
     use super::completed_search;
+
+    #[test]
+    fn task_repairs_are_bounded_before_they_can_enter_history() {
+        let original = serde_json::json!({"decisions":[{"episode_ref":"task","accepted":false,"sensitive":false,"evidence":["task"],"reason":"Repair","repair":{"input":"Compute 1+1","reason":"Restore operands","check":{"type":"exact","expected":"2"}}}]});
+        assert!(super::decode_task_decisions(&original.to_string()).is_ok());
+        for (field, value) in [
+            ("input", serde_json::json!("x".repeat(16_001))),
+            ("reason", serde_json::json!("x".repeat(2001))),
+            (
+                "check",
+                serde_json::json!({"type":"exact","expected":"x".repeat(16_000)}),
+            ),
+        ] {
+            let mut oversized = original.clone();
+            oversized["decisions"][0]["repair"][field] = value;
+            assert!(
+                super::decode_task_decisions(&oversized.to_string()).is_err(),
+                "unbounded {field}"
+            );
+        }
+    }
 
     #[test]
     fn research_requires_a_completed_search_not_a_claim_or_failed_attempt() {

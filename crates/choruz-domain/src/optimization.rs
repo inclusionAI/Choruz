@@ -28,6 +28,43 @@ mod tests {
     use super::*;
     use crate::evaluation::{EvaluationCase, OutputCheck};
 
+    #[test]
+    fn judged_rollouts_reserve_the_extra_call_and_use_the_returned_score() {
+        let (mut suite, state) = setup();
+        for case in &mut suite.cases {
+            case.check = OutputCheck::Judge {
+                expected: "Reference".into(),
+                rubric: "Equivalent answers are valid".into(),
+            };
+        }
+        let mut state = Optimization::new(
+            state.config,
+            &suite,
+            state.candidates.into_iter().map(|c| c.guidance).collect(),
+        )
+        .unwrap();
+        assert!(matches!(
+            state.next_action(&suite).unwrap(),
+            Some(SearchAction::Evaluate { .. })
+        ));
+        assert_eq!(state.model_calls_reserved, 2);
+        assert!(
+            state
+                .complete_evaluation(&suite, "Reference".into())
+                .is_err()
+        );
+        assert!(state.observations.is_empty());
+        assert!(
+            state
+                .complete_scored_rollout("Alternative".into(), String::new(), f64::NAN, None)
+                .is_err()
+        );
+        state
+            .complete_scored_rollout("Alternative".into(), String::new(), 1.0, None)
+            .unwrap();
+        assert_eq!(state.observations[0].score, 1.0);
+    }
+
     fn setup() -> (EvaluationSuite, Optimization) {
         let suite = EvaluationSuite {
             name: "format".into(),
@@ -40,6 +77,8 @@ mod tests {
             .into_iter()
             .enumerate()
             .map(|(i, split)| EvaluationCase {
+                environment: None,
+                source: None,
                 id: i.to_string(),
                 split,
                 input: format!("task-{i}"),
@@ -348,6 +387,8 @@ pub struct Observation {
     pub score: f64,
     pub output: String,
     pub preflight: String,
+    #[serde(default)]
+    pub assessment: Option<crate::evaluation::JudgeResult>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -411,6 +452,8 @@ pub struct Optimization {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OptimizationSettings {
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub trace_cases: bool,
     pub suite: EvaluationSuite,
     pub config: OptimizationConfig,
     pub auto_apply: bool,
@@ -418,6 +461,16 @@ pub struct OptimizationSettings {
 
 impl OptimizationSettings {
     pub fn validate(&self) -> Result<(), String> {
+        if self.trace_cases {
+            if !(4..=512).contains(&self.config.max_metric_calls)
+                || !(1..=32).contains(&self.config.max_proposals)
+                || !(1..=64).contains(&self.config.minibatch_size)
+                || !(1..=4).contains(&self.config.max_agents)
+            {
+                return Err("Trace evaluation requires bounded search budgets".into());
+            }
+            return Ok(());
+        }
         let seed = EvaluationCandidate {
             revision_id: None,
             instruction: String::new(),
@@ -603,11 +656,16 @@ impl Optimization {
                     return Err("Evaluation budget exhausted before the final comparison".into());
                 }
                 self.metric_calls += 1;
-                self.model_calls_reserved += 1 + self.candidates[candidate]
-                    .guidance
-                    .team
+                self.model_calls_reserved += suite.cases[case]
+                    .environment
                     .as_ref()
-                    .map_or(0, |team| team.members.len());
+                    .map_or(1, |environment| environment.max_steps)
+                    + suite.cases[case].check.model_calls()
+                    + self.candidates[candidate]
+                        .guidance
+                        .team
+                        .as_ref()
+                        .map_or(0, |team| team.members.len());
                 let action = SearchAction::Evaluate { candidate, case };
                 self.pending = Some(action.clone());
                 return Ok(Some(action));
@@ -711,18 +769,41 @@ impl Optimization {
         output: String,
         preflight: String,
     ) -> Result<(), String> {
+        let Some(SearchAction::Evaluate { case, .. }) = self.pending else {
+            return Err("No evaluation is reserved".into());
+        };
+        let score = suite.cases[case]
+            .check
+            .score(&output)
+            .ok_or("This task requires an independent judge result")?;
+        self.complete_scored_rollout(output, preflight, score, None)
+    }
+
+    /// Accept only a conclusive score from the fixed evaluation runner.
+    pub fn complete_scored_rollout(
+        &mut self,
+        output: String,
+        preflight: String,
+        score: f64,
+        assessment: Option<crate::evaluation::JudgeResult>,
+    ) -> Result<(), String> {
         let Some(SearchAction::Evaluate { candidate, case }) = self.pending.clone() else {
             return Err("No evaluation is reserved".into());
         };
-        if output.len() > 16_000 || preflight.len() > 16_000 {
+        if output.len() > 16_000
+            || preflight.len() > 16_000
+            || !score.is_finite()
+            || !(0.0..=1.0).contains(&score)
+        {
             return Err("Evaluation output exceeds its limit".into());
         }
         self.observations.push(Observation {
             candidate,
             case,
-            score: suite.cases[case].check.score(&output),
+            score,
             output,
             preflight,
+            assessment,
         });
         self.pending = None;
         Ok(())

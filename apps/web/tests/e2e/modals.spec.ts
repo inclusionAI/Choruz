@@ -425,7 +425,7 @@ test.describe("Modals (Create Agent, Create Group, Create Company)", () => {
     }
   });
 
-  test("adding a new local account shows the official sign-in link", async ({ page }) => {
+  test("adding a Claude account opens its official terminal and verifies identity", async ({ page }) => {
     const { token, principal } = await login(page);
     const company = await createCompany(page, token, principal.id, uniqueName("login-catalog"));
     const pending = harnessAccount("claude_terminal", [], { id: "ci-new", name: "Work account", profileKind: "isolated", status: "pending", probedAt: null });
@@ -453,11 +453,11 @@ test.describe("Modals (Create Agent, Create Group, Create Company)", () => {
     await mockHarnessAccounts(page, []);
     await page.route(/\/api\/harness-accounts$/, (route) => route.fulfill(json(201, pending)));
     await page.route(/\/api\/harness-accounts\/ci-new\/login\?/, (route) => {
-      return route.fulfill(json(201, loginView("awaiting_browser")));
+      return route.fulfill(json(201, loginView("authorizing")));
     });
     await page.route(/\/api\/harness-accounts\/ci-new\/login\/login-1\?/, (route) =>
-      route.fulfill(json(200, loginView(codeSubmitted ? "verified" : "awaiting_browser"))));
-    await page.route(/\/api\/harness-accounts\/ci-new\/login\/login-1\/callback\?/, (route) => {
+      route.fulfill(json(200, loginView(codeSubmitted ? "verified" : "authorizing"))));
+    await page.route(/\/api\/harness-accounts\/ci-new\/login\/login-1\/complete\?/, (route) => {
       codeSubmitted = true;
       return route.fulfill({ status: 204 });
     });
@@ -475,13 +475,13 @@ test.describe("Modals (Create Agent, Create Group, Create Company)", () => {
       const accounts = page.locator(".harness-accounts-card");
       await accounts.getByRole("button", { name: "Add account" }).click();
       await accounts.getByLabel("Account label").fill("Work account");
-      await accounts.getByRole("button", { name: "Add and sign in" }).click();
+      await accounts.getByRole("button", { name: "Open Claude Code to sign in" }).click();
 
       await expect(accounts.getByText("Sign in to Claude Code account “Work account”")).toBeVisible();
-      await expect(accounts.getByRole("link", { name: "Open sign-in link" })).toHaveAttribute("href", "https://example.test/oauth?state=abc");
+      await expect(accounts.getByRole("link", { name: "Open sign-in link" })).toHaveCount(0);
       await expect(accounts.locator("code", { hasText: "claude /login" })).toHaveCount(0);
-      await accounts.getByLabel("Claude Code authentication value").fill("xyz#abc");
-      await accounts.getByRole("button", { name: "Finish sign-in" }).click();
+      await expect(accounts.locator(".terminal-container")).toBeVisible();
+      await accounts.getByRole("button", { name: "Done", exact: true }).click();
 
       await expect(accounts.getByText("Sign in to Claude Code account “Work account”")).toHaveCount(0);
       const record = accounts.locator(".harness-account-record", { hasText: "Work account" });
@@ -494,7 +494,7 @@ test.describe("Modals (Create Agent, Create Group, Create Company)", () => {
     }
   });
 
-  for (const driver of ["claude_terminal", "codex_terminal"] as const) {
+  for (const driver of ["codex_terminal"] as const) {
     test(`reopening ${driver} sign-in resumes the same persisted task`, async ({ page }) => {
       const { token, principal } = await login(page);
       const company = await createCompany(page, token, principal.id, uniqueName("login-recovery"));
@@ -543,7 +543,7 @@ test.describe("Modals (Create Agent, Create Group, Create Company)", () => {
         await client.query("UPDATE harness_account_login SET state = 'awaiting_browser', authorization_url = $2 WHERE id = $1", [original.id, authorizationUrl]);
         const expectPrompt = async () => {
           await expect(modal.getByRole("link", { name: "Open sign-in link" })).toHaveAttribute("href", authorizationUrl);
-          await expect(modal.getByLabel(driver === "claude_terminal" ? "Claude Code authentication value" : "Codex callback URL")).toBeVisible();
+          await expect(modal.getByLabel("Codex callback URL")).toBeVisible();
         };
         await expectPrompt();
         await modal.getByRole("button", { name: "Close", exact: true }).click();
@@ -576,7 +576,7 @@ test.describe("Modals (Create Agent, Create Group, Create Company)", () => {
       account_id: pending.id,
       runtime_host_id: null,
       driver_type: "claude_terminal",
-      state: "awaiting_browser",
+      state: "authorizing",
       authorization_url: "https://example.test/oauth?state=cancel",
       user_code: null,
       error: null,
@@ -600,8 +600,8 @@ test.describe("Modals (Create Agent, Create Group, Create Company)", () => {
     const accounts = page.locator(".harness-accounts-card");
     await accounts.getByRole("button", { name: "Add account" }).click();
     await accounts.getByLabel("Account label").fill("Cancelled account");
-    await accounts.getByRole("button", { name: "Add and sign in" }).click();
-    await expect(accounts.getByRole("link", { name: "Open sign-in link" })).toBeVisible();
+    await accounts.getByRole("button", { name: "Open Claude Code to sign in" }).click();
+    await expect(accounts.getByRole("button", { name: "Done", exact: true })).toBeVisible();
 
     await accounts.locator(".harness-account-setup").getByRole("button", { name: "Cancel" }).click();
     await expect.poll(() => cancelled).toBe(1);

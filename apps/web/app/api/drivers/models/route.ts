@@ -18,7 +18,7 @@ export async function GET(request: NextRequest) {
   }
 
   const hostId = request.nextUrl.searchParams.get("runtime_host_id");
-  if (hostId) {
+  if (hostId || driverId === "claude_terminal") {
     const response = await deviceDriverCatalog(auth.token, hostId, driverId);
     const body = await response.json();
     if (!response.ok) return NextResponse.json(body, { status: response.status });

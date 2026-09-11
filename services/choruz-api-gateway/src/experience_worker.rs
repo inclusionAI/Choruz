@@ -40,7 +40,8 @@ async fn run_analysis(state: &ApiState) {
     loop {
         interval.tick().await;
         match state.db.claim_experience().await {
-            Ok(Some(claim)) => {
+            Ok(Some(mut claim)) => {
+                prepare_curation(&mut claim, chrono::Utc::now().timestamp());
                 let check = LearningCheck::new(state, &claim);
                 let outcome = async {
                     check.record("check", json!({"outcome":"started"})).await?;
@@ -71,6 +72,57 @@ async fn run_analysis(state: &ApiState) {
     }
 }
 
+/// Revisit retained original evidence daily, after the preceding paged sweep
+/// completes. The durable cursor makes restarts resume rather than restart it.
+fn prepare_curation(claim: &mut ExperienceClaim, now: i64) {
+    if !claim.trace_cases {
+        return;
+    }
+    let started = claim.source_cursor["_curation_started"].as_i64();
+    if started.is_none()
+        || (claim.source_cursor["_more"] != true
+            && started.is_some_and(|t| now.saturating_sub(t) >= 86400))
+    {
+        claim.source_cursor = json!({"_curation_started":now});
+    }
+}
+
+fn finish_curation(
+    checkpoint: &mut serde_json::Map<String, Value>,
+    previous: &[choruz_domain::evaluation::TraceCase],
+    changes: &mut Vec<choruz_domain::evaluation::TraceCase>,
+    complete: bool,
+) {
+    let mut seen: std::collections::BTreeSet<String> = checkpoint
+        .get("_curation_seen")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect();
+    // Only working-corpus entries need remembered validation; unrelated newly
+    // discovered objectives must not evict one during a long paged sweep.
+    seen.retain(|reference| previous.iter().any(|c| &c.episode_ref == reference));
+    seen.extend(changes.iter().map(|c| c.episode_ref.clone()));
+    if complete {
+        for old in previous
+            .iter()
+            .filter(|c| c.check.is_some() && !seen.contains(&c.episode_ref))
+        {
+            let mut withdrawn = old.clone();
+            withdrawn.check = None;
+            withdrawn.reason =
+                "Original evidence was not revalidated in the retained-source sweep".into();
+            changes.push(withdrawn);
+        }
+    }
+    checkpoint.insert(
+        "_curation_seen".into(),
+        json!(seen.into_iter().collect::<Vec<_>>()),
+    );
+}
+
 async fn review(
     state: &ApiState,
     claim: &ExperienceClaim,
@@ -85,6 +137,10 @@ async fn review(
         .await
         .map_err(|e| e.0)?;
     let source_host = RuntimeHost::for_binding(state, &target)?;
+    let existing_cases = state
+        .db
+        .experience_trace_cases(&claim.workspace_id, &claim.binding_id)
+        .await?;
     let anchor = target.valid_terminal_session_anchor_for_context(
         None,
         None,
@@ -186,8 +242,12 @@ async fn review(
             )
             .await?;
         checkpoint.insert("_more".into(), json!(unread));
+        let mut withdrawals = Vec::new();
+        if claim.trace_cases {
+            finish_curation(&mut checkpoint, &existing_cases, &mut withdrawals, !unread);
+        }
         let checkpoint = Value::Object(checkpoint);
-        if checkpoint != claim.source_cursor {
+        if checkpoint != claim.source_cursor || !withdrawals.is_empty() {
             let digest = hex::encode(Sha256::digest(checkpoint.to_string().as_bytes()));
             state
                 .db
@@ -198,7 +258,7 @@ async fn review(
                         references: &claim.source_references,
                         analysis: &claim.source_summary,
                         instruction: None,
-                        validation: &json!({"review":"not_passed","source_only":true,"trace_id":check.id}),
+                        validation: &json!({"review":"not_passed","source_only":true,"trace_id":check.id,"evaluation_cases":withdrawals}),
                         checkpoint: Some(&checkpoint),
                         activate: false,
                     },
@@ -209,6 +269,9 @@ async fn review(
     };
     // Do not activate guidance from feedback while older native work is unread.
     source["more"] = json!(unread || pending.next().is_some());
+    if claim.trace_cases {
+        source["curation_cycle"] = claim.source_cursor["_curation_started"].clone();
+    }
     if let Some(guidance) = guidance {
         source["project_guidance"] = guidance;
     }
@@ -231,6 +294,8 @@ async fn review(
             "current_instruction": claim.instruction, "active_revision_id": claim.active_revision_id,
             "prior_summary":claim.source_summary, "prior_references":claim.source_references, "trace": source,
             "known_problems":known_problems,
+            "collect_evaluation_cases":claim.trace_cases,
+            "existing_evaluation_cases":existing_cases,
         })
     );
     let mut analysis: Analysis = check
@@ -243,6 +308,9 @@ async fn review(
             },
         )
         .await?;
+    if !claim.trace_cases {
+        analysis.evaluation_cases.clear();
+    }
     let records = source["records"]
         .as_array()
         .ok_or_else(|| AppError::Validation("Learning source records are missing".into()))?;
@@ -287,6 +355,14 @@ async fn review(
             .filter(|reference| !records.iter().any(|record| record["ref"] == **reference))
             .cloned()
     }));
+    missing.extend(
+        analysis
+            .evaluation_cases
+            .iter()
+            .flat_map(|case| std::iter::once(&case.episode_ref).chain(case.evidence.iter()))
+            .filter(|reference| !records.iter().any(|record| record["ref"] == **reference))
+            .cloned(),
+    );
     missing.sort();
     missing.dedup();
     let mut recovered = state
@@ -325,6 +401,79 @@ async fn review(
     }
     let known_reference =
         |reference: &String| retained_reference(reference) || recovered.contains(reference);
+    let mut evaluation_cases = analysis.evaluation_cases.clone();
+    let mut task_quality = Value::Null;
+    if !evaluation_cases.is_empty() {
+        let known_cases: std::collections::BTreeSet<_> = existing_cases
+            .iter()
+            .chain(evaluation_cases.iter())
+            .map(|c| c.episode_ref.clone())
+            .collect();
+        for case in &mut evaluation_cases {
+            let classification_ok = case
+                .classification
+                .as_ref()
+                .is_some_and(|c| c.related_refs.iter().all(|r| known_cases.contains(r)));
+            let grounded = classification_ok
+                && std::iter::once(&case.episode_ref)
+                    .chain(case.evidence.iter())
+                    .all(|reference| {
+                        records.iter().any(|record| record["ref"] == *reference)
+                            || historical
+                                .iter()
+                                .any(|record| record.reference == *reference)
+                    });
+            if !grounded {
+                case.classification = existing_cases
+                    .iter()
+                    .find(|old| old.episode_ref == case.episode_ref)
+                    .and_then(|old| old.classification.clone());
+                case.check = None;
+                case.reason =
+                    "Dataset review could not establish a grounded, self-contained answer".into();
+            }
+        }
+        task_quality = crate::task_quality::inspect(
+            &RuntimeHost::for_binding(state, &analyst)?,
+            terminal_spec(&analyst, 120, 40, None, None),
+            &mut evaluation_cases,
+            json!({"existing_cases":existing_cases,"records":records,"historical":historical}),
+            check,
+        )
+        .await?;
+        // Preserve previously reviewed equivalence links when an incremental
+        // report omits them; reclassification cannot move exposed siblings apart.
+        for case in &mut evaluation_cases {
+            if let Some(classification) = &mut case.classification {
+                if let Some(old) = existing_cases
+                    .iter()
+                    .find(|old| old.episode_ref == case.episode_ref)
+                    .and_then(|old| old.classification.as_ref())
+                {
+                    classification
+                        .related_refs
+                        .extend(old.related_refs.iter().cloned());
+                    classification.related_refs.sort();
+                    classification.related_refs.dedup();
+                    classification.related_refs.truncate(64);
+                }
+            }
+        }
+        check
+            .record(
+                "case_admission",
+                json!({"accepted_count":evaluation_cases.iter().filter(|c|c.check.is_some()).count(),"case_count":evaluation_cases.len()}),
+            )
+            .await?;
+    }
+    if claim.trace_cases {
+        finish_curation(
+            &mut checkpoint,
+            &existing_cases,
+            &mut evaluation_cases,
+            source["more"] != true,
+        );
+    }
     if !analysis.evidence.iter().all(known_reference) {
         return Err(AppError::Validation(
             "Analysis cited a record outside its source window".into(),
@@ -477,8 +626,16 @@ async fn review(
     let instruction = analysis
         .instruction
         .as_deref()
+        .or_else(|| {
+            (claim.measured && evaluation_cases.iter().any(|case| case.check.is_some()))
+                .then_some(claim.instruction.as_str())
+        })
         .filter(|_| source["more"] != true);
-    let review_details = if let Some(instruction) = instruction {
+    let review_details = if instruction == Some(claim.instruction.as_str())
+        && analysis.instruction.is_none()
+    {
+        json!({"passed":true,"reason":"unchanged_seed_for_trace_evaluation"})
+    } else if let Some(instruction) = instruction {
         let verification: Analysis = check.call(&RuntimeHost::for_binding(state, &analyst)?, "content_review", HostRequest::AnalyzeExperience {
             spec: Box::new(terminal_spec(&analyst, 120, 40, None, None)),
             prompt: format!("{REVIEW}\n\nYou are checking a proposed instruction change, not generating another one. Compare it with the immutable source and prior instruction. The existing_team is unchanged context, not a proposed structural change. Reject unsupported generalization, lost still-valid guidance, conflicts with that team, personal-data leakage and permission changes. Return the proposed instruction byte-for-byte only if justified; otherwise instruction must be null. This is a content review, not proof of future execution success.\n{}",
@@ -504,6 +661,8 @@ async fn review(
                 digest:&digest, references:&json!(analysis.evidence), analysis:&analysis.summary,
                 instruction,
                 validation:&json!({"format":"checked", "review":if review {"passed"} else {"not_passed"},
+                    "evaluation_cases":evaluation_cases,
+                    "task_quality":task_quality,
                     "trace_id":check.id,"review_details":review_details,
                     "escalation_decisions":escalation_diagnostics(&known_problems, &problems),
                     "observed_revision_id":claim.active_revision_id, "observed_revision_outcome":analysis.previous_revision_outcome,
@@ -634,8 +793,75 @@ mod tests {
     use super::*;
 
     #[test]
+    fn daily_curation_resumes_paging_and_withdraws_unverifiable_evidence() {
+        let mut claim = ExperienceClaim {
+            trace_cases: true,
+            measured: true,
+            binding_id: "b".into(),
+            workspace_id: "w".into(),
+            owner_id: "o".into(),
+            analyst_binding_id: "a".into(),
+            generation: 1,
+            token: "lease".into(),
+            active_revision_id: None,
+            instruction: String::new(),
+            source_cursor: json!({"_curation_started":100,"session":{"offset":12},"_more":true}),
+            source_summary: String::new(),
+            source_references: json!([]),
+        };
+        prepare_curation(&mut claim, 90000);
+        assert_eq!(claim.source_cursor["session"]["offset"], 12);
+        claim.source_cursor["_more"] = json!(false);
+        prepare_curation(&mut claim, 90000);
+        assert!(claim.source_cursor["session"].is_null());
+        claim.source_cursor["session"] = json!({"offset":3});
+        prepare_curation(&mut claim, 90001);
+        assert_eq!(claim.source_cursor["session"]["offset"], 3);
+        let old = choruz_domain::evaluation::TraceCase {
+            variant: None,
+            group_ref: None,
+            classification: None,
+            episode_ref: "missing".into(),
+            evidence: vec!["answer".into()],
+            input: "Task".into(),
+            check: Some(choruz_domain::evaluation::OutputCheck::Exact {
+                expected: "ok".into(),
+            }),
+            reason: "Checked".into(),
+        };
+        let mut changes = vec![];
+        let mut cursor = serde_json::Map::new();
+        finish_curation(&mut cursor, std::slice::from_ref(&old), &mut changes, false);
+        assert!(changes.is_empty());
+        finish_curation(&mut cursor, std::slice::from_ref(&old), &mut changes, true);
+        assert_eq!(changes.len(), 1);
+        assert!(changes[0].check.is_none());
+        assert!(old.check.is_some());
+        cursor.clear();
+        changes = vec![old.clone()];
+        finish_curation(&mut cursor, std::slice::from_ref(&old), &mut changes, false);
+        for page in 0..10 {
+            changes = (0..20)
+                .map(|i| {
+                    let mut case = old.clone();
+                    case.episode_ref = format!("z-new:{page}:{i}");
+                    case
+                })
+                .collect();
+            finish_curation(&mut cursor, std::slice::from_ref(&old), &mut changes, false);
+        }
+        changes.clear();
+        finish_curation(&mut cursor, std::slice::from_ref(&old), &mut changes, true);
+        assert!(
+            changes.is_empty(),
+            "revalidated evidence must survive a long sweep"
+        );
+    }
+
+    #[test]
     fn review_diagnostics_distinguish_rejection_from_protocol_mismatch() {
         let report = Analysis {
+            evaluation_cases: vec![],
             summary: "Missing evidence. token=fixture-secret".into(),
             instruction: None,
             evidence: vec!["verified".into()],

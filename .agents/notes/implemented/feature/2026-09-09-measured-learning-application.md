@@ -10,7 +10,7 @@ without repeatedly spending on the same candidate or changing its own criteria.
 
 ## Decision
 
-The owner optionally supplies a fixed suite and per-run search budget in the
+The owner optionally selects a manual or [trace-derived suite](2026-09-10-trace-evaluation-cases.md) and per-run search budget in the
 existing learning settings. The analysis worker then stores reviewed candidates
 without activating them. The existing evaluation worker admits each candidate
 once per policy generation. Automatic application requires separate consent,
@@ -29,7 +29,7 @@ selection owner. Failed or uncertain runs retain evidence without automatic repl
 regressions and whether a generated instruction retains justified guidance.
 
 **Generate the evaluation criteria from each candidate.** This lets the search
-change its own standard. The suite is supplied by the owner and frozen per run.
+change its own standard. The suite is independent of candidate proposals and frozen per run.
 
 **Replace the live harness during evaluation.** Running turns retain their
 captured guidance. Only later submissions receive an applied revision.

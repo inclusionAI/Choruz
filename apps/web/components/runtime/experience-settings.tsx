@@ -3,10 +3,11 @@
 import { useEffect, useState } from "react";
 import { apiFetch, type RuntimeBinding } from "../../lib/api/choruz-api";
 import { Modal } from "../ui/modal";
+import { ExperienceDataset, ExperiencePerformance, type DatasetReport, type TaskPerformance } from "./experience-dataset";
 import { emptyOptimization, OptimizationFields, OptimizationHistory, type OptimizationSettings } from "./experience-optimization";
 
-type Revision = { id: string; analysis: string; instruction: string; disposition: string; created_at: string; validation: { review?: string; observed_revision_id?: string; observed_revision_outcome?: string; team?: { config: { order: "serial" | "parallel"; members: { name: string; prompt: string }[] }; review: string } | null } };
-type Learning = { policy: { enabled: boolean; analyst_binding_id: string; active_revision_id: string | null; last_error: string | null; checked_at: string | null; optimization_settings: OptimizationSettings | null; optimization_error: string | null } | null; revisions: Revision[] };
+type Revision = { id: string; analysis: string; instruction: string; disposition: string; created_at: string; validation: { dataset?: DatasetReport | null; evaluation_cases?: { episode_ref: string; input: string; check: unknown | null; reason: string; classification?: { task_type: string; capability: string; structure: string; outcome: string } }[]; review?: string; observed_revision_id?: string; observed_revision_outcome?: string; team?: { config: { order: "serial" | "parallel"; members: { name: string; prompt: string }[] }; review: string } | null } };
+type Learning = { policy: { enabled: boolean; analyst_binding_id: string; active_revision_id: string | null; last_error: string | null; checked_at: string | null; optimization_settings: OptimizationSettings | null; optimization_error: string | null } | null; revisions: Revision[]; task_performance?: TaskPerformance | null };
 
 export function ExperienceSettings({ bindingId, sessionToken, onClose }: { bindingId: string; sessionToken: string; onClose: () => void }) {
   const [data, setData] = useState<Learning | null>(null);
@@ -115,9 +116,12 @@ export function ExperienceSettings({ bindingId, sessionToken, onClose }: { bindi
       <button className="btn-secondary" type="button" disabled={saving} onClick={() => void refreshHistory()}>Refresh history</button>
       {data.policy?.active_revision_id && <button className="btn-secondary" type="button" disabled={saving} onClick={() => void selectRevision(null)}>Clear active revision</button>}
       {!data.revisions.length && <p>{data.policy?.enabled ? "No analysis yet. Background checks continue after you close this panel." : "Learning is off. Choose an analysis Agent and save with learning enabled to begin."}</p>}
+      {data.task_performance && <ExperiencePerformance report={data.task_performance} />}
       {data.revisions.map((revision) => <details key={revision.id} data-revision-id={revision.id}>
         <summary>{new Date(revision.created_at).toLocaleString()} · {revision.disposition.replaceAll("_", " ")}</summary>
         <p>{revision.analysis}</p>
+        {revision.validation.dataset && <ExperienceDataset report={revision.validation.dataset} />}
+        {Boolean(revision.validation.evaluation_cases?.length) && <section aria-label="Extracted evaluation tasks"><h4>Extracted evaluation tasks</h4>{revision.validation.evaluation_cases!.map((task) => <p key={task.episode_ref}><strong>{task.check === null ? "Not evaluable" : "Reviewed task"}</strong>: {task.input || task.episode_ref} — {task.reason}</p>)}</section>}
         {revision.instruction && <pre style={{ whiteSpace: "pre-wrap" }}>{revision.instruction}</pre>}
         {revision.validation.team && <section aria-label="Execution team"><p>{revision.validation.team.config.members.length + 1} total agents · {revision.validation.team.config.order} collaborators · {revision.validation.team.review.replaceAll("_", " ")}</p>{revision.validation.team.config.members.map((member) => <p key={member.name}><strong>{member.name}</strong>: {member.prompt}</p>)}</section>}
         <p>Evidence about the previously active revision: {revision.validation.observed_revision_outcome?.replaceAll("_", " ") ?? "not observed"}</p>

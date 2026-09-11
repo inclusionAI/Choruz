@@ -36,10 +36,10 @@ impl DbService {
     pub async fn optimization_queue_error(
         &self,
         job: &Value,
-        failed: bool,
+        error: Option<&str>,
     ) -> Result<(), AppError> {
         let client = self.store.connect().await?;
-        client.execute("UPDATE experience_policy SET optimization_error=CASE WHEN $4 THEN 'Unable to queue evaluation. Check the selected Agents, explicit models and device access.' ELSE NULL END WHERE binding_id=$1 AND workspace_id=$2 AND generation=$3", &[&job["binding"].as_str(),&job["workspace"].as_str(),&job["generation"].as_i64(),&failed]).await.map_err(db_error)?;
+        client.execute("UPDATE experience_policy SET optimization_error=$4 WHERE binding_id=$1 AND workspace_id=$2 AND generation=$3", &[&job["binding"].as_str(),&job["workspace"].as_str(),&job["generation"].as_i64(),&error]).await.map_err(db_error)?;
         Ok(())
     }
     pub async fn pending_experience_optimizations(&self) -> Result<Vec<Value>, AppError> {
@@ -62,6 +62,28 @@ impl DbService {
         let policy = tx.query_opt("SELECT generation,active_revision_id,analyst_binding_id,optimization_settings FROM experience_policy WHERE workspace_id=$1 AND owner_id=$2 AND binding_id=$3 AND enabled FOR UPDATE", &[&workspace,&owner,&binding]).await.map_err(db_error)?
             .ok_or_else(|| AppError::NotFound("Enabled learning policy not found".into()))?;
         let generation: i64 = policy.get("generation");
+        if context.automatic_generation.is_some() && suite.cases.iter().any(|c| c.source.is_some())
+        {
+            let current = super::trace_cases::read_trace_cases(&tx, workspace, binding).await?;
+            if suite.name
+                != format!(
+                    "Observed objectives {}",
+                    super::trace_cases::corpus_version(&current)
+                )
+            {
+                return Err(AppError::Conflict("Dataset changed before queueing".into()));
+            }
+        }
+        // The policy lock serializes this snapshot check with case corrections.
+        // A correction committed after corpus selection must not queue stale truth.
+        for source in suite.cases.iter().filter_map(|case| case.source.as_ref()) {
+            let latest = tx.query_opt("SELECT c AS source FROM experience_revision r CROSS JOIN LATERAL jsonb_array_elements(COALESCE(r.validation->'evaluation_cases','[]'::jsonb)) c WHERE r.workspace_id=$1 AND r.binding_id=$2 AND c->>'episode_ref'=$3 ORDER BY r.created_at DESC,r.id DESC LIMIT 1", &[&workspace,&binding,&source.episode_ref]).await.map_err(db_error)?;
+            if latest.is_none_or(|row| row.get::<_, Value>("source") != json!(source)) {
+                return Err(AppError::Conflict(
+                    "Trace case evidence changed before queueing".into(),
+                ));
+            }
+        }
         let automatic = context.automatic_generation.is_some();
         if context
             .automatic_generation
@@ -175,7 +197,9 @@ impl DbService {
         tx.execute("UPDATE experience_evaluation e SET status='cancelled',application_status=CASE WHEN auto_apply THEN 'cancelled' ELSE application_status END,error_code='policy_changed',updated_at=NOW(),lease_token=NULL,lease_until=NULL FROM experience_policy p WHERE e.binding_id=p.binding_id AND e.workspace_id=p.workspace_id AND e.status IN ('queued','running') AND (NOT p.enabled OR p.generation<>e.policy_generation OR p.active_revision_id IS DISTINCT FROM e.candidates->0->>'revision_id')", &[]).await.map_err(db_error)?;
         tx.execute("UPDATE experience_evaluation SET status='failed',application_status=CASE WHEN auto_apply THEN 'failed' ELSE application_status END,error_code='interrupted',updated_at=NOW(),lease_token=NULL,lease_until=NULL WHERE status='running' AND lease_until<NOW()", &[]).await.map_err(db_error)?;
         let token = choruz_common::new_id();
-        let row = tx.query_opt("UPDATE experience_evaluation SET status='running',lease_token=$1,lease_until=NOW()+INTERVAL '4 minutes',updated_at=NOW() WHERE id=(SELECT id FROM experience_evaluation WHERE status='queued' ORDER BY updated_at,id FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING *", &[&token]).await.map_err(db_error)?;
+        // Covers bounded team preparation (70s), replay and cleanup (170s),
+        // and independent judging (75s), without renewing a lost execution.
+        let row = tx.query_opt("UPDATE experience_evaluation SET status='running',lease_token=$1,lease_until=NOW()+INTERVAL '6 minutes',updated_at=NOW() WHERE id=(SELECT id FROM experience_evaluation WHERE status='queued' ORDER BY updated_at,id FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING *", &[&token]).await.map_err(db_error)?;
         let mut claim = row
             .map(|row| {
                 Ok(EvaluationClaim {
