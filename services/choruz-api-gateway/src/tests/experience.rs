@@ -1,6 +1,492 @@
 use super::*;
 use choruz_application::db_service::ExperienceReport;
 
+#[tokio::test]
+async fn corrected_trace_answer_cancels_pending_run_without_rewriting_its_snapshot() {
+    use choruz_application::db_service::EvaluationContext;
+    use choruz_domain::evaluation::{OutputCheck, TraceCase};
+    let database = TestDatabase::create().await;
+    let db =
+        choruz_application::DbService::new(choruz_store::EventStore::new(&database.database_url));
+    let owner = db
+        .create_human_user("case-correction", "password-123")
+        .await
+        .unwrap();
+    let target = learning_binding(&database, &owner).await;
+    let analyst = learning_binding(&database, &owner).await;
+    db.configure_experience(
+        &owner.workspace_id,
+        &owner.id,
+        &target,
+        &analyst,
+        true,
+        None,
+    )
+    .await
+    .unwrap();
+    let claim = db.claim_experience().await.unwrap().unwrap();
+    let cases: Vec<_> = (0..20)
+        .map(|i| TraceCase {
+            variant: None,
+            group_ref: None,
+            classification: None,
+            episode_ref: format!("session:{i}"),
+            evidence: vec![format!("answer:{i}")],
+            input: format!("Increment {i}"),
+            check: Some(OutputCheck::Exact {
+                expected: (i + 1).to_string(),
+            }),
+            reason: "Explicit accepted answer".into(),
+        })
+        .collect();
+    let saved = db
+        .save_experience_candidate(
+            &claim,
+            ExperienceReport {
+                digest: "initial",
+                references: &json!([]),
+                analysis: "Tasks",
+                instruction: Some("Return the number only."),
+                validation: &json!({"review":"passed","evaluation_cases":cases}),
+                checkpoint: None,
+                activate: false,
+            },
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let corpus = db
+        .experience_trace_cases(&owner.workspace_id, &target)
+        .await
+        .unwrap();
+    let suite = choruz_application::db_service::trace_suite(&corpus, 16).unwrap();
+    let id = db
+        .queue_experience_evaluation(
+            &owner.workspace_id,
+            &owner.id,
+            &target,
+            &saved,
+            &suite,
+            &EvaluationContext {
+                fingerprint: "fixture".into(),
+                optimization: None,
+                automatic_generation: None,
+            },
+        )
+        .await
+        .unwrap();
+    let running = db.claim_experience_evaluation().await.unwrap().unwrap();
+    let mut changed = suite.cases[0].source.clone().unwrap();
+    changed.check = None;
+    changed.reason = "Later feedback disputes the answer".into();
+    db.save_experience_candidate(
+        &claim,
+        ExperienceReport {
+            digest: "correction",
+            references: &json!([]),
+            analysis: "Answer withdrawn",
+            instruction: None,
+            validation: &json!({"evaluation_cases":[changed]}),
+            checkpoint: None,
+            activate: false,
+        },
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(
+        !db.finish_experience_evaluation_case(&running, &json!({"score":1}), None)
+            .await
+            .unwrap()
+    );
+    let reports = db
+        .experience_evaluations(&owner.workspace_id, &owner.id, &target, Some(&id))
+        .await
+        .unwrap();
+    assert_eq!(reports[0]["status"], "cancelled");
+    assert_eq!(reports[0]["error_code"], "case_evidence_changed");
+    assert_eq!(reports[0]["suite"], json!(suite));
+    let latest = db
+        .experience_trace_cases(&owner.workspace_id, &target)
+        .await
+        .unwrap();
+    assert!(
+        latest
+            .iter()
+            .find(|c| c.episode_ref == changed.episode_ref)
+            .unwrap()
+            .check
+            .is_none()
+    );
+
+    // A new paraphrase reaches the selected source through an unselected member.
+    let mut bridge = suite.cases[1].source.clone().unwrap();
+    bridge.episode_ref = "z-bridge".into();
+    bridge.input = "Equivalent wording".into();
+    bridge.evidence = vec!["bridge-evidence".into()];
+    bridge.classification = Some(choruz_domain::evaluation::CaseClassification {
+        task_type: "math".into(),
+        capability: "reasoning".into(),
+        structure: "single_step".into(),
+        outcome: "direct".into(),
+        related_refs: vec![suite.cases[1].source.as_ref().unwrap().episode_ref.clone()],
+    });
+    db.save_experience_candidate(
+        &claim,
+        ExperienceReport {
+            digest: "bridge",
+            references: &json!([]),
+            analysis: "Equivalent instance",
+            instruction: None,
+            validation: &json!({"evaluation_cases":[bridge]}),
+            checkpoint: None,
+            activate: false,
+        },
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let corpus = db
+        .experience_trace_cases(&owner.workspace_id, &target)
+        .await
+        .unwrap();
+    let grouped = choruz_application::db_service::trace_suite(&corpus, 256).unwrap();
+    assert!(
+        grouped
+            .cases
+            .iter()
+            .any(|c| c.source.as_ref().unwrap().episode_ref
+                == suite.cases[1].source.as_ref().unwrap().episode_ref)
+    );
+    assert!(
+        !grouped
+            .cases
+            .iter()
+            .any(|c| c.source.as_ref().unwrap().episode_ref == "z-bridge")
+    );
+    let grouped_id = db
+        .queue_experience_evaluation(
+            &owner.workspace_id,
+            &owner.id,
+            &target,
+            &saved,
+            &grouped,
+            &EvaluationContext {
+                fingerprint: "fixture".into(),
+                optimization: None,
+                automatic_generation: None,
+            },
+        )
+        .await
+        .unwrap();
+    let grouped_running = db.claim_experience_evaluation().await.unwrap().unwrap();
+    let mut paraphrase = bridge.clone();
+    paraphrase.episode_ref = "z-paraphrase".into();
+    paraphrase.input = "Third wording".into();
+    paraphrase.evidence = vec!["third-evidence".into()];
+    paraphrase.classification.as_mut().unwrap().related_refs = vec![bridge.episode_ref];
+    db.save_experience_candidate(
+        &claim,
+        ExperienceReport {
+            digest: "transitive",
+            references: &json!([]),
+            analysis: "Transitive equivalence",
+            instruction: None,
+            validation: &json!({"evaluation_cases":[paraphrase]}),
+            checkpoint: None,
+            activate: false,
+        },
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(
+        !db.finish_experience_evaluation_case(&grouped_running, &json!({"score":1}), None)
+            .await
+            .unwrap()
+    );
+    let cancelled = db
+        .experience_evaluations(&owner.workspace_id, &owner.id, &target, Some(&grouped_id))
+        .await
+        .unwrap();
+    assert_eq!(cancelled[0]["status"], "cancelled");
+    assert_eq!(cancelled[0]["suite"], json!(grouped));
+    let stale = db
+        .queue_experience_evaluation(
+            &owner.workspace_id,
+            &owner.id,
+            &target,
+            &saved,
+            &grouped,
+            &EvaluationContext {
+                fingerprint: "fixture".into(),
+                optimization: None,
+                automatic_generation: Some(claim.generation),
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(stale, choruz_common::AppError::Conflict(ref message) if message == "Dataset changed before queueing")
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn trace_objectives_become_frozen_automatic_evaluations_without_manual_answers() {
+    use std::os::unix::fs::PermissionsExt;
+    let database = TestDatabase::create().await;
+    let db =
+        choruz_application::DbService::new(choruz_store::EventStore::new(&database.database_url));
+    let owner = db
+        .create_human_user("trace-owner", "password-123")
+        .await
+        .unwrap();
+    let target = learning_binding(&database, &owner).await;
+    let analyst = learning_binding(&database, &owner).await;
+    let files = tempfile::tempdir().unwrap();
+    let cli = files.path().join("trace-model");
+    fs::write(
+        &cli,
+        include_str!("../../../../crates/choruz-host-runtime/tests/fixtures/trace-evaluator.py"),
+    )
+    .unwrap();
+    fs::set_permissions(&cli, fs::Permissions::from_mode(0o700)).unwrap();
+    let workspace = files.path().join("workspace");
+    let account = files.path().join("account");
+    fs::create_dir_all(&workspace).unwrap();
+    fs::create_dir_all(account.join("sessions")).unwrap();
+    let native = account.join("sessions/source.jsonl");
+    let mut records = vec![
+        json!({"type":"session_meta","payload":{"id":"trace-source","cwd":workspace}}).to_string(),
+    ];
+    for i in 0..12 {
+        records.push(json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":format!("BENCHMARK: {i}. Increment this number. The exact accepted answer is {}.",i+1)}]}}).to_string());
+    }
+    fs::write(&native, records.join("\n") + "\n").unwrap();
+    let runtime = RuntimeStore::new(&database.database_url);
+    let binding = runtime.get_binding(&target).await.unwrap();
+    let anchor = json!({"driver_type":"codex_terminal","session_id":"trace-source","source":"native_cli","provenance":"terminal_process_captured","binding_id":target,"conversation_id":binding.conversation_id,"agent_principal_id":binding.agent_principal_id,"company_id":owner.workspace_id,"workspace_id":owner.workspace_id,"workspace_path":workspace,"native_home_path":account,"native_session_path":native,"binding_generation":0,"captured_at":"2026-01-01T00:00:00Z"});
+    let client = runtime.connect().await.unwrap();
+    for id in [&target, &analyst] {
+        client.execute("UPDATE agent_runtime_bindings SET driver_type='codex_terminal',workspace_path=$2,config_json=$3 WHERE id=$1", &[id,&workspace.to_string_lossy().as_ref(),&json!({"binary_path":cli,"model":"trace-fixture","terminal_session":if id==&target {anchor.clone()} else {Value::Null}})]).await.unwrap();
+    }
+    let app = router_with_db(choruz_application::ChatApp::new(), &database.database_url);
+    let endpoint = format!("/v1/runtime/bindings/{target}/experience");
+    let (status,response) = api_json_payload_request(app.clone(),&owner,Method::PUT,endpoint.clone(),json!({"enabled":true,"analyst_binding_id":analyst,"optimization_settings":{"trace_cases":true,"suite":{"name":"","cases":[]},"config":{"max_metric_calls":64,"max_proposals":1,"minibatch_size":1,"seed":7,"merge":false},"auto_apply":false}})).await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    let report = tokio::time::timeout(Duration::from_secs(120), async {
+        loop {
+            let reports = db
+                .experience_evaluations(&owner.workspace_id, &owner.id, &target, None)
+                .await
+                .unwrap();
+            if let Some(report) = reports.first() {
+                if report["status"] == "completed" {
+                    break report.clone();
+                }
+                assert_ne!(report["status"], "failed", "{report}");
+            }
+            if let Some(policy) = db
+                .experience_policy(&owner.workspace_id, &owner.id, &target)
+                .await
+                .unwrap()
+            {
+                assert!(
+                    policy.last_error.is_none(),
+                    "analysis error: {:?}",
+                    policy.last_error
+                );
+                assert!(
+                    policy.optimization_error.is_none(),
+                    "queue error: {:?}",
+                    policy.optimization_error
+                );
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("trace pipeline did not finish");
+    let details = db
+        .experience_evaluations(
+            &owner.workspace_id,
+            &owner.id,
+            &target,
+            report["id"].as_str(),
+        )
+        .await
+        .unwrap();
+    let suite = &details[0]["suite"];
+    let (_, learning) =
+        api_json_payload_request(app.clone(), &owner, Method::GET, endpoint, json!({})).await;
+    let dataset = &learning["revisions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["validation"]["dataset"]["total"] == 12)
+        .expect("persisted dataset report")["validation"]["dataset"];
+    assert_eq!(dataset["categories"]["math"], 12);
+    assert_eq!(dataset["added"], 12);
+    assert!(
+        suite["name"]
+            .as_str()
+            .unwrap()
+            .contains(dataset["version"].as_str().unwrap())
+    );
+    assert_eq!(suite["cases"].as_array().unwrap().len(), 9);
+    assert_eq!(dataset["unevaluable"], 3);
+    assert!(dataset["variants"].as_u64().unwrap() > 0);
+    assert!(
+        suite["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["input"].as_str().unwrap().starts_with("Increase "))
+    );
+    assert!(
+        suite["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|c| c["split"] == "train" || c["input"] == c["source"]["input"])
+    );
+    assert!(
+        suite["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|c| !c["input"].as_str().unwrap().starts_with("Change "))
+    );
+    let revision = learning["revisions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["validation"]["dataset"]["total"] == 12)
+        .unwrap();
+    let attempts = revision["validation"]["task_quality"]["attempts"]
+        .as_array()
+        .unwrap();
+    assert_eq!(
+        attempts.len(),
+        14,
+        "both proposed repairs must receive another blind trial and review"
+    );
+    assert_eq!(
+        attempts.iter().filter(|a| a["sensitive"] == true).count(),
+        1
+    );
+    assert!(
+        !revision["validation"]
+            .to_string()
+            .contains("SYNTHETIC_CREDENTIAL_4")
+    );
+    let variants = revision["validation"]["task_quality"]["variants"]["attempts"]
+        .as_array()
+        .unwrap();
+    assert!(variants.iter().any(|v| v["decision"]["accepted"] == false));
+    assert!(variants.iter().any(|v| v["decision"]["accepted"] == true));
+    assert!(attempts.iter().any(|a| a["input"] == "Still ambiguous 3"
+        && a["round"] == 1
+        && a["decision"]["accepted"] == false));
+    assert!(attempts.iter().any(|a| a["input"] == "Increment 0"
+        && a["round"] == 1
+        && a["decision"]["accepted"] == true));
+    assert!(
+        suite["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["source"]["input"] == "Increment 2"),
+        "a valid task survives an incorrect blind trial"
+    );
+    assert!(
+        suite["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|c| c["input"] != "Still ambiguous 3" && c["input"] != "Read missing file")
+    );
+    for case in suite["cases"].as_array().unwrap() {
+        assert!(
+            case["source"]["episode_ref"]
+                .as_str()
+                .unwrap()
+                .starts_with("trace-source:")
+        );
+        assert_eq!(case["source"]["check"], case["check"]);
+        assert!(!case["input"].as_str().unwrap().contains("accepted answer"));
+    }
+    assert!(
+        report["search_summary"]["candidate_count"]
+            .as_u64()
+            .unwrap()
+            > 2
+    );
+    assert_eq!(report["application_status"], "not_requested");
+    let corpus = db
+        .experience_trace_cases(&owner.workspace_id, &target)
+        .await
+        .unwrap();
+    let context = details[0]["context_fingerprint"].as_str().unwrap();
+    let measured = db
+        .task_difficulty(&owner.workspace_id, &target, context, &corpus)
+        .await
+        .unwrap();
+    assert!(!measured.is_empty());
+    assert!(
+        measured
+            .values()
+            .all(|v| v.samples == 1 && v.successes == 0 && v.band() == "insufficient")
+    );
+    for (index, scope, fp) in [
+        (0, owner.workspace_id.as_str(), context),
+        (1, owner.workspace_id.as_str(), context),
+        (2, "another-workspace", context),
+        (3, owner.workspace_id.as_str(), "other-executor"),
+    ] {
+        client.execute("INSERT INTO experience_evaluation(id,binding_id,workspace_id,owner_id,revision_id,policy_generation,suite,candidates,context_fingerprint,status,results,optimization) SELECT $1,binding_id,$2,owner_id,revision_id,policy_generation,suite,candidates,$3,'completed',results,optimization FROM experience_evaluation WHERE id=$4", &[&format!("{}-sample-{index}",report["id"].as_str().unwrap()),&scope,&fp,&report["id"].as_str()]).await.unwrap();
+    }
+    let measured = db
+        .task_difficulty(&owner.workspace_id, &target, context, &corpus)
+        .await
+        .unwrap();
+    assert!(
+        measured
+            .values()
+            .all(|v| v.samples == 3 && v.band() == "hard"),
+        "only matching baseline runs count"
+    );
+    let (_, refreshed) = api_json_payload_request(
+        app.clone(),
+        &owner,
+        Method::GET,
+        format!("/v1/runtime/bindings/{target}/experience"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(
+        refreshed["task_performance"]["tasks"]
+            .as_array()
+            .unwrap()
+            .len(),
+        measured.len()
+    );
+    assert!(
+        refreshed["task_performance"]["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|t| t["samples"] == 3 && t["band"] == "hard")
+    );
+    assert!(
+        db.experience_trace_cases("another-workspace", &target)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
 async fn finished_evaluation(
     app: &Router,
     owner: &choruz_domain::Principal,
@@ -210,7 +696,7 @@ async fn automatic_optimization_requires_holdout_and_content_review_then_support
 
 #[cfg(unix)]
 #[tokio::test]
-async fn evaluation_compares_frozen_revisions_without_activating_or_replaying_tasks() {
+async fn evaluation_compares_frozen_revisions_with_judging_and_isolated_replay() {
     use std::os::unix::fs::PermissionsExt;
     let database = TestDatabase::create().await;
     let db =
@@ -331,6 +817,88 @@ async fn evaluation_compares_frozen_revisions_without_activating_or_replaying_ta
             }
         );
         assert_eq!(result["case_id"], suite["cases"][index / 2]["id"]);
+    }
+    // Keep the route, worker, device dispatch and persisted result real; only
+    // model generation is replaced. Equivalent prose is accepted by the judge.
+    for expected in ["2", "unverifiable"] {
+        let mut judged_suite = suite.clone();
+        judged_suite["cases"][0]["check"] = json!({"type":"judge","expected":expected,"rubric":"The result must equal the requested increment; prose is allowed."});
+        let (status, queued) = api_json_payload_request(
+            app.clone(),
+            &owner,
+            Method::POST,
+            endpoint.clone(),
+            json!({"revision_id":revision,"suite":judged_suite}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{queued}");
+        let result = finished_evaluation(
+            &app,
+            &owner,
+            format!("{endpoint}?id={}", queued["id"].as_str().unwrap()),
+            if expected == "2" {
+                "completed"
+            } else {
+                "failed"
+            },
+        )
+        .await;
+        let assessment = &result["results"][0];
+        assert!(!assessment["judge"]["reason"].as_str().unwrap().is_empty());
+        if expected == "2" {
+            assert_eq!(assessment["judge"]["verdict"], "pass");
+            assert_eq!(assessment["score"], 1.0);
+            assert_eq!(assessment["output"], "The answer is 2");
+        } else {
+            assert_eq!(result["error_code"], "judge_inconclusive");
+            assert_eq!(assessment["judge"]["verdict"], "inconclusive");
+            assert!(assessment["score"].is_null());
+            assert_eq!(result["results"].as_array().unwrap().len(), 1);
+        }
+    }
+    let pull = std::process::Command::new("docker")
+        .args(["pull", "alpine:3.22"])
+        .output()
+        .expect("Docker is required for replay evaluation");
+    assert!(
+        pull.status.success(),
+        "{}",
+        String::from_utf8_lossy(&pull.stderr)
+    );
+    let image = std::process::Command::new("docker")
+        .args(["image", "inspect", "alpine:3.22", "--format", "{{.Id}}"])
+        .output()
+        .unwrap();
+    assert!(image.status.success());
+    let mut replay_suite = suite.clone();
+    replay_suite["cases"][0]["environment"] = json!({"image":String::from_utf8(image.stdout).unwrap().trim(),"files":{"number.txt":"1"},"verification":["test \"$(cat number.txt)\" = 999"],"max_steps":2});
+    replay_suite["cases"][0]["check"] =
+        json!({"type":"judge","expected":"done","rubric":"The final answer reports completion."});
+    let (status, queued) = api_json_payload_request(
+        app.clone(),
+        &owner,
+        Method::POST,
+        endpoint.clone(),
+        json!({"revision_id":revision,"suite":replay_suite}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{queued}");
+    let replayed = finished_evaluation(
+        &app,
+        &owner,
+        format!("{endpoint}?id={}", queued["id"].as_str().unwrap()),
+        "completed",
+    )
+    .await;
+    for result in replayed["results"].as_array().unwrap().iter().take(2) {
+        assert_eq!(result["output"], "done");
+        assert_eq!(result["judge"]["verdict"], "pass");
+        assert_eq!(result["replay"]["observations"][0]["success"], true);
+        assert_eq!(result["replay"]["checks"][0]["passed"], false);
+        assert_eq!(
+            result["score"], 0.0,
+            "executable verification must override an accepted answer"
+        );
     }
     let search_suite = json!({"name":"Independent format tasks","cases":[
         {"id":"train-a","split":"train","input":"Increment 10","check":{"type":"exact","expected":"11"}},

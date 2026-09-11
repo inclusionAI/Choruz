@@ -161,7 +161,25 @@ pub(crate) async fn get(
         .db
         .experience_revisions(&conversation.workspace_id, &actor.id, &id)
         .await?;
-    Ok(Json(json!({"policy": policy, "revisions": revisions})))
+    let cases = state
+        .db
+        .experience_trace_cases(&conversation.workspace_id, &id)
+        .await?;
+    let spec = crate::handlers_terminals::terminal_spec(&binding, 120, 40, None, None);
+    let task_performance = if spec.model.as_ref().is_some_and(|m| !m.trim().is_empty()) {
+        let context = crate::evaluation_worker::fingerprint(&spec)?;
+        let performance = state
+            .db
+            .task_difficulty(&conversation.workspace_id, &id, &context, &cases)
+            .await?;
+        let tasks:Vec<_>=performance.into_iter().map(|(episode_ref,counts)|json!({"episode_ref":episode_ref,"samples":counts.samples,"successes":counts.successes,"band":counts.band()})).collect();
+        json!({"context":context,"tasks":tasks})
+    } else {
+        Value::Null
+    };
+    Ok(Json(
+        json!({"policy": policy, "revisions": revisions,"task_performance":task_performance}),
+    ))
 }
 
 pub(crate) async fn configure(

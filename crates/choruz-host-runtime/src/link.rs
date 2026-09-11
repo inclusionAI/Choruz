@@ -9,7 +9,11 @@
 //! transport-agnostic: it speaks through a pair of channels the caller wires
 //! to a direct WebSocket or to a relay stream.
 
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+    time::Duration,
+};
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use choruz_common::AppError;
@@ -77,6 +81,10 @@ pub enum LinkRequest {
         request: HostRequest,
     },
     TerminalEnsure {
+        spec: TerminalSpec,
+    },
+    /// Distinct request so older hosts reject sign-in instead of launching an agent.
+    AuthenticationTerminalEnsure {
         spec: TerminalSpec,
     },
     TerminalAttach {
@@ -163,8 +171,8 @@ const LIVENESS_INTERVAL: Duration = Duration::from_millis(750);
 
 /// Serve the controller over one link until either channel closes. Returns
 /// the reason the link ended. Every terminal attachment the controller
-/// opened is dropped with the link; the terminals themselves stay in `pool`
-/// so a reconnect can re-attach.
+/// opened is dropped with the link. Agent terminals stay in `pool` for
+/// reconnection; authentication terminals are stopped.
 pub async fn run_device_link(
     outbound: mpsc::Sender<String>,
     mut inbound: mpsc::Receiver<String>,
@@ -193,6 +201,7 @@ pub async fn run_device_link(
     }
 
     let attachments: Attachments = Arc::new(std::sync::Mutex::new(HashMap::new()));
+    let login_terminals = Arc::new(std::sync::Mutex::new(LoginTerminals::default()));
     let result = loop {
         let Some(text) = inbound.recv().await else {
             break Ok(());
@@ -207,11 +216,36 @@ pub async fn run_device_link(
         match frame {
             ControllerFrame::Welcome { .. } => {}
             ControllerFrame::Call { id, request } => {
+                let login_id = match request.as_ref() {
+                    LinkRequest::AuthenticationTerminalEnsure { spec }
+                    | LinkRequest::TerminalEnsure { spec }
+                        if spec.authentication =>
+                    {
+                        Some(spec.terminal_id.clone())
+                    }
+                    _ => None,
+                };
+                if let Some(id) = &login_id {
+                    login_terminals
+                        .lock()
+                        .expect("login terminals lock")
+                        .ids
+                        .insert(id.clone());
+                }
                 let outbound = outbound.clone();
                 let pool = pool.clone();
                 let attachments = Arc::clone(&attachments);
+                let login_terminals = Arc::clone(&login_terminals);
                 tokio::spawn(async move {
                     let outcome = handle_call(*request, &pool, &outbound, &attachments).await;
+                    if let Some(id) = login_id
+                        && login_terminals
+                            .lock()
+                            .expect("login terminals lock")
+                            .disconnected
+                    {
+                        let _ = crate::terminal::close_terminal(&pool, &id);
+                    }
                     let frame = match outcome {
                         Ok(ok) => DeviceFrame::Result {
                             id,
@@ -234,10 +268,24 @@ pub async fn run_device_link(
     for (_, forwarder) in attachments.lock().expect("attachments lock").drain() {
         forwarder.abort();
     }
+    let ids = {
+        let mut logins = login_terminals.lock().expect("login terminals lock");
+        logins.disconnected = true;
+        std::mem::take(&mut logins.ids)
+    };
+    for id in ids {
+        let _ = crate::terminal::close_terminal(&pool, &id);
+    }
     result
 }
 
 type Attachments = Arc<std::sync::Mutex<HashMap<String, JoinHandle<()>>>>;
+
+#[derive(Default)]
+struct LoginTerminals {
+    disconnected: bool,
+    ids: HashSet<String>,
+}
 
 async fn send_frame(outbound: &mpsc::Sender<String>, frame: &DeviceFrame) -> Result<(), String> {
     let text = serde_json::to_string(frame).map_err(|error| error.to_string())?;
@@ -258,7 +306,8 @@ async fn handle_call(
             .await
             .map(|state| json!(state)),
         LinkRequest::Host { request } => crate::execute(request).await,
-        LinkRequest::TerminalEnsure { spec } => {
+        LinkRequest::TerminalEnsure { spec }
+        | LinkRequest::AuthenticationTerminalEnsure { spec } => {
             let pool = pool.clone();
             let outcome = tokio::task::spawn_blocking(move || crate::ensure_terminal(&pool, &spec))
                 .await
@@ -372,6 +421,16 @@ mod tests {
         mpsc::Receiver<String>,
         JoinHandle<Result<(), String>>,
     ) {
+        welcomed_link_with_pool(crate::new_terminal_pool()).await
+    }
+
+    async fn welcomed_link_with_pool(
+        pool: TerminalPool,
+    ) -> (
+        mpsc::Sender<String>,
+        mpsc::Receiver<String>,
+        JoinHandle<Result<(), String>>,
+    ) {
         let (device_tx, mut controller_rx) = mpsc::channel(64);
         let (controller_tx, device_rx) = mpsc::channel(64);
         let link = tokio::spawn(run_device_link(
@@ -381,7 +440,7 @@ mod tests {
                 host_id: "host-1".into(),
                 host_token: "token-1".into(),
             },
-            crate::new_terminal_pool(),
+            pool,
         ));
         let hello: DeviceFrame =
             serde_json::from_str(&controller_rx.recv().await.expect("hello")).unwrap();
@@ -511,6 +570,7 @@ mod tests {
         .unwrap();
         let reference = format!("history:{}", meta.len());
         let mut spec = TerminalSpec {
+            authentication: false,
             terminal_id: "history-link".into(),
             driver_type: "codex_terminal".into(),
             binary_path: None,
@@ -709,6 +769,19 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn device_link_streams_an_attached_terminal_and_its_exit() {
+        terminal_link_roundtrip(false, false).await;
+        terminal_link_roundtrip(true, false).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn disconnect_stops_authentication_but_preserves_agent_terminals() {
+        terminal_link_roundtrip(false, true).await;
+        terminal_link_roundtrip(true, true).await;
+    }
+
+    #[cfg(unix)]
+    async fn terminal_link_roundtrip(authentication: bool, disconnect: bool) {
         use std::os::unix::fs::PermissionsExt;
 
         let temp = tempfile::tempdir().unwrap();
@@ -722,8 +795,10 @@ mod tests {
         permissions.set_mode(0o755);
         std::fs::set_permissions(&cli, permissions).unwrap();
 
-        let (controller_tx, mut controller_rx, link) = welcomed_link().await;
+        let pool = crate::new_terminal_pool();
+        let (controller_tx, mut controller_rx, link) = welcomed_link_with_pool(pool.clone()).await;
         let spec = TerminalSpec {
+            authentication,
             terminal_id: "binding-link".into(),
             driver_type: "claude_terminal".into(),
             binary_path: Some(cli.to_string_lossy().into_owned()),
@@ -739,13 +814,39 @@ mod tests {
             &controller_tx,
             &mut controller_rx,
             "ensure",
-            LinkRequest::TerminalEnsure { spec },
+            if authentication {
+                LinkRequest::AuthenticationTerminalEnsure { spec }
+            } else {
+                LinkRequest::TerminalEnsure { spec }
+            },
         )
         .await;
         assert!(
             matches!(&reply, DeviceFrame::Result { ok: Some(ok), .. } if ok["newly_created"] == true),
             "{reply:?}"
         );
+        if disconnect {
+            assert!(crate::live_terminal_exists(&pool, "binding-link"));
+            drop(controller_tx);
+            assert_eq!(link.await.unwrap(), Ok(()));
+            if authentication {
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    while crate::live_terminal_exists(&pool, "binding-link") {
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                    }
+                })
+                .await
+                .expect("disconnected authentication process must stop");
+                assert!(
+                    pool.lock().unwrap().is_empty(),
+                    "authentication pool claim must be released"
+                );
+            } else {
+                assert!(crate::live_terminal_exists(&pool, "binding-link"));
+                let _ = crate::terminal::close_terminal(&pool, "binding-link");
+            }
+            return;
+        }
         let (reply, mut events) = call(
             &controller_tx,
             &mut controller_rx,

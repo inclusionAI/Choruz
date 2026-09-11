@@ -14,6 +14,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let id = choruz_common::new_id();
     let pool = new_terminal_pool();
     let spec = TerminalSpec {
+        authentication: false,
         terminal_id: id.clone(),
         driver_type: driver.clone(),
         binary_path: None,

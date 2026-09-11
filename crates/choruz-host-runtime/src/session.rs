@@ -1172,6 +1172,7 @@ mod tests {
         }
         let _cleanup = Cleanup(id.clone());
         let spec = TerminalSpec {
+            authentication: false,
             terminal_id: id.clone(),
             driver_type: "codex_terminal".into(),
             binary_path: Some(binary.to_string_lossy().into()),

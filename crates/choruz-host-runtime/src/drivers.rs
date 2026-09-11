@@ -31,8 +31,13 @@ pub async fn inspect(driver_type: Option<&str>) -> Result<Value, AppError> {
                     account_id: String::new(),
                     profile_kind: "default".into(),
                 };
-                let probe = probe_account(&profile).await.map_err(AppError::Internal)?;
-                Ok(json!({"models": probe.models}))
+                let models = if driver == HeadlessDriver::Claude {
+                    choruz_harness_login::claude_model_catalog(&profile).await
+                } else {
+                    probe_account(&profile).await.map(|probe| probe.models)
+                }
+                .map_err(AppError::Internal)?;
+                Ok(json!({"models": models}))
             }
             HeadlessDriver::Pi => output(driver, &["--list-models"]).await,
             HeadlessDriver::Grok | HeadlessDriver::OpenCode => output(driver, &["models"]).await,

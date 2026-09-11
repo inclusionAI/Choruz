@@ -164,6 +164,8 @@ class ReleaseTests(unittest.TestCase):
     def test_package_does_not_activate_and_contains_migrations_and_nested_public_assets(self):
         source = self.root / "source"
         source.mkdir()
+        for notice in ("LICENSE", "NOTICE"):
+            (source / notice).write_text(f"retained {notice}")
         (source / "migrations").mkdir()
         (source / "migrations/schema.sql").write_text("SELECT 1;")
         for binary in release.BINARIES:
@@ -191,6 +193,8 @@ class ReleaseTests(unittest.TestCase):
         self.assertFalse((self.root / "previous").exists())
         self.assertTrue((target / "web/apps/web/public/logo.svg").is_file())
         self.assertTrue((target / "bin/migrations/schema.sql").is_file())
+        for notice in ("LICENSE", "NOTICE"):
+            self.assertEqual((target / notice).read_text(), f"retained {notice}")
         self.assertFalse((target / "web/apps/web/.env.production").exists())
         self.assertEqual(release.verify(target)["revision"], SHA)
         bundle = self.root / "dist" / f"{target.name}.tar.gz"

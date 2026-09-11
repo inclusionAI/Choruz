@@ -6,7 +6,7 @@ use crate::{
 use choruz_application::db_service::EvaluationClaim;
 use choruz_common::AppError;
 use choruz_domain::{
-    evaluation::{EvaluationCandidate, EvaluationCase},
+    evaluation::{EvaluationCandidate, EvaluationCase, JudgeResult},
     optimization::SearchAction,
 };
 use choruz_host_runtime::{HostRequest, TerminalSpec};
@@ -42,7 +42,14 @@ pub(crate) fn fingerprint(spec: &TerminalSpec) -> Result<String, AppError> {
         "workspace":spec.workspace_path,"host":spec.harness_account["runtime_host_id"],
         "account":spec.harness_account["harness_account_id"],
         "profile":spec.harness_account["harness_account_profile_kind"]});
-    Ok(hex::encode(Sha256::digest(context.to_string().as_bytes())))
+    Ok(hex::encode(Sha256::digest(
+        format!(
+            "{}:{}",
+            context,
+            choruz_host_runtime::experience::JUDGE_SKILL
+        )
+        .as_bytes(),
+    )))
 }
 
 pub(crate) async fn run(state: &ApiState) {
@@ -56,11 +63,11 @@ pub(crate) async fn run(state: &ApiState) {
                 Ok(jobs) => {
                     for job in jobs {
                         let result = queue_automatic(state, &job).await;
-                        if let Err(error) = state
-                            .db
-                            .optimization_queue_error(&job, result.is_err())
-                            .await
-                        {
+                        let message = result.as_ref().err().map(|error| match error {
+                            AppError::Validation(message) => message.as_str(),
+                            _ => "Unable to queue evaluation. Check the selected Agents, explicit models and device access.",
+                        });
+                        if let Err(error) = state.db.optimization_queue_error(&job, message).await {
                             tracing::warn!(%error, "optimization queue diagnostic unavailable");
                         }
                         if let Err(error) = result {
@@ -94,6 +101,45 @@ async fn queue_automatic(state: &ApiState, job: &Value) -> Result<(), AppError> 
     let settings: choruz_domain::optimization::OptimizationSettings =
         serde_json::from_value(job["settings"].clone())
             .map_err(|e| AppError::Internal(e.to_string()))?;
+    let suite = if settings.trace_cases {
+        let cases = state
+            .db
+            .experience_trace_cases(field("workspace")?, &target.id)
+            .await?;
+        let performance = state
+            .db
+            .task_difficulty(
+                field("workspace")?,
+                &target.id,
+                &fingerprint(&terminal_spec(&target, 120, 40, None, None))?,
+                &cases,
+            )
+            .await?;
+        let bands = performance
+            .into_iter()
+            .map(|(key, value)| (key, value.band().to_owned()))
+            .collect();
+        let Some(suite) = choruz_application::db_service::measured_trace_suite(
+            &cases,
+            settings.config.max_metric_calls,
+            &bands,
+        ) else {
+            return Err(AppError::Validation("Waiting for reviewed independent objectives covering training, validation and test splits".into()));
+        };
+        suite
+    } else {
+        settings.suite.clone()
+    };
+    let mut config = settings.config;
+    if settings.trace_cases {
+        config.minibatch_size = config.minibatch_size.min(
+            suite
+                .cases
+                .iter()
+                .filter(|c| c.split == choruz_domain::evaluation::EvaluationSplit::Train)
+                .count(),
+        );
+    }
     state
         .db
         .queue_experience_evaluation(
@@ -101,7 +147,7 @@ async fn queue_automatic(state: &ApiState, job: &Value) -> Result<(), AppError> 
             &actor.id,
             &target.id,
             field("revision")?,
-            &settings.suite,
+            &suite,
             &choruz_application::db_service::EvaluationContext {
                 fingerprint: fingerprint(&terminal_spec(&target, 120, 40, None, None))?,
                 automatic_generation: Some(
@@ -110,7 +156,7 @@ async fn queue_automatic(state: &ApiState, job: &Value) -> Result<(), AppError> 
                     })?,
                 ),
                 optimization: Some(choruz_application::db_service::OptimizationSetup {
-                    config: settings.config,
+                    config,
                     analyst_binding_id: analyst.id.clone(),
                     analyst_fingerprint: analyst_fingerprint(&terminal_spec(
                         &analyst, 120, 40, None, None,
@@ -129,7 +175,10 @@ async fn step(state: &ApiState) -> Result<(), AppError> {
     let started = std::time::Instant::now();
     let result = execute(state, &mut claim).await;
     let (mut report, error_code) = match result {
-        Ok(report) => (report, None),
+        Ok(report) => {
+            let error = (report["status"] == "inconclusive").then_some("judge_inconclusive");
+            (report, error)
+        }
         Err(error) => {
             let code = match error {
                 AppError::Forbidden(_) | AppError::Unauthorized(_) | AppError::NotFound(_) => {
@@ -238,20 +287,30 @@ async fn execute(state: &ApiState, claim: &mut EvaluationClaim) -> Result<Value,
                     &claim.suite.cases[case],
                 )
                 .await?;
+                if report["status"] == "inconclusive" {
+                    return Ok(report);
+                }
                 let output = report["output"]
                     .as_str()
                     .ok_or_else(|| AppError::Validation("Evaluation output is missing".into()))?
                     .to_owned();
                 search
-                    .complete_rollout(
-                        &claim.suite,
+                    .complete_scored_rollout(
                         output,
                         report["preflight"].as_str().unwrap_or_default().to_owned(),
+                        report["score"].as_f64().ok_or_else(|| {
+                            AppError::Validation("Evaluation judge was inconclusive".into())
+                        })?,
+                        serde_json::from_value(report["judge"].clone()).map_err(|e| {
+                            AppError::Validation(format!("Invalid assessment: {e}"))
+                        })?,
                     )
                     .map_err(AppError::Validation)?;
-                Ok(
-                    json!({"status":"completed","action":"evaluate","candidate":candidate,"case":case,"score":report["score"]}),
-                )
+                let mut report = report;
+                report["action"] = json!("evaluate");
+                report["candidate"] = json!(candidate);
+                report["case"] = json!(case);
+                Ok(report)
             }
             SearchAction::Propose {
                 parents, component, ..
@@ -303,23 +362,65 @@ async fn evaluate_task(
         }
         None => String::new(),
     };
-    let output: Value = host
-        .call(HostRequest::EvaluateExperience {
-            spec: Box::new(spec),
+    let replay = if let Some(environment) = &case.environment {
+        Some(
+            host.call::<choruz_host_runtime::evaluation_replay::ReplayResult>(
+                HostRequest::ReplayExperience {
+                    spec: Box::new(spec.clone()),
+                    input: case.input.clone(),
+                    instruction: candidate.instruction.clone(),
+                    preflight: preflight.clone(),
+                    environment: environment.clone(),
+                },
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
+    let output: String = if let Some(result) = &replay {
+        result.output.clone()
+    } else {
+        host.call(HostRequest::EvaluateExperience {
+            spec: Box::new(spec.clone()),
             input: case.input.clone(),
             instruction: candidate.instruction.clone(),
             preflight: preflight.clone(),
         })
-        .await?;
-    let output = output
-        .as_str()
-        .ok_or_else(|| AppError::Validation("Invalid evaluation output".into()))?;
+        .await?
+    };
     if output.len() > 16_000 {
         return Err(AppError::Validation(
             "Evaluation output exceeds its limit".into(),
         ));
     }
+    let judge = if case.check.model_calls() > 0 {
+        Some(
+            host.call::<JudgeResult>(HostRequest::JudgeExperience {
+                spec: Box::new(spec),
+                input: case.input.clone(),
+                check: case.check.clone(),
+                output: output.clone(),
+            })
+            .await?,
+        )
+    } else {
+        None
+    };
+    let mut score = match &judge {
+        Some(result) => {
+            result.validate().map_err(AppError::Validation)?;
+            result.score()
+        }
+        None => case.check.score(&output),
+    };
+    if replay
+        .as_ref()
+        .is_some_and(|r| r.checks.iter().any(|check| check["passed"] != true))
+    {
+        score = Some(0.0);
+    }
     Ok(
-        json!({"status":"completed","case_id":case.id,"split":case.split,"revision_id":candidate.revision_id,"score":case.check.score(output),"output":output,"preflight":preflight}),
+        json!({"status":if score.is_some() {"completed"} else {"inconclusive"},"case_id":case.id,"split":case.split,"revision_id":candidate.revision_id,"score":score,"output":output,"preflight":preflight,"judge":judge,"replay":replay}),
     )
 }

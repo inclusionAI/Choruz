@@ -625,6 +625,7 @@ impl ExecutorContext {
         if let Some(role) = preflight {
             let plan = choruz_host_runtime::harness::prepare(
                 choruz_host_runtime::TerminalSpec {
+                    authentication: false,
                     terminal_id: binding_id.clone(),
                     driver_type: driver_type.clone(),
                     binary_path: Some(cli_path.into()),

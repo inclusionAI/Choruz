@@ -967,6 +967,7 @@ async fn execute(
                 .unwrap_or_else(|| serde_json::json!({}));
             let plan = choruz_host_runtime::harness::prepare(
                 choruz_host_runtime::TerminalSpec {
+                    authentication: false,
                     terminal_id: command.binding_id.clone(),
                     driver_type: command.driver_type.clone(),
                     binary_path: None,
@@ -1262,7 +1263,7 @@ async fn ship_pending_outboxes(
             .lock()
             .expect("terminal pool lock")
             .iter()
-            .filter(|(_, session)| session.is_child_alive())
+            .filter(|(_, session)| !session.authentication && session.is_child_alive())
             .map(|(id, session)| (id.clone(), session.workspace_path.clone()))
             .collect::<Vec<_>>();
         for (binding_id, workspace) in workspaces {

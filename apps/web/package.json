@@ -1,6 +1,6 @@
 {
   "name": "@choruz/web",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "private": true,
   "scripts": {
     "check": "node ./scripts/prepare-next-types.mjs && tsc --noEmit",
@@ -12,7 +12,6 @@
     "e2e": "playwright test"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "0.3.241",
     "@chenglou/pretext": "^0.0.5",
     "@codemirror/commands": "^6.10.3",
     "@codemirror/lang-css": "^6.3.1",

@@ -1,6 +1,6 @@
 {
   "name": "choruz",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "private": true,
   "packageManager": "pnpm@10.29.2",
   "engines": {

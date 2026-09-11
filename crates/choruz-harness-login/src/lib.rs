@@ -1,11 +1,8 @@
-//! Drive a Harness's own browser sign-in and hand the pieces a user needs to
-//! a [`LoginSink`]: the authorization link, any callback the user must paste,
-//! and the verified account snapshot.
+//! Codex browser sign-in and read-only Harness account probes.
 //!
-//! The same driver runs inside the API gateway for accounts on the gateway's
-//! own device and inside `choruz-connector` for accounts on a remote runtime
-//! host; only the sink differs. Credentials never pass through the sink: the
-//! Harness process writes them into the account's profile directory.
+//! Claude authentication belongs to its official interactive CLI terminal;
+//! this crate only probes the resulting profile. Codex reports browser login
+//! progress through a [`LoginSink`] on the gateway or connector.
 
 use std::{fs, time::Duration};
 
@@ -106,7 +103,7 @@ pub async fn run_login<S: LoginSink>(
 ) -> Result<LoginOutcome, String> {
     match job.driver {
         HeadlessDriver::Codex => codex_login(job, sink, timeout).await,
-        HeadlessDriver::Claude => claude_login(job, sink, timeout).await,
+        HeadlessDriver::Claude => Err("Open the official Claude Code sign-in terminal".into()),
         _ => Err("Browser sign-in is unsupported for this Harness".into()),
     }
 }
@@ -155,7 +152,7 @@ fn apply_profile(command: &mut Command, profile: &AccountProfile) -> Result<(), 
 pub async fn probe_account(profile: &AccountProfile) -> Result<AccountProbe, String> {
     match profile.driver {
         HeadlessDriver::Codex => codex_probe(profile).await,
-        HeadlessDriver::Claude => claude_probe(profile).await,
+        HeadlessDriver::Claude => claude_probe(profile, ClaudeProbe::Snapshot).await,
         _ => Err("Account probing is unsupported for this Harness".into()),
     }
 }
@@ -222,7 +219,26 @@ async fn codex_snapshot(
     codex_account_probe(account, &limits, &models)
 }
 
-async fn claude_probe(profile: &AccountProfile) -> Result<AccountProbe, String> {
+/// Verify the official CLI's account identity without requiring model or quota discovery.
+pub async fn claude_signed_in(profile: &AccountProfile) -> Result<AccountProbe, String> {
+    if profile.driver != HeadlessDriver::Claude {
+        return Err("Claude identity probe requires a Claude profile".into());
+    }
+    claude_probe(profile, ClaudeProbe::Identity).await
+}
+
+/// Discover CLI models without requiring an exact-usage response.
+pub async fn claude_model_catalog(profile: &AccountProfile) -> Result<serde_json::Value, String> {
+    Ok(claude_probe(profile, ClaudeProbe::Models).await?.models)
+}
+
+enum ClaudeProbe {
+    Identity,
+    Models,
+    Snapshot,
+}
+
+async fn claude_probe(profile: &AccountProfile, mode: ClaudeProbe) -> Result<AccountProbe, String> {
     let mut command = claude_control_command();
     apply_profile(&mut command, profile)?;
     let mut child = command
@@ -244,7 +260,15 @@ async fn claude_probe(profile: &AccountProfile) -> Result<AccountProbe, String> 
         )
         .await?;
         let initialization = wait_for_control(&mut reader, "initialize-probe").await?;
-        claude_identity_probe(&initialization)?;
+        let mut identity = claude_identity_probe(&initialization)?;
+        match mode {
+            ClaudeProbe::Identity => return Ok(identity),
+            ClaudeProbe::Models => {
+                identity.models = serde_json::json!(claude_models(&initialization));
+                return Ok(identity);
+            }
+            ClaudeProbe::Snapshot => {}
+        }
         claude_snapshot(&mut stdin, &mut reader, &initialization).await
     })
     .await
@@ -535,124 +559,6 @@ fn control_request(id: &str, request: serde_json::Value) -> serde_json::Value {
     serde_json::json!({"type":"control_request","request_id":id,"request":request})
 }
 
-async fn claude_login<S: LoginSink>(
-    job: &LoginJob,
-    sink: &S,
-    timeout: Duration,
-) -> Result<LoginOutcome, String> {
-    let mut command = claude_control_command();
-    apply_account_profile(&mut command, job)?;
-    let mut child = command
-        .spawn()
-        .map_err(|error| format!("start Claude Code control session: {error}"))?;
-    let mut stdin = child.stdin.take().ok_or("Claude Code stdin unavailable")?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or("Claude Code stdout unavailable")?;
-    let mut reader = BufReader::new(stdout).lines();
-    write_json_line(
-        &mut stdin,
-        &control_request("initialize-1", serde_json::json!({"subtype":"initialize"})),
-    )
-    .await?;
-    let _ = wait_for_control(&mut reader, "initialize-1").await?;
-    write_json_line(
-        &mut stdin,
-        &control_request(
-            "authenticate-1",
-            serde_json::json!({"subtype":"claude_authenticate","loginWithClaudeAi":true}),
-        ),
-    )
-    .await?;
-    let auth = wait_for_control(&mut reader, "authenticate-1").await?;
-    let url = auth
-        .get("manualUrl")
-        .and_then(serde_json::Value::as_str)
-        .ok_or("Claude did not return a manual authorization URL")?;
-    let state = url::Url::parse(url)
-        .map_err(|_| "Claude returned an invalid authorization URL")?
-        .query_pairs()
-        .find(|(key, _)| key == "state")
-        .map(|(_, value)| value.to_string())
-        .ok_or("Claude authorization state is unavailable")?;
-    sink.publish(url, None).await?;
-    let callback = tokio::time::timeout(timeout, async {
-        loop {
-            if let Some(value) = sink.take_callback().await? {
-                return Ok::<_, String>(value);
-            }
-            tokio::time::sleep(Duration::from_secs(1)).await;
-        }
-    })
-    .await
-    .map_err(|_| "Claude authorization timed out".to_owned())??;
-    let code = callback_code_and_state(&callback, &state)?;
-    write_json_line(&mut stdin, &control_request("callback-1", serde_json::json!({"subtype":"claude_oauth_callback","authorizationCode":code,"state":state}))).await?;
-    let _ = wait_for_control(&mut reader, "callback-1").await?;
-    write_json_line(
-        &mut stdin,
-        &control_request(
-            "initialize-after-login",
-            serde_json::json!({"subtype":"initialize"}),
-        ),
-    )
-    .await?;
-    let initialization = tokio::time::timeout(
-        POST_AUTH_SNAPSHOT_TIMEOUT,
-        wait_for_control(&mut reader, "initialize-after-login"),
-    )
-    .await
-    .map_err(|_| "Claude account identity was not ready after login".to_owned())??;
-    let identity = claude_identity_probe(&initialization)?;
-    sink.complete_authentication(&identity).await?;
-
-    let snapshot = tokio::time::timeout(POST_AUTH_SNAPSHOT_TIMEOUT, async {
-        let probe = claude_snapshot(&mut stdin, &mut reader, &initialization).await?;
-        sink.publish_snapshot(&probe).await
-    })
-    .await;
-    let snapshot_error = match snapshot {
-        Ok(Ok(())) => None,
-        Ok(Err(error)) => Some(error),
-        Err(_) => Some("Claude account model and usage snapshot timed out".to_owned()),
-    };
-    Ok(LoginOutcome { snapshot_error })
-}
-
-/// Extract the authorization code from a bare code, Claude's `code#state`
-/// value, or a full callback URL. Supplied state must match this login.
-pub fn callback_code_and_state(raw: &str, expected_state: &str) -> Result<String, String> {
-    let raw = raw.trim();
-    if raw.len() > 4_000 || raw.is_empty() {
-        return Err("The authorization callback is invalid".into());
-    }
-    if !raw.starts_with("http://") && !raw.starts_with("https://") {
-        if let Some((code, state)) = raw.rsplit_once('#') {
-            if code.is_empty() || state.is_empty() {
-                return Err("The authorization callback is invalid".into());
-            }
-            if state != expected_state {
-                return Err("The callback does not belong to this Claude login".into());
-            }
-            return Ok(code.to_owned());
-        }
-        return Ok(raw.to_owned());
-    }
-    let url = url::Url::parse(raw).map_err(|_| "The authorization callback is invalid")?;
-    let values = url
-        .query_pairs()
-        .collect::<std::collections::HashMap<_, _>>();
-    if values.get("state").map(|value| value.as_ref()) != Some(expected_state) {
-        return Err("The callback does not belong to this Claude login".into());
-    }
-    values
-        .get("code")
-        .filter(|value| !value.is_empty())
-        .map(|value| value.to_string())
-        .ok_or("The callback is missing its authorization code".into())
-}
-
 fn fingerprint(identifier: &str) -> String {
     let mut hasher = sha2::Sha256::new();
     hasher.update(identifier.trim().to_lowercase().as_bytes());
@@ -882,35 +788,6 @@ pub fn codex_identity_probe(account: &serde_json::Value) -> Result<AccountProbe,
 mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-    #[test]
-    fn callback_url_must_match_the_claude_authorization_state() {
-        assert_eq!(
-            callback_code_and_state(
-                "https://platform.claude.com/oauth/code/callback?code=one&state=expected",
-                "expected"
-            ),
-            Ok("one".into())
-        );
-        assert!(
-            callback_code_and_state(
-                "https://platform.claude.com/oauth/code/callback?code=one&state=other",
-                "expected"
-            )
-            .is_err()
-        );
-        assert_eq!(
-            callback_code_and_state("  bare-code  ", "x"),
-            Ok("bare-code".into())
-        );
-        assert_eq!(
-            callback_code_and_state("authorization-code#expected", "expected"),
-            Ok("authorization-code".into())
-        );
-        assert!(callback_code_and_state("authorization-code#other", "expected").is_err());
-        assert!(callback_code_and_state("#expected", "expected").is_err());
-        assert!(callback_code_and_state("authorization-code#", "expected").is_err());
-    }
 
     #[test]
     fn claude_control_errors_include_only_bounded_plain_text() {

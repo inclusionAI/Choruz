@@ -1,5 +1,7 @@
 # Contributing
 
+Contributions intentionally submitted for inclusion are under [Apache License 2.0](LICENSE), unless explicitly stated otherwise. Retain applicable third-party copyright and permission notices; [NOTICE](NOTICE) records incorporated MIT-licensed Choruz source.
+
 ## Setup
 
 Prerequisites: Rust (pinned by `rust-toolchain.toml`), Node 24 (`.nvmrc`),

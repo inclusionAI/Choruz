@@ -10,6 +10,8 @@ type TerminalViewProps = {
   bindingId: string;
   sessionToken: string;
   gatewayBaseUrl?: string;
+  socketEndpoint?: string;
+  reconnect?: boolean;
 };
 
 const MAX_RETRIES = 30;
@@ -72,7 +74,7 @@ const LIGHT_THEME = {
   brightWhite: "#073642",
 } as const;
 
-export function TerminalView({ bindingId, sessionToken, gatewayBaseUrl }: TerminalViewProps) {
+export function TerminalView({ bindingId, sessionToken, gatewayBaseUrl, socketEndpoint, reconnect = true }: TerminalViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<import("@xterm/xterm").Terminal | null>(null);
   const wsRef = useRef<DashboardSocket | null>(null);
@@ -87,7 +89,7 @@ export function TerminalView({ bindingId, sessionToken, gatewayBaseUrl }: Termin
     (term: import("@xterm/xterm").Terminal, signal: AbortSignal) => {
       if (signal.aborted || !mountedRef.current) return;
 
-      const socketPath = `/v1/ws/terminals/${encodeURIComponent(bindingId)}?token=${encodeURIComponent(sessionToken)}&cols=${term.cols}&rows=${term.rows}`;
+      const socketPath = `${socketEndpoint ?? `/v1/ws/terminals/${encodeURIComponent(bindingId)}`}?token=${encodeURIComponent(sessionToken)}&cols=${term.cols}&rows=${term.rows}`;
       const wsSpan = trace.start("terminal_ws_connect", { bindingId, path: socketPath.replace(/token=[^&]+/, "token=***") });
       // Ends on the first frame after open: the CLI's own startup time as the
       // user experiences it, separate from the handshake above.
@@ -130,6 +132,10 @@ export function TerminalView({ bindingId, sessionToken, gatewayBaseUrl }: Termin
       ws.onclose = (e) => {
         trace.event("terminal_ws_close", { bindingId, code: e.code, reason: e.reason, retry: retriesRef.current });
         if (signal.aborted || !mountedRef.current) return;
+        if (!reconnect) {
+          term.write("\r\nTerminal closed. Click Done to check sign-in, or cancel and reopen.\r\n");
+          return;
+        }
         if (retriesRef.current < MAX_RETRIES) {
           retriesRef.current += 1;
           term.write(`\r\n\x1b[33mReconnecting terminal (will auto-restore session)... (${retriesRef.current}/${MAX_RETRIES})\x1b[0m\r\n`);
@@ -165,7 +171,7 @@ export function TerminalView({ bindingId, sessionToken, gatewayBaseUrl }: Termin
         }
       });
     },
-    [bindingId, sessionToken, gatewayBaseUrl],
+    [bindingId, sessionToken, gatewayBaseUrl, socketEndpoint, reconnect],
   );
 
   const connect = useCallback(
@@ -292,5 +298,5 @@ export function TerminalView({ bindingId, sessionToken, gatewayBaseUrl }: Termin
     }
   }, [resolvedTheme, bindingId]);
 
-  return <div ref={containerRef} className="terminal-container" />;
+  return <div ref={containerRef} className="terminal-container" data-activity-value={socketEndpoint ? "private" : undefined} />;
 }

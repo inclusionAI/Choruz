@@ -1228,6 +1228,27 @@ paths:
       responses:
         "101":
           description: Terminal WebSocket upgraded
+  /v1/ws/harness-logins/{companyId}/{accountId}/{loginId}:
+    parameters:
+      - { name: companyId, in: path, required: true, schema: { type: string } }
+      - { name: accountId, in: path, required: true, schema: { type: string } }
+      - { name: loginId, in: path, required: true, schema: { type: string } }
+    get:
+      operationId: streamClaudeLoginTerminal
+      description: Login creator's private official Claude Code PTY. Raw input and output are not persisted as activity or traces. Closing the stream stops the terminal.
+      responses:
+        "101":
+          description: Official Claude Code terminal connected
+        "404":
+          description: No active Claude login owned by this user
+  /v1/drivers/models:
+    get:
+      operationId: inspectLocalDriverModels
+      parameters:
+        - { name: driver_type, in: query, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Installed CLI model catalog on this device
   /v1/ws/runtime-hosts/link:
     get:
       operationId: openRuntimeHostLink
@@ -1440,10 +1461,9 @@ paths:
       operationId: startHarnessAccountLogin
       description: >-
         Resume the account's unexpired in-progress login, or start the Harness's
-        own browser sign-in when none exists. An account on
-        a remote runtime host waits in `queued` for the connector; an account on
-        the gateway's device is driven in-process and moves to
-        `awaiting_browser` once the authorization link is known.
+        own sign-in when none exists. Claude waits in `authorizing` for the creator
+        to open its official CLI terminal. Codex uses browser sign-in, queued for
+        a remote connector or driven in-process on the gateway's device.
       responses:
         "200":
           description: Existing in-progress Harness account login view
@@ -1525,6 +1545,21 @@ paths:
           description: Login cancelled
         "409":
           description: This login is not open
+  /v1/companies/{companyId}/harness-accounts/{accountId}/logins/{loginId}/complete:
+    parameters:
+      - { name: companyId, in: path, required: true, schema: { type: string } }
+      - { name: accountId, in: path, required: true, schema: { type: string } }
+      - { name: loginId, in: path, required: true, schema: { type: string } }
+    post:
+      operationId: completeClaudeTerminalLogin
+      description: Verify the selected Claude profile through the official CLI's identity probe, independently of model and quota discovery.
+      responses:
+        "204":
+          description: Account verified
+        "400":
+          description: Claude Code has not signed in
+        "404":
+          description: No active Claude login owned by this user
   /v1/audit-logs:
     get:
       operationId: listAuditLogs
@@ -2118,7 +2153,7 @@ paths:
           type: string
     get:
       operationId: getExperienceLearning
-      description: Returns the human owner's learning settings and recent revisions for an authorized Agent. Source traces are not returned by this endpoint.
+      description: Returns the human owner's learning settings and recent revisions for an authorized Agent. Revision validation.dataset contains immutable corpus version, category coverage, added/updated/withdrawn counts, reviewed training variant counts and grouping/conflict diagnostics. Trace-case classification carries task_type, capability, structure, outcome and related objective references. task_performance contains the current executor context and training objective sample/success counts and empirical bands from up to 100 completed matching baseline runs; it is null without an explicit model. Held-out scores, changed tasks and inconclusive results are excluded. Enabled trace learning periodically rereads retained evidence on a daily cycle. Source traces are not returned by this endpoint.
       responses:
         "200":
           description: Settings and revision history
@@ -2159,10 +2194,24 @@ paths:
                   type: [object, 'null']
                   additionalProperties: false
                   required: [suite, config, auto_apply]
-                  description: Opt-in fixed-suite background optimization of each newly reviewed candidate. The suite is user supplied, never inferred from research success claims. Auto-apply requires validation improvement, held-out non-regression and final content review. Null uses content-review learning without measured search.
+                  description: Opt-in background optimization using a supplied suite or reviewed trace cases. Trace mode accepts an empty suite and freezes available cases at run creation. Auto-apply requires validation improvement, held-out non-regression and final content review. Null uses content-review learning without measured search.
                   properties:
+                    trace_cases:
+                      type: boolean
+                      default: false
+                      description: Build the suite asynchronously from evidenced work objectives. Wait for independent objectives covering all splits; never invent answers to fill the suite.
                     suite:
-                      $ref: '#/paths/~1v1~1runtime~1bindings~1{bindingId}~1experience~1evaluations/post/requestBody/content/application~1json/schema/properties/suite'
+                      type: object
+                      additionalProperties: false
+                      required: [name, cases]
+                      description: May be empty in trace_cases mode; otherwise requires the fixed evaluation suite contract.
+                      properties:
+                        name:
+                          type: string
+                        cases:
+                          type: array
+                          items:
+                            $ref: '#/paths/~1v1~1runtime~1bindings~1{bindingId}~1experience~1evaluations/post/requestBody/content/application~1json/schema/properties/suite/properties/cases/items'
                     config:
                       $ref: '#/paths/~1v1~1runtime~1bindings~1{bindingId}~1experience~1evaluations/post/requestBody/content/application~1json/schema/properties/optimization'
                     auto_apply:
@@ -2179,7 +2228,7 @@ paths:
           type: string
     get:
       operationId: listExperienceEvaluations
-      description: Returns the owner's twenty most recent comparison summaries, reserved call counts and application status. Supply id for one full run with frozen snapshots, ancestry and per-case results. Only an opted-in automatic run can apply its reviewed winner. Results do not establish performance outside this tool-free task suite.
+      description: Returns the owner's twenty most recent comparison summaries, reserved call counts and application status. Supply id for one full run with frozen snapshots, ancestry and per-case results, including judge rationale and replay observations. Only an opted-in automatic run can apply its reviewed winner. Results do not establish performance outside the supplied task suite.
       parameters:
         - name: id
           in: query
@@ -2190,7 +2239,7 @@ paths:
           description: Evaluation history
     post:
       operationId: createExperienceEvaluation
-      description: Queues an asynchronous comparison of a reviewed candidate against the current guidance on the target account. Freezes the supplied suite and both revisions. Each task runs in a fresh tool-free scratch conversation, never the live session. Each candidate/case uses one final executor call plus one call per internal team member. An interrupted call is not retried. Settings or execution-context changes cancel the run.
+      description: Queues an asynchronous comparison of a reviewed candidate against the current guidance on the target account. Freezes the supplied suite and both revisions. Model calls run in fresh scratch conversations, never the live session. Explicit environments enable isolated container actions. Calls reserve the executor step bound plus internal team members and an independent judge when requested. An inconclusive judge result stops the run without a numeric score. An interrupted call is not retried. Settings or execution-context changes cancel the run.
       requestBody:
         required: true
         content:
@@ -2254,6 +2303,34 @@ paths:
                         additionalProperties: false
                         required: [id, split, input, check]
                         properties:
+                          source:
+                            type: [object, 'null']
+                            description: Frozen objective provenance for automatically extracted cases, including episode_ref, evidence, input, check and reason.
+                          environment:
+                            type: [object, 'null']
+                            additionalProperties: false
+                            required: [image, files, verification, max_steps]
+                            description: Explicit reproducible starting state. Runs in a network-disabled disposable container, never the live workspace. The digest-pinned image must already exist on the selected device.
+                            properties:
+                              image:
+                                type: string
+                                pattern: '^sha256:[a-f0-9]{64}$'
+                              files:
+                                type: object
+                                additionalProperties:
+                                  type: string
+                                description: Bounded UTF-8 files at relative paths, with no symlinks or parent traversal.
+                              verification:
+                                type: array
+                                minItems: 1
+                                maxItems: 8
+                                items:
+                                  type: string
+                                description: Fixed shell checks applied after solving; every check must exit zero. Commands are withheld from the solver.
+                              max_steps:
+                                type: integer
+                                minimum: 1
+                                maximum: 8
                           id:
                             type: string
                             maxLength: 80
@@ -2280,6 +2357,22 @@ paths:
                                   type:
                                     const: json
                                   expected: {}
+                              - type: object
+                                additionalProperties: false
+                                required: [type, expected, rubric]
+                                properties:
+                                  type:
+                                    const: judge
+                                  expected:
+                                    type: string
+                                    minLength: 1
+                                    maxLength: 8000
+                                    description: Reference result, not an exact-match answer.
+                                  rubric:
+                                    type: string
+                                    minLength: 1
+                                    maxLength: 4000
+                                    description: Frozen task-specific acceptance criteria interpreted by the platform judge skill. Insufficient evidence is not a failure score.
       responses:
         "202":
           description: Immutable comparison queued

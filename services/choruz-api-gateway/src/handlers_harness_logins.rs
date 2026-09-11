@@ -1,15 +1,8 @@
-//! The browser sign-in of a harness account.
+//! Account-scoped sign-in: private official Claude terminals and Codex browser login.
 //!
-//! A login row moves `queued` → `authorizing` → `awaiting_browser` (link
-//! published) → `authorizing` (code pasted) → `verified`, or ends `failed`,
-//! `cancelled` or `expired`. The company-facing routes here start a login,
-//! read it and accept the pasted authorization code. Who runs the Harness
-//! depends on where the account lives: an account on a remote runtime host
-//! is claimed and driven by `choruz-connector` through the host-facing
-//! routes, and an account on the gateway's own device (`runtime_host_id`
-//! NULL) is driven in-process by [`run_local_login`] through
-//! [`DbLoginSink`]. Both executors share `choruz-harness-login`; OAuth
-//! tokens never enter the database.
+//! Claude terminal bytes are transient transport, not application authentication
+//! fields or activity records. Done verifies identity independently of catalogs.
+//! Codex retains its local/connector LoginSink browser flow.
 
 use axum::{
     Json,
@@ -35,9 +28,177 @@ use crate::{
 };
 
 const HARNESS_LOGIN_TTL_MINUTES: i64 = 15;
+
+#[derive(Deserialize)]
+pub(crate) struct DriverModelsQuery {
+    driver_type: String,
+}
+
+pub(crate) async fn local_driver_models(
+    headers: HeaderMap,
+    State(state): State<ApiState>,
+    axum::extract::Query(query): axum::extract::Query<DriverModelsQuery>,
+) -> Result<Json<Value>, ApiError> {
+    crate::auth::require_human_operator(&headers, &state).await?;
+    Ok(Json(
+        RuntimeHost::local(&state)
+            .call(HostRequest::DriverCatalog {
+                driver_type: Some(query.driver_type),
+            })
+            .await?,
+    ))
+}
 const MAX_LOGIN_ERROR_LEN: usize = 500;
 const LOGIN_VIEW_COLUMNS: &str = "id, account_id, runtime_host_id, driver_type, state,
                                   authorization_url, user_code, error, expires_at";
+
+#[derive(Deserialize)]
+pub(crate) struct LoginTerminalQuery {
+    token: Option<String>,
+    cols: Option<u16>,
+    rows: Option<u16>,
+}
+
+async fn owned_claude_login(
+    state: &ApiState,
+    headers: &HeaderMap,
+    company_id: &str,
+    account_id: &str,
+    login_id: &str,
+) -> Result<(RuntimeHost, LoginScope, String), ApiError> {
+    let actor = crate::auth::require_human_operator(headers, state).await?;
+    require_company_access(headers, state, company_id).await?;
+    let client = state.event_store.connect().await.map_err(ApiError::from)?;
+    let row = client.query_opt(
+        "SELECT login.runtime_host_id, account.profile_kind
+         FROM harness_account_login login JOIN harness_account account ON account.id = login.account_id
+         WHERE login.id = $1 AND login.company_id = $2 AND login.account_id = $3
+           AND login.created_by = $4 AND login.driver_type = 'claude_terminal'
+           AND login.state = 'authorizing' AND login.expires_at > NOW()
+           AND account.disabled_at IS NULL",
+        &[&login_id, &company_id, &account_id, &actor.id],
+    ).await.map_err(internal("authorize Claude sign-in terminal"))?
+     .ok_or_else(|| ApiError(AppError::NotFound("active Claude sign-in not found".into())))?;
+    let runtime_host_id: Option<String> = row.get("runtime_host_id");
+    let host = match runtime_host_id.as_deref() {
+        Some(id) => RuntimeHost::for_host(state, id)?,
+        None => RuntimeHost::local(state),
+    };
+    Ok((
+        host,
+        LoginScope {
+            login_id: login_id.into(),
+            company_id: company_id.into(),
+            runtime_host_id,
+        },
+        row.get("profile_kind"),
+    ))
+}
+
+/// Authentication bytes stay in the live PTY transport, never in activity or trace storage.
+pub(crate) async fn websocket_claude_login(
+    ws: axum::extract::ws::WebSocketUpgrade,
+    mut headers: HeaderMap,
+    State(state): State<ApiState>,
+    Path((company_id, account_id, login_id)): Path<(String, String, String)>,
+    axum::extract::Query(query): axum::extract::Query<LoginTerminalQuery>,
+) -> Result<impl axum::response::IntoResponse, ApiError> {
+    if crate::bearer_token_value(&headers).is_none()
+        && let Some(token) = query.token
+    {
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            format!("Bearer {token}")
+                .parse()
+                .map_err(|_| ApiError(AppError::Unauthorized("invalid token".into())))?,
+        );
+    }
+    let (host, _, profile_kind) =
+        owned_claude_login(&state, &headers, &company_id, &account_id, &login_id).await?;
+    let spec = choruz_host_runtime::TerminalSpec {
+        authentication: true,
+        terminal_id: format!("login-{login_id}"),
+        driver_type: "claude_terminal".into(),
+        binary_path: None,
+        workspace_path: String::new(),
+        cols: query.cols.unwrap_or(100),
+        rows: query.rows.unwrap_or(30),
+        resume_session_id: None,
+        codex_home: None,
+        model: None,
+        harness_account: serde_json::json!({"harness_account_id": account_id, "harness_account_profile_kind": profile_kind}),
+    };
+    Ok(ws.max_message_size(64 * 1024).on_upgrade(move |mut socket| async move {
+        use axum::extract::ws::Message;
+        let id = spec.terminal_id.clone();
+        if host.ensure_terminal(spec).await.is_err() {
+            let _ = socket.send(Message::Close(None)).await;
+            return;
+        }
+        let run = async {
+            let mut attachment = host.attach_terminal(&id).await?;
+            for data in attachment.replay {
+                socket.send(Message::Binary(data.into())).await.map_err(|_| AppError::Conflict("login terminal disconnected".into()))?;
+            }
+            let mut check = tokio::time::interval(std::time::Duration::from_secs(1));
+            loop {
+                tokio::select! {
+                    _ = check.tick() => {
+                        if owned_claude_login(&state, &headers, &company_id, &account_id, &login_id).await.is_err() { break; }
+                    }
+                    frame = attachment.output.recv() => match frame {
+                        Some(data) => if socket.send(Message::Binary(data.into())).await.is_err() { break; },
+                        None => break,
+                    },
+                    frame = socket.recv() => match frame {
+                        Some(Ok(Message::Binary(data))) => host.write_terminal(&id, &data).await?,
+                        Some(Ok(Message::Text(data))) => {
+                            if let Ok(value) = serde_json::from_str::<Value>(&data)
+                                && value["type"] == "resize"
+                                && let (Some(cols), Some(rows)) = (value["cols"].as_u64(), value["rows"].as_u64()) {
+                                    if let (Ok(cols), Ok(rows)) = (u16::try_from(cols), u16::try_from(rows)) {
+                                        host.resize_terminal(&id, cols, rows).await?;
+                                    }
+                            } else { host.write_terminal(&id, data.as_bytes()).await?; }
+                        }
+                        Some(Ok(Message::Ping(data))) => { let _ = socket.send(Message::Pong(data)).await; }
+                        Some(Ok(Message::Pong(_))) => {},
+                        _ => break,
+                    }
+                }
+            }
+            Ok::<_, AppError>(())
+        };
+        // Do not log CLI output or errors that could contain authentication material.
+        let _ = tokio::time::timeout(DEFAULT_LOGIN_TIMEOUT, run).await;
+        let _ = host.close_terminal(&id).await;
+        let _ = socket.send(Message::Close(None)).await;
+    }))
+}
+
+pub(crate) async fn complete_claude_login(
+    headers: HeaderMap,
+    State(state): State<ApiState>,
+    Path((company_id, account_id, login_id)): Path<(String, String, String)>,
+) -> Result<StatusCode, ApiError> {
+    let (host, scope, profile_kind) =
+        owned_claude_login(&state, &headers, &company_id, &account_id, &login_id).await?;
+    let result: HarnessProbeResult = host.call(HostRequest::HarnessProbe {
+        driver_type: "claude_terminal".into(), account_id, profile_kind, identity_only: true,
+    }).await.map_err(|_| ApiError(AppError::Validation("Claude Code is not signed in; finish signing in inside the terminal and try Done again".into())))?;
+    let probe = AccountProbe {
+        fingerprint: result.account_fingerprint,
+        subscription_type: result.subscription_type,
+        models: result.models,
+        usage: result.usage,
+    };
+    let mut client = state.event_store.connect().await.map_err(ApiError::from)?;
+    complete_login(&mut client, &scope, &probe).await?;
+    // Identity is already committed. The socket also stops the terminal when
+    // it observes completion; delayed process exit must not report login failure.
+    let _ = host.close_terminal(&format!("login-{login_id}")).await;
+    Ok(StatusCode::NO_CONTENT)
+}
 
 #[derive(Debug, Serialize)]
 pub(crate) struct HarnessAccountLoginView {
@@ -155,6 +316,7 @@ async fn publish_login(
                 SET authorization_url = $4, user_code = $5, state = 'awaiting_browser',
                     updated_at = NOW()
               WHERE id = $1 AND company_id = $2 AND runtime_host_id IS NOT DISTINCT FROM $3
+                AND driver_type = 'codex_terminal'
                 AND state = 'authorizing' AND expires_at > NOW()",
             &[
                 &scope.login_id,
@@ -441,6 +603,7 @@ pub(crate) async fn probe_harness_account(
     };
     let probed: Result<HarnessProbeResult, AppError> = host
         .call(HostRequest::HarnessProbe {
+            identity_only: false,
             driver_type,
             account_id: account_id.clone(),
             profile_kind,
@@ -522,6 +685,7 @@ pub(crate) async fn start_harness_account_login(
     Path((company_id, account_id)): Path<(String, String)>,
 ) -> Result<(StatusCode, Json<HarnessAccountLoginView>), ApiError> {
     let actor = require_company_access(&headers, &state, &company_id).await?;
+    crate::auth::require_human_operator(&headers, &state).await?;
     uuid::Uuid::parse_str(&account_id)
         .map_err(|_| ApiError(AppError::Validation("account_id must be a UUID".into())))?;
     let now = Utc::now();
@@ -552,10 +716,12 @@ pub(crate) async fn start_harness_account_login(
         })?;
     tx.execute(
         "UPDATE harness_account_login
-            SET state = 'expired', updated_at = NOW()
+            SET state = 'expired', authorization_url = NULL, user_code = NULL, callback_code = NULL, updated_at = NOW()
           WHERE account_id = $1
             AND state IN ('queued', 'awaiting_browser', 'authorizing')
-            AND expires_at <= NOW()",
+            AND (expires_at <= NOW() OR
+                 (driver_type = 'claude_terminal' AND
+                  (authorization_url IS NOT NULL OR callback_code IS NOT NULL OR state = 'queued')))",
         &[&account_id],
     )
     .await
@@ -580,11 +746,12 @@ pub(crate) async fn start_harness_account_login(
     let login_id = new_id();
     // A remote login waits in `queued` for the connector to claim it; the
     // gateway claims a local login itself in the same transaction.
-    let (initial_state, claimed_at) = if runtime_host_id.is_some() {
-        ("queued", None)
-    } else {
-        ("authorizing", Some(now))
-    };
+    let (initial_state, claimed_at) =
+        if runtime_host_id.is_some() && driver != HeadlessDriver::Claude {
+            ("queued", None)
+        } else {
+            ("authorizing", Some(now))
+        };
     let row = tx
         .query_one(
             &format!(
@@ -622,7 +789,7 @@ pub(crate) async fn start_harness_account_login(
     tx.commit()
         .await
         .map_err(internal("commit harness account login"))?;
-    if runtime_host_id.is_none() {
+    if runtime_host_id.is_none() && driver != HeadlessDriver::Claude {
         let job = LoginJob {
             login_id: login_id.clone(),
             account_id,
@@ -676,6 +843,7 @@ pub(crate) async fn submit_harness_account_login_callback(
             "UPDATE harness_account_login
                 SET callback_code = $4, state = 'authorizing', updated_at = NOW()
               WHERE id = $1 AND company_id = $2 AND account_id = $3
+                AND driver_type = 'codex_terminal'
                 AND state = 'awaiting_browser' AND expires_at > NOW()",
             &[&login_id, &company_id, &account_id, &code],
         )
@@ -730,7 +898,7 @@ pub(crate) async fn claim_harness_account_login(
         .map_err(internal("begin remote harness login claim"))?;
     tx.execute(
         "UPDATE harness_account_login
-            SET state = 'expired', updated_at = NOW()
+            SET state = 'expired', authorization_url = NULL, user_code = NULL, callback_code = NULL, updated_at = NOW()
           WHERE runtime_host_id = $1 AND state IN ('queued', 'awaiting_browser', 'authorizing')
             AND expires_at <= NOW()",
         &[&host.id],
@@ -743,6 +911,7 @@ pub(crate) async fn claim_harness_account_login(
                FROM harness_account_login login
                JOIN harness_account account ON account.id = login.account_id
               WHERE login.runtime_host_id = $1 AND login.company_id = $2
+                AND login.driver_type = 'codex_terminal'
                 AND login.state = 'queued' AND login.expires_at > NOW()
               ORDER BY login.created_at
               FOR UPDATE SKIP LOCKED

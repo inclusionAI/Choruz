@@ -6,6 +6,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 pub struct ExperienceClaim {
+    pub trace_cases: bool,
     pub measured: bool,
     pub binding_id: String,
     pub workspace_id: String,
@@ -267,7 +268,7 @@ impl DbService {
         let client = self.store.connect().await?;
         let token = choruz_common::new_id();
         let row = client.query_opt(
-            "UPDATE experience_policy p SET lease_until=NOW()+INTERVAL '10 minutes', lease_token=$1
+            "UPDATE experience_policy p SET lease_until=NOW()+INTERVAL '15 minutes', lease_token=$1
              WHERE binding_id=(SELECT binding_id FROM experience_policy WHERE enabled
                 AND next_check_at<=NOW() AND (lease_until IS NULL OR lease_until<NOW())
                 ORDER BY next_check_at,binding_id LIMIT 1 FOR UPDATE SKIP LOCKED)
@@ -276,6 +277,9 @@ impl DbService {
             &[&token],
         ).await.map_err(|e| AppError::Internal(format!("claim learning job: {e}")))?;
         Ok(row.map(|row| ExperienceClaim {
+            trace_cases: row
+                .get::<_, Option<Value>>("optimization_settings")
+                .is_some_and(|s| s["trace_cases"] == true),
             measured: row
                 .get::<_, Option<Value>>("optimization_settings")
                 .is_some(),
@@ -349,6 +353,21 @@ impl DbService {
             return Ok(None);
         }
         let id = choruz_common::new_id();
+        let case_report = claim.trace_cases || validation["evaluation_cases"].is_array();
+        let previous_cases = if case_report {
+            super::trace_cases::read_trace_cases(&tx, &claim.workspace_id, &claim.binding_id)
+                .await?
+        } else {
+            Vec::new()
+        };
+        let mut validation = validation.clone();
+        if let Some(cases) = validation.get("evaluation_cases") {
+            let cases: Vec<choruz_domain::evaluation::TraceCase> =
+                serde_json::from_value(cases.clone())
+                    .map_err(|_| AppError::Validation("Invalid evaluation cases".into()))?;
+            validation["evaluation_cases"] =
+                json!(super::trace_cases::curate_changes(&previous_cases, &cases));
+        }
         let disposition = if instruction.is_some() {
             "candidate"
         } else {
@@ -363,6 +382,20 @@ impl DbService {
                 &analysis, &instruction.unwrap_or(""), &disposition, &validation],
         ).await.map_err(|e| AppError::Internal(format!("save learning candidate: {e}")))?;
         if row.is_some() {
+            if case_report {
+                let current = super::trace_cases::read_trace_cases(
+                    &tx,
+                    &claim.workspace_id,
+                    &claim.binding_id,
+                )
+                .await?;
+                if claim.trace_cases {
+                    let dataset = super::trace_cases::dataset_report(&previous_cases, &current);
+                    tx.execute("UPDATE experience_revision SET validation=jsonb_set(validation,'{dataset}',$2) WHERE id=$1 AND workspace_id=$3", &[&id,&dataset,&claim.workspace_id]).await.map_err(|e| AppError::Internal(format!("save dataset version: {e}")))?;
+                }
+                let changed = super::trace_cases::changed_case_contexts(&previous_cases, &current);
+                tx.execute("UPDATE experience_evaluation SET status='cancelled',error_code='case_evidence_changed',application_status=CASE WHEN auto_apply THEN 'cancelled' ELSE application_status END,lease_token=NULL,lease_until=NULL,updated_at=NOW() WHERE binding_id=$1 AND workspace_id=$2 AND status IN ('queued','running') AND EXISTS (SELECT 1 FROM jsonb_array_elements(suite->'cases') c WHERE c->'source'->>'episode_ref'=ANY($3::text[]))", &[&claim.binding_id,&claim.workspace_id,&changed]).await.map_err(|e| AppError::Internal(format!("invalidate changed trace evaluation: {e}")))?;
+            }
             if let Some(problems) = validation["problems"].as_array() {
                 for problem in problems {
                     let key = problem["key"].as_str().ok_or_else(|| {
@@ -484,6 +517,8 @@ impl DbService {
              WHERE target.id=$1 AND tc.workspace_id=$2 AND ac.workspace_id=$2
              ON CONFLICT(binding_id) DO UPDATE SET
                 analyst_binding_id=EXCLUDED.analyst_binding_id, enabled=EXCLUDED.enabled,
+                source_cursor=CASE WHEN EXCLUDED.optimization_settings->>'trace_cases'='true' AND experience_policy.optimization_settings->>'trace_cases' IS DISTINCT FROM 'true' THEN '{}'::jsonb ELSE experience_policy.source_cursor END,
+                source_summary=CASE WHEN EXCLUDED.optimization_settings->>'trace_cases'='true' AND experience_policy.optimization_settings->>'trace_cases' IS DISTINCT FROM 'true' THEN '' ELSE experience_policy.source_summary END,
                 optimization_settings=EXCLUDED.optimization_settings, optimization_error=NULL,
                 generation=experience_policy.generation+1, next_check_at=NOW(),
                 lease_token=NULL, lease_until=NULL, last_error=NULL, updated_at=NOW()

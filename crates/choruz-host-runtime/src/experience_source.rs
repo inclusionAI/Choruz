@@ -581,6 +581,7 @@ mod tests {
         std::fs::write(&path,format!("{}\n{}\n",json!({"type":"session_meta","payload":{"id":"session-b","cwd":workspace}}),
             json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Only device B"}]}}))).unwrap();
         let mut spec = TerminalSpec {
+            authentication: false,
             terminal_id: "binding-b".into(),
             driver_type: "codex_terminal".into(),
             binary_path: None,

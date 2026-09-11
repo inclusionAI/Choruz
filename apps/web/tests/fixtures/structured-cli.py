@@ -16,7 +16,10 @@ if "--ephemeral" in sys.argv or "--no-session-persistence" in sys.argv:
         assert "--ephemeral" in sys.argv and "--ignore-user-config" in sys.argv
     assert not pathlib.Path(".fixture-native.json").exists()
     request = json.loads(sys.stdin.read().strip().splitlines()[-1])
-    if "task" in request:
+    if "candidate_output" in request:
+        assert "guidance" not in request and "preflight" not in request
+        response = json.dumps({"verdict": "pass" if request["candidate_output"] == request["check"]["expected"] else "fail", "reason": "The supplied output was compared against the required check result."})
+    elif "task" in request:
         assert "expected" not in request and "check" not in request
         response = "CHECKED" if "Verify required checks" in request["guidance"] else "UNCHECKED"
         if all(name in request["preflight"] for name in ('"member":"derive"', '"member":"check"')):

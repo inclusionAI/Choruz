@@ -85,6 +85,8 @@ def package(releases):
         for binary in BINARIES:
             shutil.copy2(Path(metadata["target_directory"]) / "release" / binary, stage / "bin")
         shutil.copytree(ROOT / "migrations", stage / "bin/migrations")
+        for notice in ("LICENSE", "NOTICE"):
+            shutil.copy2(ROOT / notice, stage / notice)
         shutil.copytree(ROOT / "apps/web/.next/standalone", stage / "web", symlinks=True,
                         ignore=shutil.ignore_patterns(".env", ".env.*"))
         shutil.copytree(ROOT / "apps/web/.next/static", stage / "web/apps/web/.next/static", dirs_exist_ok=True)

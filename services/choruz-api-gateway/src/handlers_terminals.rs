@@ -407,6 +407,7 @@ pub(crate) fn terminal_spec(
     codex_home: Option<String>,
 ) -> TerminalSpec {
     TerminalSpec {
+        authentication: false,
         terminal_id: binding.id.clone(),
         driver_type: binding.driver_type.as_str().to_string(),
         binary_path: binding

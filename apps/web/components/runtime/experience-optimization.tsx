@@ -3,8 +3,9 @@
 import { useEffect, useId, useState } from "react";
 import { apiFetch } from "../../lib/api/choruz-api";
 
-type Case = { id: string; split: "train" | "validation" | "test"; input: string; check: { type: "exact" | "json"; expected: unknown } };
+type Case = { id: string; split: "train" | "validation" | "test"; input: string; environment?: { image: string; files: Record<string, string>; verification: string[]; max_steps: number }; check: { type: "exact" | "json"; expected: unknown } | { type: "judge"; expected: string; rubric: string } };
 export type OptimizationSettings = {
+  trace_cases?: boolean;
   suite: { name: string; cases: Case[] };
   config: { max_metric_calls: number; max_proposals: number; minibatch_size: number; seed: number; merge: boolean; cache_evaluations: boolean; evolve_team: boolean; max_agents: number };
   auto_apply: boolean;
@@ -16,22 +17,29 @@ export function emptyOptimization(): OptimizationSettings {
 
 export function OptimizationFields({ value, onChange, disabled }: { value: OptimizationSettings; onChange: (value: OptimizationSettings) => void; disabled: boolean }) {
   const id = useId();
+  const executionCalls = value.config.max_metric_calls * (value.config.max_agents - 1 + Math.max(1, ...value.suite.cases.map((row) => row.environment?.max_steps ?? 1)));
   function changeCase(index: number, update: Partial<Case>) {
     onChange({ ...value, suite: { ...value.suite, cases: value.suite.cases.map((row, i) => i === index ? { ...row, ...update } : row) } });
   }
   return <fieldset disabled={disabled} className="modal-form">
     <legend>Fixed evaluation suite</legend>
-    <p className="field-hint">Use distinct, self-contained tasks with exact expected answers. Training examples guide proposals; validation selects a winner; held-out tests can reject application but cannot change the winner. Tasks cannot use tools or modify your workspace. These scores measure only this suite, not general research ability.</p>
+    <label><input type="checkbox" style={{ width: "auto" }} checked={value.trace_cases ?? false} onChange={(e) => onChange({ ...value, trace_cases: e.target.checked })} /> Automatically build tasks from work episodes</label>
+    {value.trace_cases && <p className="field-hint">The background analyst turns meaningful objectives into tasks and independently reviews their answer evidence. Unsupported or later-disputed answers are excluded. Runs wait for independent objectives covering all three splits, then freeze a snapshot. This is historical regression evidence, not unseen-task performance. No manual answers are required.</p>}
+    <p className="field-hint">Use distinct, self-contained tasks with reference answers. Exact checks compare text; an independent AI judge applies your acceptance criteria using a fixed platform skill. Inconclusive judgments stop the run without assigning a failure score. Training examples guide proposals; validation selects a winner; held-out tests can reject application but cannot change the winner. Tasks cannot use tools or modify your workspace. These scores measure only this suite, not general research ability.</p>
+    {!value.trace_cases && <>
     <label>Suite name<input value={value.suite.name} maxLength={120} onChange={(e) => onChange({ ...value, suite: { ...value.suite, name: e.target.value } })} /></label>
     {value.suite.cases.map((row, index) => <fieldset key={row.id} className="modal-form">
       <legend>Case {index + 1}</legend>
       <label>Split<select value={row.split} onChange={(e) => changeCase(index, { split: e.target.value as Case["split"] })}><option value="train">Training</option><option value="validation">Validation</option><option value="test">Held-out test</option></select></label>
       <label htmlFor={`${id}-${index}-task`}>Task input</label><textarea id={`${id}-${index}-task`} value={row.input} maxLength={16000} rows={2} onChange={(e) => changeCase(index, { input: e.target.value })} />
-      <label htmlFor={`${id}-${index}-answer`}>Expected answer</label><textarea id={`${id}-${index}-answer`} value={typeof row.check.expected === "string" ? row.check.expected : JSON.stringify(row.check.expected)} maxLength={16000} rows={2} onChange={(e) => changeCase(index, { check: { type: "exact", expected: e.target.value } })} />
+      <label htmlFor={`${id}-${index}-assessment`}>Assessment</label><select id={`${id}-${index}-assessment`} value={row.check.type} onChange={(e) => changeCase(index, { check: e.target.value === "judge" ? { type: "judge", expected: typeof row.check.expected === "string" ? row.check.expected : JSON.stringify(row.check.expected), rubric: "" } : { type: "exact", expected: typeof row.check.expected === "string" ? row.check.expected : JSON.stringify(row.check.expected) } })}><option value="exact">Exact text</option>{row.check.type === "json" && <option value="json">Saved JSON</option>}<option value="judge">AI judge</option></select>
+      <label htmlFor={`${id}-${index}-answer`}>Expected answer</label><textarea id={`${id}-${index}-answer`} value={typeof row.check.expected === "string" ? row.check.expected : JSON.stringify(row.check.expected)} maxLength={row.check.type === "judge" ? 8000 : 16000} rows={2} onChange={(e) => changeCase(index, { check: row.check.type === "judge" ? { ...row.check, expected: e.target.value } : { type: "exact", expected: e.target.value } })} />
+      {row.check.type === "judge" && <><label htmlFor={`${id}-${index}-criteria`}>Acceptance criteria</label><textarea id={`${id}-${index}-criteria`} value={row.check.rubric} maxLength={4000} rows={3} onChange={(e) => { if (row.check.type === "judge") changeCase(index, { check: { ...row.check, rubric: e.target.value } }); }} /></>}
       {row.check.type === "json" && <p className="field-hint">Saved JSON comparison. Editing the answer switches to exact text comparison.</p>}
       <button className="btn-secondary" type="button" disabled={value.suite.cases.length <= 3} onClick={() => onChange({ ...value, suite: { ...value.suite, cases: value.suite.cases.filter((_, i) => i !== index) } })}>Remove case {index + 1}</button>
     </fieldset>)}
     <button className="btn-secondary" type="button" disabled={value.suite.cases.length >= 64} onClick={() => onChange({ ...value, suite: { ...value.suite, cases: [...value.suite.cases, { id: crypto.randomUUID(), split: "train", input: "", check: { type: "exact", expected: "" } }] } })}>Add case</button>
+    </>}
     <details><summary>Search budget and ordering</summary><div className="modal-form">
       <label>Maximum task evaluations<input type="number" min={4} max={512} value={value.config.max_metric_calls} onChange={(e) => onChange({ ...value, config: { ...value.config, max_metric_calls: Number(e.target.value) } })} /></label>
       <label>Maximum proposals<input type="number" min={1} max={32} value={value.config.max_proposals} onChange={(e) => onChange({ ...value, config: { ...value.config, max_proposals: Number(e.target.value) } })} /></label>
@@ -43,7 +51,7 @@ export function OptimizationFields({ value, onChange, disabled }: { value: Optim
     <label><input type="checkbox" style={{ width: "auto" }} checked={value.config.evolve_team} onChange={(e) => onChange({ ...value, config: { ...value.config, evolve_team: e.target.checked } })} /> Evolve the internal execution team</label>
     <p className="field-hint">After a documented recurring problem, search can change collaborator count, individual prompts and serial or parallel ordering. The analyst and fixed evaluation stay unchanged. Collaborators use the Agent’s existing device and account, without task tools or extra permissions.</p>
     <label>Maximum total agents per task<input type="number" min={1} max={4} value={value.config.max_agents} onChange={(e) => onChange({ ...value, config: { ...value.config, max_agents: Number(e.target.value) } })} /></label>
-    <p className="field-hint">Each new reviewed revision can start a run automatically, even with this panel closed. Per run: at most {value.config.max_metric_calls * value.config.max_agents} execution calls including collaborators, {value.config.max_proposals} proposal calls and one final review. This is a call limit, not a token or billing limit. Disabling learning cancels pending work; an in-flight provider call may still consume usage.</p>
+    <p className="field-hint">Each new reviewed revision can start a run automatically, even with this panel closed. Per run: at most {executionCalls} execution calls including collaborators, {value.config.max_metric_calls} independent judge calls, {value.config.max_proposals} proposal calls and one final review. This is a call limit, not a token or billing limit. Disabling learning cancels pending work; an in-flight provider call may still consume usage.</p>
     <label><input type="checkbox" style={{ width: "auto" }} checked={value.auto_apply} onChange={(e) => onChange({ ...value, auto_apply: e.target.checked })} /> Automatically apply a measured and reviewed improvement</label>
     <p className="field-hint">Without this consent, runs only collect evidence. With consent, guidance changes only for future turns. Clear or restore a revision in Learning history to roll back.</p>
   </fieldset>;

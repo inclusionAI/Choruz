@@ -8,4 +8,4 @@ Choruz contributors are listed in the following order:
 4. Jason Ge ([@jasonge27](https://github.com/jasonge27))
 
 This order establishes project attribution and does not change any rights or
-obligations under the [MIT License](LICENSE).
+obligations under the [Apache License 2.0](LICENSE) or the retained notices in [NOTICE](NOTICE).

@@ -120,7 +120,12 @@ impl RuntimeHost {
                 .map_err(|error| AppError::Internal(format!("terminal spawn panicked: {error}")))?
             }
             Self::Linked(link) => {
-                let reply = link.call(LinkRequest::TerminalEnsure { spec }).await?;
+                let request = if spec.authentication {
+                    LinkRequest::AuthenticationTerminalEnsure { spec }
+                } else {
+                    LinkRequest::TerminalEnsure { spec }
+                };
+                let reply = link.call(request).await?;
                 Ok(reply["newly_created"].as_bool().unwrap_or(false))
             }
         }

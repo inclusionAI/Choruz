@@ -534,6 +534,7 @@ fn resolve_stream_target(targets: &ExecutorTargets, path: &str) -> Result<String
         && (path == "/v1/ws/sync"
             || path.starts_with("/v1/ws/sync?")
             || path.starts_with("/v1/ws/terminals/")
+            || path.starts_with("/v1/ws/harness-logins/")
             || path == choruz_host_runtime::link::LINK_PATH);
     if !allowed {
         return Err(Rejection {

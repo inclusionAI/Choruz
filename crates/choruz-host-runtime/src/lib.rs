@@ -36,6 +36,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 pub use codex::{CodexSessionFileMeta, ImportedCodexSession, ManagedCodexHome};
+pub mod evaluation_replay;
 pub use filesystem::{FilesystemEntry, FilesystemHome, FilesystemListing};
 pub use process::ProcessContainer;
 pub use terminal::{
@@ -78,11 +79,28 @@ pub enum HostRequest {
         instruction: String,
         preflight: String,
     },
+    JudgeExperience {
+        spec: Box<TerminalSpec>,
+        input: String,
+        check: choruz_domain::evaluation::OutputCheck,
+        output: String,
+    },
+    ReplayExperience {
+        spec: Box<TerminalSpec>,
+        input: String,
+        instruction: String,
+        preflight: String,
+        environment: choruz_domain::evaluation::ReplayEnvironment,
+    },
     ProposeExperience {
         spec: Box<TerminalSpec>,
         prompt: String,
     },
     ReviewExperience {
+        spec: Box<TerminalSpec>,
+        prompt: String,
+    },
+    ReviewTasks {
         spec: Box<TerminalSpec>,
         prompt: String,
     },
@@ -148,6 +166,8 @@ pub enum HostRequest {
         driver_type: String,
         account_id: String,
         profile_kind: String,
+        #[serde(default)]
+        identity_only: bool,
     },
     /// Create an agent workspace on the device: the directory (a generated
     /// one under `~/.choruz/workspaces` when `workspace_path` is absent),
@@ -228,6 +248,23 @@ pub async fn execute(request: HostRequest) -> Result<Value, AppError> {
             serde_json::to_value(experience::evaluate(*spec, input, instruction, preflight).await?)
                 .map_err(|e| AppError::Internal(format!("encode evaluation output: {e}")))
         }
+        HostRequest::ReplayExperience {
+            spec,
+            input,
+            instruction,
+            preflight,
+            environment,
+        } => serde_json::to_value(
+            evaluation_replay::run(*spec, input, instruction, preflight, environment).await?,
+        )
+        .map_err(|e| AppError::Internal(format!("encode replay result: {e}"))),
+        HostRequest::JudgeExperience {
+            spec,
+            input,
+            check,
+            output,
+        } => serde_json::to_value(experience::judge(*spec, input, check, output).await?)
+            .map_err(|e| AppError::Internal(format!("encode judge result: {e}"))),
         HostRequest::ProposeExperience { spec, prompt } => {
             serde_json::to_value(experience::propose(*spec, prompt).await?)
                 .map_err(|e| AppError::Internal(format!("encode guidance proposal: {e}")))
@@ -235,6 +272,10 @@ pub async fn execute(request: HostRequest) -> Result<Value, AppError> {
         HostRequest::ReviewExperience { spec, prompt } => {
             serde_json::to_value(experience::review(*spec, prompt).await?)
                 .map_err(|e| AppError::Internal(format!("encode guidance review: {e}")))
+        }
+        HostRequest::ReviewTasks { spec, prompt } => {
+            serde_json::to_value(experience::review_tasks(*spec, prompt).await?)
+                .map_err(|e| AppError::Internal(format!("encode task review: {e}")))
         }
         HostRequest::PrepareExecutionTeam {
             spec,
@@ -357,20 +398,24 @@ pub async fn execute(request: HostRequest) -> Result<Value, AppError> {
             driver_type,
             account_id,
             profile_kind,
+            identity_only,
         } => {
             let driver =
                 choruz_agent_runtime::headless::HeadlessDriver::from_driver_type(&driver_type)
                     .ok_or_else(|| {
                         AppError::Validation(format!("{driver_type} has no Harness account probe"))
                     })?;
-            let probe =
-                choruz_harness_login::probe_account(&choruz_harness_login::AccountProfile {
-                    driver,
-                    account_id,
-                    profile_kind,
-                })
-                .await
-                .map_err(AppError::Validation)?;
+            let profile = choruz_harness_login::AccountProfile {
+                driver,
+                account_id,
+                profile_kind,
+            };
+            let probe = if identity_only {
+                choruz_harness_login::claude_signed_in(&profile).await
+            } else {
+                choruz_harness_login::probe_account(&profile).await
+            }
+            .map_err(AppError::Validation)?;
             Ok(json!(HarnessProbeResult {
                 account_fingerprint: probe.fingerprint,
                 subscription_type: probe.subscription_type,

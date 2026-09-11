@@ -1,14 +1,14 @@
 # choruz-harness-login
 
-The browser sign-in driver for Claude Code and Codex accounts. `run_login` starts the Harness binary (`CHORUZ_CLAUDE_BINARY` / `CHORUZ_CODEX_BINARY`, else `claude` / `codex`), walks its login protocol and reports through a `LoginSink`: the authorization link, any callback the user pastes back, and the verified `AccountProbe` (identity fingerprint, plan, models, exact quota windows). Claude accepts the complete `authorization-code#state` value shown by its manual flow. Codex uses the app-server's standard browser login: automatic completion or an optional pasted localhost callback, independent of account placement. The shared driver forwards only validated code and state to its own loopback listener. The API gateway runs the driver in-process for accounts on its own device; `choruz-connector` runs it on a remote runtime host. Credentials never pass through the sink: the Harness writes them into the account's profile directory.
+Codex browser sign-in and read-only account probes for installed Claude Code and Codex CLIs. Codex uses its app-server browser login with an optional state-checked loopback callback. Claude authentication runs in the official CLI terminal, outside this crate; identity, model and exact-usage probes read the selected profile afterward.
 
 ## Entry points
 
-- `src/lib.rs` — `LoginJob`, `LoginSink`, `run_login`, `login_binary`, `callback_code_and_state`, `claude_account_probe`, `codex_account_probe`
+- `src/lib.rs` — `LoginJob`, `LoginSink`, `run_login`, `login_binary`, `claude_signed_in`, `claude_model_catalog`, `claude_account_probe`, `codex_account_probe`
 
 ## Tests
 
-`cargo test -p choruz-harness-login`; the tests cover callback parsing, loopback-only Codex callback forwarding, and probe shaping, no Harness process. The gateway's `tests/harness_logins.rs` drives both login protocols against protocol-faithful fake executables, including delayed Claude account readiness.
+`cargo test -p choruz-harness-login` covers Codex callback validation and probe parsing. Gateway `tests/harness_logins.rs` exercises real routes, storage and PTY transport against substituted CLI executables. These fixtures do not claim an external provider login.
 
 ## Related
 
