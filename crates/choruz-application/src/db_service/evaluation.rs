@@ -288,9 +288,9 @@ impl DbService {
         claim: &EvaluationClaim,
     ) -> Result<Value, AppError> {
         let client = self.store.connect().await?;
-        let row = client.query_one("SELECT r.analysis,r.source_references,r.validation FROM experience_revision r JOIN experience_evaluation e ON e.revision_id=r.id AND e.workspace_id=r.workspace_id AND e.binding_id=r.binding_id WHERE e.id=$1 AND e.workspace_id=$2 AND e.owner_id=$3", &[&claim.id,&claim.workspace_id,&claim.owner_id]).await.map_err(db_error)?;
+        let row = client.query_one("SELECT r.analysis,r.source_references,r.validation,COALESCE((SELECT p.enabled AND p.community_settings->>'search'='true' AND p.community_settings->>'automatic_trial'='true' FROM experience_policy p WHERE p.binding_id=e.binding_id AND p.workspace_id=e.workspace_id AND p.owner_id=e.owner_id),false) AS community_trials_enabled FROM experience_revision r JOIN experience_evaluation e ON e.revision_id=r.id AND e.workspace_id=r.workspace_id AND e.binding_id=r.binding_id WHERE e.id=$1 AND e.workspace_id=$2 AND e.owner_id=$3", &[&claim.id,&claim.workspace_id,&claim.owner_id]).await.map_err(db_error)?;
         Ok(
-            json!({"analysis":row.get::<_,String>("analysis"),"references":row.get::<_,Value>("source_references"),"validation":row.get::<_,Value>("validation")}),
+            json!({"analysis":row.get::<_,String>("analysis"),"references":row.get::<_,Value>("source_references"),"validation":row.get::<_,Value>("validation"),"community_trials_enabled":row.get::<_,bool>("community_trials_enabled")}),
         )
     }
 

@@ -1,3 +1,4 @@
+pub mod behavior;
 pub mod evaluation;
 pub mod optimization;
 pub mod team;

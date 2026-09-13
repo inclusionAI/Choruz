@@ -245,6 +245,12 @@ Background learning belongs to one target binding, owner and workspace. `experie
 
 `experience_problem` associates a scoped problem with the first reviewed prompt intervention addressing it. `experience_problem_observation` records distinct work episodes and evidence of revision use. Its episode key prevents repeated analysis of one task from increasing the occurrence count. Observations commit in the same transaction as their report and checkpoint; the [problem schema](../migrations/V053__experience_problems.sql) defines ownership and deletion constraints.
 
+### experience_behavior_event and community cache
+
+`experience_behavior_event` extends the existing binding-scoped problem and revision owners with private source linkage, a typed local record, a separately reviewed public projection and leased publication state. `(binding_id, problem_key, source_key)` deduplicates analysis retries. `occurrence_id` in the payload groups outcome updates for one objective. Unpublished local problem identities can reconcile with a reviewed community match; public evidence identities remain immutable. See the [schema](../migrations/V058__behavior_community.sql) and [runtime behavior](subsystems/agent-runtime.md#behavior-community).
+
+`experience_policy.community_settings` owns search, automatic trial and contribution consent. `experience_community_record` is an installation-wide cache of accepted public records, keyed by repository and record ID, with source revision and blob identity. `experience_community_sync` retains the checked revision and synchronization error. Neither cache table owns private traces or mutable popularity counters.
+
 ### experience_evaluation
 
 The policy's optional `optimization_settings` holds the suite, budgets and application consent. Automatic evaluations have a unique `(binding_id, policy_generation, revision_id)` attempt, including failed runs. `final_review_reserved` records the extra call before dispatch; `application_status` and `applied_revision_id` retain the decision. Revision creation, problem-intervention linkage and selection commit under the evaluation lease and policy fence. See the [application columns](../migrations/V056__measured_learning_application.sql).

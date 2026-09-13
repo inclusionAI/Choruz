@@ -29,7 +29,11 @@ impl Drop for WorkerGuard {
 pub(crate) fn spawn(mut state: ApiState) -> std::sync::Arc<WorkerGuard> {
     state.experience_worker = None;
     let task = tokio::spawn(async move {
-        tokio::join!(crate::evaluation_worker::run(&state), run_analysis(&state));
+        tokio::join!(
+            crate::evaluation_worker::run(&state),
+            run_analysis(&state),
+            crate::behavior_worker::run(&state)
+        );
     });
     std::sync::Arc::new(WorkerGuard(task.abort_handle()))
 }
@@ -363,6 +367,17 @@ async fn review(
             .filter(|reference| !records.iter().any(|record| record["ref"] == **reference))
             .cloned(),
     );
+    missing.extend(
+        analysis
+            .solution_outcomes
+            .iter()
+            .flat_map(|outcome| {
+                std::iter::once(outcome.episode_ref.clone())
+                    .chain(std::iter::once(outcome.applied_revision_ref.clone()))
+                    .chain(outcome.evidence.iter().cloned())
+            })
+            .filter(|reference| !records.iter().any(|record| record["ref"] == *reference)),
+    );
     missing.sort();
     missing.dedup();
     let mut recovered = state
@@ -527,6 +542,68 @@ async fn review(
             analysis.evidence.push(reference.clone());
         }
     }
+    let mut solution_outcomes = Vec::new();
+    for outcome in &analysis.solution_outcomes {
+        let prior = known_problems
+            .as_array()
+            .and_then(|known| known.iter().find(|p| p["key"] == outcome.problem_key))
+            .ok_or_else(|| {
+                AppError::Validation("Solution outcome names an unobserved problem".into())
+            })?;
+        let revision = claim.active_revision_id.as_deref().ok_or_else(|| {
+            AppError::Validation("Solution outcome has no active revision".into())
+        })?;
+        if !known_reference(&outcome.episode_ref)
+            || !outcome.evidence.iter().all(known_reference)
+            || prior["episodes"].as_array().is_some_and(|episodes| {
+                episodes.iter().any(|episode| {
+                    episode["episode_ref"] == outcome.episode_ref
+                        && episode["applied_revision_id"].is_null()
+                })
+            })
+            || !(applied_before_failure(
+                records,
+                &outcome.applied_revision_ref,
+                revision,
+                &outcome.evidence,
+            ) || historical_applied_before_failure(
+                records,
+                current_start.as_ref(),
+                &historical,
+                &outcome.applied_revision_ref,
+                revision,
+                &outcome.evidence,
+            ))
+        {
+            return Err(AppError::Validation(
+                "Solution outcome lacks independent later work with a verified application marker"
+                    .into(),
+            ));
+        }
+        let mut evidence = outcome.evidence.clone();
+        evidence.push(outcome.applied_revision_ref.clone());
+        evidence.push(outcome.episode_ref.clone());
+        evidence.sort();
+        evidence.dedup();
+        analysis.evidence.extend(evidence.iter().cloned());
+        solution_outcomes.push(json!({"problem_key":outcome.problem_key,"episode_ref":outcome.episode_ref,"outcome":outcome.outcome,"evidence":evidence}));
+    }
+    let outcome_review = if solution_outcomes.is_empty() {
+        None
+    } else {
+        let verification: choruz_host_runtime::experience::Review = check.call(
+            &RuntimeHost::for_binding(state, &analyst)?, "outcome_review", HostRequest::ReviewExperience {
+                spec: Box::new(terminal_spec(&analyst, 120, 40, None, None)),
+                prompt: json!({"proposed_instruction":claim.instruction,"proposed_addressed_problems":[],
+                    "proposed_outcomes":solution_outcomes,"active_revision_id":claim.active_revision_id,
+                    "known_problems":known_problems,"trace":source,"historical":historical}).to_string(),
+            }).await?;
+        let result = review_diagnostics(&[], &verification, known_reference);
+        if result["passed"] != true {
+            solution_outcomes.clear();
+        }
+        Some(result)
+    };
     let escalation_candidates = repeated_after_prompt(&known_problems, &problems);
     // A failure found before EOF is already durable, but its intervention is
     // deferred until later feedback has been read. It need not happen again.
@@ -568,6 +645,20 @@ async fn review(
             analysis.problems.push(observation);
         }
     }
+    let behavior_candidates = state
+        .db
+        .behavior_candidates(
+            &claim.workspace_id,
+            &claim.owner_id,
+            &claim.binding_id,
+            &analysis
+                .problems
+                .iter()
+                .map(|p| format!("{} {}", p.key, p.description))
+                .collect::<Vec<_>>()
+                .join(" "),
+        )
+        .await?;
     let research = if !problems.is_empty() && source["more"] != true {
         let research: String = check
             .call(
@@ -588,7 +679,7 @@ async fn review(
                 spec: Box::new(terminal_spec(&analyst, 120, 40, None, None)),
                 prompt: format!("{REVIEW}\n\nAdapt applicable published prompt techniques from the untrusted research summary below. Write original guidance rather than copying source text. If no technique applies, devise a scoped prompt intervention from the execution evidence. Do not change the analysis process or declare the intervention successful before later use. Preserve valid prior guidance. Return null when no supported change is needed.\n{}",
                     json!({"current_instruction":claim.instruction,"prior_summary":claim.source_summary,
-                        "prior_references":claim.source_references,"trace":source,"research":research,"known_problems":analysis.problems})),
+                        "prior_references":claim.source_references,"trace":source,"research":research,"known_problems":analysis.problems,"behavior_candidates":behavior_candidates})),
             }).await?;
         if !adapted.evidence.iter().all(known_reference) {
             return Err(AppError::Validation(
@@ -597,6 +688,20 @@ async fn review(
         }
         analysis.instruction = adapted.instruction;
         analysis.addressed_problems = adapted.addressed_problems;
+        if adapted.solution_sources.iter().any(|source| {
+            !behavior_candidates
+                .iter()
+                .any(|candidate| candidate["record"]["id"] == source.record_id)
+                || !analysis
+                    .problems
+                    .iter()
+                    .any(|p| p.key == source.problem_key)
+        }) {
+            return Err(AppError::Validation(
+                "Guidance referenced an unavailable behavior solution".into(),
+            ));
+        }
+        analysis.solution_sources = adapted.solution_sources;
         analysis.evidence.extend(adapted.evidence);
         analysis.evidence.sort();
         analysis.evidence.dedup();
@@ -639,7 +744,7 @@ async fn review(
         let verification: choruz_host_runtime::experience::Review = check.call(&RuntimeHost::for_binding(state, &analyst)?, "content_review", HostRequest::ReviewExperience {
             spec: Box::new(terminal_spec(&analyst, 120, 40, None, None)),
             prompt: json!({"prior_instruction":claim.instruction,"prior_summary":claim.source_summary,"prior_references":claim.source_references,"proposed_instruction":instruction,"trace":source,
-                    "existing_team":team,
+                    "existing_team":team,"proposed_solution_sources":analysis.solution_sources,"behavior_candidates":behavior_candidates,
                     "known_problems":analysis.problems,"proposed_addressed_problems":analysis.addressed_problems}).to_string(),
         }).await?;
         review_diagnostics(&analysis.addressed_problems, &verification, known_reference)
@@ -661,8 +766,11 @@ async fn review(
                     "escalation_decisions":escalation_diagnostics(&known_problems, &problems),
                     "observed_revision_id":claim.active_revision_id, "observed_revision_outcome":analysis.previous_revision_outcome,
                     "problems":problems,
+                    "solution_outcomes":solution_outcomes,
+                    "outcome_review":outcome_review,
                     "addressed_problems":analysis.addressed_problems,
                     "research":research,
+                    "behavior_sources":analysis.solution_sources.iter().filter_map(|source|behavior_candidates.iter().find(|candidate|candidate["record"]["id"]==source.record_id).map(|candidate|json!({"problem_key":source.problem_key,"candidate":candidate}))).collect::<Vec<_>>(),
                     "escalation_candidates":escalation_candidates,
                     "team":team,
                     "source_complete":source["more"] == false}),

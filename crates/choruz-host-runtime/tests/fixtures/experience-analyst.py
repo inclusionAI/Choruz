@@ -18,6 +18,28 @@ if 'web_search="live"' in sys.argv:
     sys.exit(0)
 refs = re.findall(r'"ref"\s*:\s*"([^"]+)"', source)
 data = json.loads(source.strip().splitlines()[-1])
+if "public_projection" in data:
+    assert data["records"], "behavior extraction requires recovered original evidence"
+    assert data["problem"], "behavior extraction requires a verified problem"
+    draft = {
+        "title": "Completion without verification",
+        "input_background": "A task required checking its result before reporting completion.",
+        "expected_behavior": "Run the required check and inspect its result.",
+        "bad_behavior": "The Agent claimed completion without checking.",
+        "applicability": "Tasks with explicit acceptance checks",
+        "tags": ["verification"],
+        "evidence_summary": "The user's later correction identified the missing check.",
+    }
+    print(json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": json.dumps(draft)}}))
+    sys.exit(0)
+if "schema_version" in data and "occurrence_id" in data:
+    data["problem"]["input_background"] = "An anonymous task required a check."
+    print(json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": json.dumps(data)}}))
+    sys.exit(0)
+if "private" in data and "public" in data:
+    result = {"accepted": "private-test-secret" not in json.dumps(data["public"]), "reason": "The projection was reviewed."}
+    print(json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": json.dumps(result)}}))
+    sys.exit(0)
 if "component" in data:
     team = {"order": "parallel", "members": [
         {"name": "derive", "prompt": "Plan task-specific observable checks for the task."},
@@ -82,9 +104,17 @@ report = {
         "episode_ref": objectives["feedback" if "Shared completion claim" in json.dumps(record) else "native"] if continued and not applied_refs[record["ref"]] and not markers else record["ref"], "evidence": [record["ref"]],
         "applied_revision_ref": applied_refs[record["ref"]]} for record in failed_records],
     "addressed_problems": ["skipped-verification"] if instruction else [],
+    "solution_sources": [{"problem_key":"skipped-verification","record_id":candidate["record"]["id"]}
+                         for candidate in data.get("behavior_candidates", [])
+                         if instruction and candidate["record"]["problem"]["id"] == "shared-verification"],
 }
 if any("Historical-only evidence" in json.dumps(record) for record in records):
     report["problems"][0]["evidence"] = data["known_problems"][0]["episodes"][0]["evidence"]
+verified = [record for record in records if "Verified later outcome:" in json.dumps(record)]
+if verified:
+    assert markers and objectives.get("native")
+    report["solution_outcomes"] = [{"problem_key":"skipped-verification", "episode_ref":objectives["native"],
+        "evidence":[verified[0]["ref"]],"applied_revision_ref":markers[0]["ref"],"outcome":"effective"}]
 print(json.dumps({"type": "item.completed", "item": {
     "type": "agent_message", "text": json.dumps(report),
 }}))

@@ -27,6 +27,27 @@ pub struct Analysis {
     pub previous_revision_outcome: String,
     pub problems: Vec<ProblemObservation>,
     pub addressed_problems: Vec<String>,
+    #[serde(default)]
+    pub solution_sources: Vec<SolutionSource>,
+    #[serde(default)]
+    pub solution_outcomes: Vec<SolutionOutcome>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SolutionSource {
+    pub problem_key: String,
+    pub record_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SolutionOutcome {
+    pub problem_key: String,
+    pub episode_ref: String,
+    pub evidence: Vec<String>,
+    pub applied_revision_ref: String,
+    pub outcome: choruz_domain::behavior::EvidenceKind,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -37,6 +58,77 @@ pub struct ProblemObservation {
     pub episode_ref: String,
     pub evidence: Vec<String>,
     pub applied_revision_ref: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BehaviorDraft {
+    pub title: String,
+    pub input_background: String,
+    pub expected_behavior: String,
+    pub bad_behavior: String,
+    pub applicability: String,
+    pub tags: Vec<String>,
+    pub evidence_summary: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PrivacyReview {
+    pub accepted: bool,
+    pub reason: String,
+}
+
+pub async fn extract_behavior(
+    spec: TerminalSpec,
+    prompt: String,
+) -> Result<Option<BehaviorDraft>, AppError> {
+    const SKILL: &str = include_str!("../../../agent-templates/behavior-extraction.md");
+    let output = run_with_role(spec, format!("{SKILL}\n{prompt}"), false, SKILL).await?;
+    serde_json::from_str(output.trim())
+        .map_err(|_| AppError::Validation("Invalid behavior card draft".into()))
+}
+
+pub async fn review_behavior(
+    spec: TerminalSpec,
+    prompt: String,
+) -> Result<PrivacyReview, AppError> {
+    const SKILL: &str = include_str!("../../../agent-templates/behavior-privacy-review.md");
+    let output = run_with_role(spec, format!("{SKILL}\n{prompt}"), false, SKILL).await?;
+    let review: PrivacyReview = serde_json::from_str(output.trim())
+        .map_err(|_| AppError::Validation("Invalid behavior privacy review".into()))?;
+    if review.reason.trim().is_empty() || review.reason.len() > 2000 {
+        return Err(AppError::Validation(
+            "Invalid behavior privacy decision".into(),
+        ));
+    }
+    Ok(review)
+}
+
+pub async fn redact_behavior(
+    spec: TerminalSpec,
+    record: choruz_domain::behavior::BehaviorRecord,
+) -> Result<Option<choruz_domain::behavior::BehaviorRecord>, AppError> {
+    const SKILL: &str = include_str!("../../../agent-templates/behavior-public-projection.md");
+    let output = run_with_role(
+        spec,
+        format!("{SKILL}\n{}", serde_json::json!(record)),
+        false,
+        SKILL,
+    )
+    .await?;
+    let candidate: Option<choruz_domain::behavior::BehaviorRecord> =
+        serde_json::from_str(output.trim())
+            .map_err(|_| AppError::Validation("Invalid public behavior projection".into()))?;
+    if let Some(candidate) = &candidate {
+        candidate.validate().map_err(AppError::Validation)?;
+        if !record.same_evidence_identity(candidate) {
+            return Err(AppError::Validation(
+                "Public projection changed evidence identity".into(),
+            ));
+        }
+    }
+    Ok(candidate)
 }
 
 pub async fn analyze(spec: TerminalSpec, prompt: String) -> Result<Analysis, AppError> {
@@ -492,7 +584,32 @@ fn decode(text: &str) -> Result<Analysis, AppError> {
     let value: Analysis = serde_json::from_str(text.trim()).map_err(|_| {
         AppError::Validation("Analysis did not return the required JSON report".into())
     })?;
-    if value.evaluation_cases.len() > 20
+    if value.solution_outcomes.len() > 20
+        || value.solution_outcomes.iter().any(|outcome| {
+            !choruz_domain::behavior::valid_id(&outcome.problem_key)
+                || outcome.episode_ref.len() > 256
+                || outcome.episode_ref.is_empty()
+                || outcome.applied_revision_ref.len() > 256
+                || outcome.applied_revision_ref.is_empty()
+                || outcome.evidence.is_empty()
+                || outcome.evidence.len() > 100
+                || outcome
+                    .evidence
+                    .iter()
+                    .any(|r| r.is_empty() || r.len() > 256)
+                || !matches!(
+                    outcome.outcome,
+                    choruz_domain::behavior::EvidenceKind::Applied
+                        | choruz_domain::behavior::EvidenceKind::Effective
+                        | choruz_domain::behavior::EvidenceKind::Ineffective
+                )
+        })
+        || value.solution_sources.len() > 8
+        || value.solution_sources.iter().any(|source| {
+            !choruz_domain::behavior::valid_id(&source.record_id)
+                || !choruz_domain::behavior::valid_id(&source.problem_key)
+        })
+        || value.evaluation_cases.len() > 20
         || serde_json::to_vec(&value.evaluation_cases)
             .map_err(|e| AppError::Validation(e.to_string()))?
             .len()

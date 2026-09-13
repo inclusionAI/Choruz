@@ -7,11 +7,13 @@
 mod activity;
 mod audit;
 pub use activity::{ActivityCursor, ActivityFilter, ActivitySource};
+mod behavior;
 mod companies;
 mod conversations;
 mod evaluation;
 mod events;
 mod experience;
+pub use behavior::{BehaviorClaim, PublicationClaim};
 mod task_difficulty;
 mod trace_cases;
 pub use evaluation::{EvaluationClaim, EvaluationContext, OptimizationSetup};

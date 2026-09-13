@@ -65,9 +65,26 @@ pub enum HostRequest {
         cursor: experience_source::Cursor,
         references: Vec<String>,
     },
+    BehaviorReferences {
+        spec: Box<TerminalSpec>,
+        cursor: experience_source::Cursor,
+        references: Vec<String>,
+    },
     AnalyzeExperience {
         spec: Box<TerminalSpec>,
         prompt: String,
+    },
+    ExtractBehavior {
+        spec: Box<TerminalSpec>,
+        prompt: String,
+    },
+    ReviewBehavior {
+        spec: Box<TerminalSpec>,
+        prompt: String,
+    },
+    RedactBehavior {
+        spec: Box<TerminalSpec>,
+        record: Box<choruz_domain::behavior::BehaviorRecord>,
     },
     ResearchExperience {
         spec: Box<TerminalSpec>,
@@ -234,6 +251,33 @@ pub async fn execute(request: HostRequest) -> Result<Value, AppError> {
         HostRequest::AnalyzeExperience { spec, prompt } => {
             serde_json::to_value(experience::analyze(*spec, prompt).await?)
                 .map_err(|e| AppError::Internal(format!("encode analysis report: {e}")))
+        }
+        HostRequest::BehaviorReferences {
+            spec,
+            cursor,
+            references,
+        } => {
+            blocking(move || {
+                serde_json::to_value(experience_source::behavior_references(
+                    &spec,
+                    &cursor,
+                    &references,
+                )?)
+                .map_err(|e| AppError::Internal(format!("encode attributed evidence: {e}")))
+            })
+            .await
+        }
+        HostRequest::ExtractBehavior { spec, prompt } => {
+            serde_json::to_value(experience::extract_behavior(*spec, prompt).await?)
+                .map_err(|e| AppError::Internal(format!("encode behavior card: {e}")))
+        }
+        HostRequest::ReviewBehavior { spec, prompt } => {
+            serde_json::to_value(experience::review_behavior(*spec, prompt).await?)
+                .map_err(|e| AppError::Internal(format!("encode privacy review: {e}")))
+        }
+        HostRequest::RedactBehavior { spec, record } => {
+            serde_json::to_value(experience::redact_behavior(*spec, *record).await?)
+                .map_err(|e| AppError::Internal(format!("encode public behavior projection: {e}")))
         }
         HostRequest::ResearchExperience { spec, categories } => {
             serde_json::to_value(experience::research(*spec, categories).await?)

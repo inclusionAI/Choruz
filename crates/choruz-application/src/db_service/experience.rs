@@ -409,10 +409,52 @@ impl DbService {
                         prompt_revision_id=COALESCE(experience_problem.prompt_revision_id,EXCLUDED.prompt_revision_id)",
                         &[&claim.binding_id,&claim.workspace_id,&key,&description,&prompt_revision]).await
                         .map_err(|e| AppError::Internal(format!("save learning problem: {e}")))?;
+                    if validation["review"] == "passed"
+                        && let Some(source) =
+                            validation["behavior_sources"]
+                                .as_array()
+                                .and_then(|sources| {
+                                    sources.iter().find(|source| source["problem_key"] == key)
+                                })
+                        && let Some(problem_id) =
+                            source["candidate"]["record"]["problem"]["id"].as_str()
+                    {
+                        let linked=tx.execute("UPDATE experience_problem p SET community_problem_id=$4 WHERE workspace_id=$1 AND binding_id=$2 AND problem_key=$3 AND community_problem_id IS DISTINCT FROM $4 AND NOT EXISTS(SELECT 1 FROM experience_behavior_event e WHERE e.binding_id=p.binding_id AND e.problem_key=p.problem_key AND e.public_payload IS NOT NULL)", &[&claim.workspace_id,&claim.binding_id,&key,&problem_id]).await
+                            .map_err(|e|AppError::Internal(format!("link matching community problem: {e}")))?;
+                        if linked != 0 {
+                            tx.execute("UPDATE experience_behavior_event SET payload=CASE WHEN payload IS NULL THEN NULL ELSE jsonb_set(payload,'{problem,id}',to_jsonb($4::text)) END,lease_token=NULL,lease_until=NULL,updated_at=NOW() WHERE workspace_id=$1 AND binding_id=$2 AND problem_key=$3 AND public_payload IS NULL", &[&claim.workspace_id,&claim.binding_id,&key,&problem_id]).await.map_err(|e|AppError::Internal(format!("reconcile unpublished problem identity: {e}")))?;
+                        }
+                    }
                     tx.execute("INSERT INTO experience_problem_observation(binding_id,workspace_id,problem_key,episode_ref,evidence,applied_revision_id,report_id)
                         VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(binding_id,problem_key,episode_ref) DO NOTHING",
                         &[&claim.binding_id,&claim.workspace_id,&key,&episode,&problem["evidence"],&applied,&id]).await
                         .map_err(|e| AppError::Internal(format!("save learning observation: {e}")))?;
+                    tx.execute("INSERT INTO experience_behavior_event(id,workspace_id,binding_id,problem_key,source_key,episode_ref,evidence_kind,solution_revision_id,source_references)
+                        VALUES($1,$2,$3,$4,$5,$5,$6,$7,$8) ON CONFLICT(binding_id,problem_key,source_key) DO NOTHING",
+                        &[&choruz_common::new_id(),&claim.workspace_id,&claim.binding_id,&key,&episode,&if applied.is_some(){"recurrence"}else{"encountered"},&applied,&problem["evidence"]]).await
+                        .map_err(|e| AppError::Internal(format!("queue behavior evidence: {e}")))?;
+                }
+            }
+            if let Some(outcomes) = validation["solution_outcomes"].as_array() {
+                for outcome in outcomes {
+                    let key = outcome["problem_key"].as_str().ok_or_else(|| {
+                        AppError::Validation("Missing solution outcome problem".into())
+                    })?;
+                    let episode = outcome["episode_ref"].as_str().ok_or_else(|| {
+                        AppError::Validation("Missing solution outcome episode".into())
+                    })?;
+                    let kind = outcome["outcome"]
+                        .as_str()
+                        .filter(|kind| matches!(*kind, "applied" | "effective" | "ineffective"))
+                        .ok_or_else(|| AppError::Validation("Invalid solution outcome".into()))?;
+                    let revision = claim.active_revision_id.as_deref().ok_or_else(|| {
+                        AppError::Validation("Outcome lacks an applied revision".into())
+                    })?;
+                    let source_key = format!("{episode}:{revision}:{kind}");
+                    tx.execute("INSERT INTO experience_behavior_event(id,workspace_id,binding_id,problem_key,source_key,episode_ref,evidence_kind,solution_revision_id,source_references)
+                        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(binding_id,problem_key,source_key) DO NOTHING",
+                        &[&choruz_common::new_id(),&claim.workspace_id,&claim.binding_id,&key,&source_key,&episode,&kind,&revision,&outcome["evidence"]]).await
+                        .map_err(|e|AppError::Internal(format!("queue solution outcome: {e}")))?;
                 }
             }
             if activate {

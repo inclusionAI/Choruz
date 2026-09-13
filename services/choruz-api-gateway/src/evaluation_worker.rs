@@ -212,6 +212,15 @@ async fn execute(state: &ApiState, claim: &mut EvaluationClaim) -> Result<Value,
         return Err(AppError::Conflict("Evaluation context changed".into()));
     }
     let host = RuntimeHost::for_binding(state, &binding)?;
+    let community_seed = if claim
+        .optimization
+        .as_ref()
+        .is_some_and(|search| matches!(search.pending, Some(SearchAction::Propose { .. })))
+    {
+        Some(state.db.evaluation_seed_evidence(claim).await?)
+    } else {
+        None
+    };
     if let Some(search) = &mut claim.optimization {
         let analyst_id = claim
             .analyst_binding_id
@@ -314,9 +323,14 @@ async fn execute(state: &ApiState, claim: &mut EvaluationClaim) -> Result<Value,
             SearchAction::Propose {
                 parents, component, ..
             } => {
-                let input = search
+                let mut input = search
                     .proposal_input(&claim.suite)
                     .map_err(AppError::Validation)?;
+                if let Some(seed) = &community_seed
+                    && seed["community_trials_enabled"] == true
+                {
+                    input["behavior_sources"] = seed["validation"]["behavior_sources"].clone();
+                }
                 let text: String = RuntimeHost::for_binding(state, &analyst)?
                     .call(HostRequest::ProposeExperience {
                         spec: Box::new(analyst_spec),
