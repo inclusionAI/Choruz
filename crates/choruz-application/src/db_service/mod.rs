@@ -16,7 +16,7 @@ mod task_difficulty;
 mod trace_cases;
 pub use evaluation::{EvaluationClaim, EvaluationContext, OptimizationSetup};
 pub use experience::{ExperienceClaim, ExperiencePolicy, ExperienceReport, ExperienceRevision};
-pub use trace_cases::{measured_trace_suite, trace_suite, training_objectives};
+pub use trace_cases::{measured_trace_suite, training_objectives};
 mod group_workflow_tasks;
 mod interactions;
 pub use interactions::{InteractionPage, InteractionRecord};

@@ -49,7 +49,8 @@ pub(super) async fn read_trace_cases(
 
 /// Partition objectives, not individual retries. The
 /// assignment is stable as the corpus grows; each queued run owns its snapshot.
-pub fn trace_suite(cases: &[TraceCase], budget: usize) -> Option<EvaluationSuite> {
+#[cfg(test)]
+fn trace_suite(cases: &[TraceCase], budget: usize) -> Option<EvaluationSuite> {
     measured_trace_suite(cases, budget, &BTreeMap::new())
 }
 

@@ -14,8 +14,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 const PROPOSAL: &str = include_str!("../../../agent-templates/experience-proposal.md");
-const APPLICATION_REVIEW: &str =
-    include_str!("../../../agent-templates/experience-application-review.md");
+use choruz_host_runtime::experience::REVIEW_SKILL as APPLICATION_REVIEW;
 const ANALYSIS: &str = include_str!("../../../agent-templates/experience-analysis.md");
 
 pub(crate) fn analyst_fingerprint(spec: &TerminalSpec) -> Result<String, AppError> {
@@ -244,7 +243,7 @@ async fn execute(state: &ApiState, claim: &mut EvaluationClaim) -> Result<Value,
             );
             let review: choruz_host_runtime::experience::Review = RuntimeHost::for_binding(state,&analyst)?.call(HostRequest::ReviewExperience {
                 spec: Box::new(analyst_spec),
-                prompt: format!("{APPLICATION_REVIEW}\n{}", json!({"proposed_instruction":proposed.instruction,"proposed_team":proposed.team,"seeds":seeds,"seed_reference":seed_reference,"seed_evidence":evidence})),
+                prompt: json!({"proposed_instruction":proposed.instruction,"proposed_team":proposed.team,"seeds":seeds,"seed_reference":seed_reference,"seed_evidence":evidence}).to_string(),
             }).await?;
             let target = authorize_terminal_binding(state, &actor, &claim.binding_id)
                 .await
@@ -270,7 +269,7 @@ async fn execute(state: &ApiState, claim: &mut EvaluationClaim) -> Result<Value,
             });
             return Ok(json!({
                 "action": "application_review",
-                "review_passed": review.accepted && cited_seed_evidence,
+                "review_passed": review.accepted && cited_seed_evidence && review.addressed_problems.is_empty(),
                 "review": review,
             }));
         }

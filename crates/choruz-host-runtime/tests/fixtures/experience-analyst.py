@@ -28,7 +28,16 @@ if "component" in data:
     sys.exit(0)
 if "seed_evidence" in data:
     print(json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": json.dumps({
-        "accepted": True, "evidence": [data["seed_reference"]],
+        "accepted": True, "reason": "Supported by the reviewed seed.", "evidence": [data["seed_reference"]], "addressed_problems": [],
+    })}}))
+    sys.exit(0)
+if "proposed_instruction" in data:
+    rejected = "Reject this proposal fixture" in json.dumps(data["trace"])
+    assert "Fixed guidance review" in source
+    print(json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": json.dumps({
+        "accepted": not rejected,
+        "reason": "The proposed guidance does not address this task. token=fixture-secret" if rejected else "The instruction addresses the observed problem.",
+        "evidence": [refs[0]], "addressed_problems": data["proposed_addressed_problems"],
     })}}))
     sys.exit(0)
 if "role" in data:
@@ -63,7 +72,7 @@ retain_marker = any("Retain marker reference" in json.dumps(record) for record i
 continued = bool(objectives)
 refs = refs or data.get("prior_references", [])
 assert refs, "production reader must supply native evidence"
-instruction = "Verify required checks before reporting completion." if failure or "research" in data or "proposed_instruction" in data else None
+instruction = "Verify required checks before reporting completion." if failure or "research" in data else None
 report = {
     "summary": "Open objectives: " + json.dumps(objectives) if continued and not failure else "Agent claimed completion without the required check; user corrected it.",
     "instruction": instruction,
@@ -76,10 +85,6 @@ report = {
 }
 if any("Historical-only evidence" in json.dumps(record) for record in records):
     report["problems"][0]["evidence"] = data["known_problems"][0]["episodes"][0]["evidence"]
-if "proposed_instruction" in data and any("Reject this proposal fixture" in json.dumps(record) for record in records):
-    report["instruction"] = None
-    report["addressed_problems"] = []
-    report["summary"] = "The proposed guidance does not address this task. token=fixture-secret"
 print(json.dumps({"type": "item.completed", "item": {
     "type": "agent_message", "text": json.dumps(report),
 }}))

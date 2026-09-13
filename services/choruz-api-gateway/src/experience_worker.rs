@@ -636,19 +636,13 @@ async fn review(
     {
         json!({"passed":true,"reason":"unchanged_seed_for_trace_evaluation"})
     } else if let Some(instruction) = instruction {
-        let verification: Analysis = check.call(&RuntimeHost::for_binding(state, &analyst)?, "content_review", HostRequest::AnalyzeExperience {
+        let verification: choruz_host_runtime::experience::Review = check.call(&RuntimeHost::for_binding(state, &analyst)?, "content_review", HostRequest::ReviewExperience {
             spec: Box::new(terminal_spec(&analyst, 120, 40, None, None)),
-            prompt: format!("{REVIEW}\n\nYou are checking a proposed instruction change, not generating another one. Compare it with the immutable source and prior instruction. The existing_team is unchanged context, not a proposed structural change. Reject unsupported generalization, lost still-valid guidance, conflicts with that team, personal-data leakage and permission changes. Return the proposed instruction byte-for-byte only if justified; otherwise instruction must be null. This is a content review, not proof of future execution success.\n{}",
-                json!({"prior_instruction":claim.instruction,"prior_summary":claim.source_summary,"prior_references":claim.source_references,"proposed_instruction":instruction,"trace":source,
+            prompt: json!({"prior_instruction":claim.instruction,"prior_summary":claim.source_summary,"prior_references":claim.source_references,"proposed_instruction":instruction,"trace":source,
                     "existing_team":team,
-                    "known_problems":analysis.problems,"proposed_addressed_problems":analysis.addressed_problems})),
+                    "known_problems":analysis.problems,"proposed_addressed_problems":analysis.addressed_problems}).to_string(),
         }).await?;
-        review_diagnostics(
-            instruction,
-            &analysis.addressed_problems,
-            &verification,
-            known_reference,
-        )
+        review_diagnostics(&analysis.addressed_problems, &verification, known_reference)
     } else {
         json!({"passed":false,"reason":if source["more"] == true {"source_incomplete"} else {"no_proposed_instruction"}})
     };
@@ -688,20 +682,18 @@ async fn review(
 }
 
 fn review_diagnostics(
-    instruction: &str,
     addressed: &[String],
-    verification: &Analysis,
+    verification: &choruz_host_runtime::experience::Review,
     known_reference: impl Fn(&String) -> bool,
 ) -> Value {
-    let instruction_matches = verification.instruction.as_deref() == Some(instruction);
     let evidence_verified = verification.evidence.iter().all(known_reference);
     let addressed_matches = verification
         .addressed_problems
         .iter()
         .collect::<std::collections::BTreeSet<_>>()
         == addressed.iter().collect();
-    json!({"passed":instruction_matches && evidence_verified && addressed_matches,
-        "instruction_matches":instruction_matches,"evidence_verified":evidence_verified,
+    json!({"passed":verification.accepted && evidence_verified && addressed_matches,
+        "accepted":verification.accepted,"evidence_verified":evidence_verified,
         "addressed_problems_match":addressed_matches,
         "reviewer_report":crate::handlers_events::sanitize_telemetry_value(json!(verification))})
 }
@@ -860,38 +852,32 @@ mod tests {
 
     #[test]
     fn review_diagnostics_distinguish_rejection_from_protocol_mismatch() {
-        let report = Analysis {
-            evaluation_cases: vec![],
-            summary: "Missing evidence. token=fixture-secret".into(),
-            instruction: None,
+        let report = choruz_host_runtime::experience::Review {
+            accepted: false,
+            reason: "Missing evidence. token=fixture-secret".into(),
             evidence: vec!["verified".into()],
-            previous_revision_outcome: "not_observed".into(),
-            problems: vec![],
             addressed_problems: vec![],
         };
-        let rejected = review_diagnostics("Check", &[], &report, |r| r == "verified");
+        let rejected = review_diagnostics(&[], &report, |r| r == "verified");
         assert_eq!(rejected["passed"], false);
-        assert_eq!(rejected["instruction_matches"], false);
+        assert_eq!(rejected["accepted"], false);
         assert_eq!(rejected["evidence_verified"], true);
         assert!(
-            rejected["reviewer_report"]["summary"]
+            rejected["reviewer_report"]["reason"]
                 .as_str()
                 .unwrap()
                 .contains("Missing evidence")
         );
         assert!(!rejected.to_string().contains("fixture-secret"));
         let mut report = report;
-        report.instruction = Some("Check".into());
+        report.accepted = true;
+        assert_eq!(review_diagnostics(&[], &report, |_| true)["passed"], true);
         assert_eq!(
-            review_diagnostics("Check", &[], &report, |_| true)["passed"],
-            true
-        );
-        assert_eq!(
-            review_diagnostics("Check", &[], &report, |_| false)["evidence_verified"],
+            review_diagnostics(&[], &report, |_| false)["evidence_verified"],
             false
         );
         assert_eq!(
-            review_diagnostics("Check", &["p".into()], &report, |_| true)["addressed_problems_match"],
+            review_diagnostics(&["p".into()], &report, |_| true)["addressed_problems_match"],
             false
         );
     }

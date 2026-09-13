@@ -18,7 +18,7 @@ elif "proposed_instruction" in data:
     assert "suite" not in data, "held-out answers must not drive content review"
     if data["seed_evidence"]["analysis"] == "Review unavailable":
         raise RuntimeError("final review fixture unavailable")
-    answer = json.dumps({"accepted": data["seed_evidence"]["analysis"] != "Reject this proposal", "evidence": [data["seed_reference"]]})
+    answer = json.dumps({"accepted": data["seed_evidence"]["analysis"] != "Reject this proposal", "reason": "Review the supported seed.", "evidence": [data["seed_reference"]], "addressed_problems": []})
 elif "component" in data:
     assert data["component"] in ("instruction", "team")
     for parent in data["parents"]:

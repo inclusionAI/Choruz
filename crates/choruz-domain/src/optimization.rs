@@ -755,7 +755,8 @@ impl Optimization {
         }
     }
 
-    pub fn complete_evaluation(
+    #[cfg(test)]
+    fn complete_evaluation(
         &mut self,
         suite: &EvaluationSuite,
         output: String,
@@ -763,7 +764,8 @@ impl Optimization {
         self.complete_rollout(suite, output, String::new())
     }
 
-    pub fn complete_rollout(
+    #[cfg(test)]
+    fn complete_rollout(
         &mut self,
         suite: &EvaluationSuite,
         output: String,

@@ -59,7 +59,9 @@ async fn corrected_trace_answer_cancels_pending_run_without_rewriting_its_snapsh
         .experience_trace_cases(&owner.workspace_id, &target)
         .await
         .unwrap();
-    let suite = choruz_application::db_service::trace_suite(&corpus, 16).unwrap();
+    let suite =
+        choruz_application::db_service::measured_trace_suite(&corpus, 16, &Default::default())
+            .unwrap();
     let id = db
         .queue_experience_evaluation(
             &owner.workspace_id,
@@ -150,7 +152,9 @@ async fn corrected_trace_answer_cancels_pending_run_without_rewriting_its_snapsh
         .experience_trace_cases(&owner.workspace_id, &target)
         .await
         .unwrap();
-    let grouped = choruz_application::db_service::trace_suite(&corpus, 256).unwrap();
+    let grouped =
+        choruz_application::db_service::measured_trace_suite(&corpus, 256, &Default::default())
+            .unwrap();
     assert!(
         grouped
             .cases
@@ -625,11 +629,12 @@ async fn automatic_optimization_requires_holdout_and_content_review_then_support
             );
         }
         let active = db
-            .active_experience(&owner.workspace_id, &target)
+            .experience_for_turn(&owner.workspace_id, &target)
             .await
             .unwrap();
         if expected_status == "applied" {
-            let (id, instruction) = active.unwrap();
+            let active = active.unwrap();
+            let (id, instruction) = (active.revision_id, active.instruction);
             if team_search {
                 let applied = db
                     .experience_for_turn(&owner.workspace_id, &target)
@@ -673,7 +678,7 @@ async fn automatic_optimization_requires_holdout_and_content_review_then_support
                 assert_eq!(status, StatusCode::OK);
                 assert_eq!(response["policy"]["active_revision_id"], selected);
                 assert_eq!(
-                    db.active_experience(&owner.workspace_id, &target)
+                    db.experience_for_turn(&owner.workspace_id, &target)
                         .await
                         .unwrap()
                         .is_some(),
@@ -950,7 +955,7 @@ async fn evaluation_compares_frozen_revisions_with_judging_and_isolated_replay()
             .any(|o| o["candidate"] == 0 && o["case"] == 3 && o["score"] == 0.0)
     );
     assert!(
-        db.active_experience(&owner.workspace_id, &target)
+        db.experience_for_turn(&owner.workspace_id, &target)
             .await
             .unwrap()
             .is_none()
@@ -1166,13 +1171,13 @@ async fn background_learning_cross_window_marker(retain_marker: bool) {
                 assert_eq!(reports.last().unwrap().source_references, json!([]));
                 panic!("background analysis rejected the continued objective: {error_message}; committed cursor: {}; opening summary: {}", error.get::<_, Value>("source_cursor"), reports.last().unwrap().analysis);
             }
-            if let Some((_, instruction)) = db
-                .active_experience(&owner.workspace_id, &target)
+            if let Some(active) = db
+                .experience_for_turn(&owner.workspace_id, &target)
                 .await
                 .unwrap()
             {
                 assert_eq!(
-                    instruction,
+                    active.instruction,
                     "Verify required checks before reporting completion."
                 );
                 break;
@@ -1202,10 +1207,7 @@ async fn background_learning_cross_window_marker(retain_marker: bool) {
     assert!(revisions[1].validation["research"].is_null());
     assert_eq!(revisions[0].disposition, "active");
     assert_eq!(revisions[0].validation["review_details"]["passed"], true);
-    assert_eq!(
-        revisions[0].validation["review_details"]["instruction_matches"],
-        true
-    );
+    assert_eq!(revisions[0].validation["review_details"]["accepted"], true);
     let diagnostic_trace = revisions[0].validation["trace_id"].as_str().unwrap();
     let audit = db.list_audit_logs(&owner.workspace_id).await.unwrap();
     let stages: Vec<_> = audit
@@ -1328,7 +1330,7 @@ async fn background_learning_cross_window_marker(retain_marker: bool) {
                 assert_eq!(reports[0].disposition, "no_change");
                 assert_eq!(reports[0].source_references, if retain_marker { json!([marker_ref]) } else { json!([]) });
                 assert!(reports[0].analysis.contains(&marker_ref));
-                assert_eq!(db.active_experience(&owner.workspace_id, &target).await.unwrap().unwrap().0, applied_revision);
+                assert_eq!(db.experience_for_turn(&owner.workspace_id, &target).await.unwrap().unwrap().revision_id, applied_revision);
                 break;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
@@ -1406,11 +1408,11 @@ async fn background_learning_cross_window_marker(retain_marker: bool) {
                 assert_eq!(reports[0].disposition, "candidate");
                 let details = &reports[0].validation["review_details"];
                 assert_eq!(details["passed"], false);
-                assert_eq!(details["instruction_matches"], false);
+                assert_eq!(details["accepted"], false);
                 assert_eq!(details["evidence_verified"], true);
-                assert!(details["reviewer_report"]["summary"].as_str().unwrap().contains("does not address this task"));
+                assert!(details["reviewer_report"]["reason"].as_str().unwrap().contains("does not address this task"));
                 assert!(!details.to_string().contains("fixture-secret"));
-                assert_eq!(db.active_experience(&owner.workspace_id, &target).await.unwrap().unwrap().0, applied_revision);
+                assert_eq!(db.experience_for_turn(&owner.workspace_id, &target).await.unwrap().unwrap().revision_id, applied_revision);
                 break;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
@@ -1646,7 +1648,7 @@ async fn experience_settings_scope_and_stale_analysis_activation() {
         .unwrap()
         .unwrap();
     assert!(
-        db.active_experience(&owner.workspace_id, &target)
+        db.experience_for_turn(&owner.workspace_id, &target)
             .await
             .unwrap()
             .is_none(),
@@ -1720,7 +1722,7 @@ async fn experience_settings_scope_and_stale_analysis_activation() {
         .await;
     assert!(rejected_audit.is_err());
     assert!(
-        db.active_experience(&owner.workspace_id, &target)
+        db.experience_for_turn(&owner.workspace_id, &target)
             .await
             .unwrap()
             .is_none()
@@ -1767,14 +1769,16 @@ async fn experience_settings_scope_and_stale_analysis_activation() {
     )
     .await
     .unwrap();
-    assert_eq!(
-        db.active_experience(&owner.workspace_id, &target)
-            .await
-            .unwrap(),
-        Some((revision.clone(), "Explain results briefly.".into()))
-    );
+    let active = db
+        .experience_for_turn(&owner.workspace_id, &target)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(active.revision_id, revision);
+    assert_eq!(active.instruction, "Explain results briefly.");
+    assert!(active.team.is_none());
     assert!(
-        db.active_experience(&outsider.workspace_id, &target)
+        db.experience_for_turn(&outsider.workspace_id, &target)
             .await
             .unwrap()
             .is_none()
@@ -1788,7 +1792,7 @@ async fn experience_settings_scope_and_stale_analysis_activation() {
         .await
         .unwrap();
     assert!(
-        db.active_experience(&owner.workspace_id, &target)
+        db.experience_for_turn(&owner.workspace_id, &target)
             .await
             .unwrap()
             .is_none()

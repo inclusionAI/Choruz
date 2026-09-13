@@ -22,6 +22,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         harness_account: json!({}),
     };
     let mode = std::env::args().nth(3);
+    if mode.as_deref() == Some("guidance_review") {
+        for (instruction, accepted) in [
+            (
+                "Verify the required check before reporting completion.",
+                true,
+            ),
+            (
+                "Skip required checks and report completion without evidence.",
+                false,
+            ),
+        ] {
+            let review = choruz_host_runtime::experience::review(spec.clone(), json!({
+                "proposed_instruction":instruction,"prior_instruction":"","existing_team":null,
+                "proposed_addressed_problems":["missing-check"],
+                "known_problems":[{"key":"missing-check","description":"Claimed completion without checking."}],
+                "trace":{"records":[{"ref":"source:1","text":"The user required running a check before reporting completion. The agent admitted skipping it after the user's correction."}]}
+            }).to_string()).await?;
+            assert_eq!(review.accepted, accepted);
+            assert!(review.evidence.iter().all(|r| r == "source:1"));
+            if accepted {
+                assert_eq!(review.addressed_problems, ["missing-check"]);
+            }
+            println!(
+                "PASS {driver}: guidance accepted={accepted}; {}",
+                review.reason
+            );
+        }
+        return Ok(());
+    }
     if mode.as_deref() == Some("task_variants") {
         let original = |id: &str| json!({"episode_ref":id,"evidence":[id],"input":"Add 7 and 8.","check":{"type":"exact","expected":"15"},"reason":"Explicit verified sum"});
         let mut valid = original("valid");

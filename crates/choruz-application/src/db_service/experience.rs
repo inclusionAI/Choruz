@@ -253,16 +253,6 @@ impl DbService {
             .map_err(|e| AppError::Internal(format!("commit learning selection: {e}")))
     }
 
-    pub async fn active_experience(
-        &self,
-        workspace_id: &str,
-        binding_id: &str,
-    ) -> Result<Option<(String, String)>, AppError> {
-        Ok(self
-            .experience_for_turn(workspace_id, binding_id)
-            .await?
-            .map(|turn| (turn.revision_id, turn.instruction)))
-    }
     /// A lease survives worker restarts and fences competing workers and settings changes.
     pub async fn claim_experience(&self) -> Result<Option<ExperienceClaim>, AppError> {
         let client = self.store.connect().await?;

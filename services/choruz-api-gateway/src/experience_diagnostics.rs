@@ -57,6 +57,7 @@ impl<'a> LearningCheck<'a> {
         // Never serialize TerminalSpec: it contains device-local account configuration.
         let input = match &request {
             HostRequest::AnalyzeExperience { prompt, .. }
+            | HostRequest::ReviewExperience { prompt, .. }
             | HostRequest::ReviewTasks { prompt, .. } => {
                 json!({"input_digest":digest(prompt.as_bytes()),"input_bytes":prompt.len()})
             }

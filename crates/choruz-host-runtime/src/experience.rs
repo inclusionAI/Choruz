@@ -47,8 +47,13 @@ pub async fn analyze(spec: TerminalSpec, prompt: String) -> Result<Analysis, App
 #[serde(deny_unknown_fields)]
 pub struct Review {
     pub accepted: bool,
+    pub reason: String,
     pub evidence: Vec<String>,
+    pub addressed_problems: Vec<String>,
 }
+
+pub const REVIEW_SKILL: &str =
+    include_str!("../../../agent-templates/experience-application-review.md");
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -129,11 +134,30 @@ fn decode_task_decisions(text: &str) -> Result<Vec<TaskDecision>, AppError> {
 /// Judge the immutable candidate without rewriting it. This also admits a
 /// team-only candidate whose executor needs no additional instruction.
 pub async fn review(spec: TerminalSpec, prompt: String) -> Result<Review, AppError> {
-    let output = run(spec, prompt, false).await?;
+    let output = run_with_role(
+        spec,
+        format!("{REVIEW_SKILL}\n{prompt}"),
+        false,
+        REVIEW_SKILL,
+    )
+    .await?;
+    decode_review(&output)
+}
+
+fn decode_review(output: &str) -> Result<Review, AppError> {
     let review: Review = serde_json::from_str(output.trim()).map_err(|_| {
-        AppError::Validation("Guidance review must return accepted and evidence".into())
+        AppError::Validation(
+            "Guidance review must return accepted, reason, evidence and addressed_problems".into(),
+        )
     })?;
-    if review.evidence.is_empty()
+    if review.reason.trim().is_empty()
+        || review.reason.len() > 4000
+        || review.addressed_problems.len() > 20
+        || review
+            .addressed_problems
+            .iter()
+            .any(|key| key.is_empty() || key.len() > 80)
+        || review.evidence.is_empty()
         || review.evidence.len() > 100
         || review
             .evidence
@@ -529,6 +553,33 @@ fn decode(text: &str) -> Result<Analysis, AppError> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn guidance_review_accepts_only_the_bounded_decision_contract() {
+        let report = serde_json::json!({"accepted":true,"reason":"Supported by the source.","evidence":["source:1"],"addressed_problems":["missing-check"]});
+        let decoded = super::decode_review(&report.to_string()).unwrap();
+        assert!(decoded.accepted);
+        assert_eq!(decoded.addressed_problems, ["missing-check"]);
+        for (field, invalid) in [
+            ("reason", serde_json::json!("")),
+            ("evidence", serde_json::json!([])),
+            ("addressed_problems", serde_json::json!([""])),
+            (
+                "instruction",
+                serde_json::json!("Do not rewrite the candidate"),
+            ),
+        ] {
+            let mut bad = report.clone();
+            bad[field] = invalid;
+            assert!(super::decode_review(&bad.to_string()).is_err(), "{field}");
+        }
+        let mut missing = report;
+        missing
+            .as_object_mut()
+            .unwrap()
+            .remove("addressed_problems");
+        assert!(super::decode_review(&missing.to_string()).is_err());
+    }
+
     use super::completed_search;
 
     #[test]
