@@ -113,9 +113,9 @@ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
 name = "aws-lc-rs"
-version = "1.16.2"
+version = "1.18.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a054912289d18629dc78375ba2c3726a3afe3ff71b4edba9dedfca0e3446d1fc"
+checksum = "b281d307588d634de920874890732659e2e7672f72b5e10e81badc1a8a83621e"
 dependencies = [
  "aws-lc-sys",
  "zeroize",
@@ -123,14 +123,15 @@ dependencies = [
 
 [[package]]
 name = "aws-lc-sys"
-version = "0.39.0"
+version = "0.45.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1fa7e52a4c5c547c741610a2c6f123f3881e409b714cd27e6798ef020c514f0a"
+checksum = "9bff6c3b54fad79a2e60b8102caf565819711497c1f5f092f49508e2f5c31b27"
 dependencies = [
  "cc",
  "cmake",
  "dunce",
  "fs_extra",
+ "pkg-config",
 ]
 
 [[package]]
@@ -333,7 +334,7 @@ dependencies = [
 
 [[package]]
 name = "choruz-agent-runtime"
-version = "0.1.2"
+version = "0.2.2"
 dependencies = [
  "choruz-common",
  "chrono",
@@ -352,7 +353,7 @@ dependencies = [
 
 [[package]]
 name = "choruz-api-gateway"
-version = "0.1.2"
+version = "0.2.2"
 dependencies = [
  "aes-gcm",
  "axum",
@@ -397,7 +398,7 @@ dependencies = [
 
 [[package]]
 name = "choruz-application"
-version = "0.1.2"
+version = "0.2.2"
 dependencies = [
  "choruz-auth",
  "choruz-common",
@@ -419,7 +420,7 @@ dependencies = [
 
 [[package]]
 name = "choruz-auth"
-version = "0.1.2"
+version = "0.2.2"
 dependencies = [
  "base64",
  "hmac 0.12.1",
@@ -432,7 +433,7 @@ dependencies = [
 
 [[package]]
 name = "choruz-cli"
-version = "0.1.2"
+version = "0.2.2"
 dependencies = [
  "dirs",
  "libc",
@@ -446,7 +447,7 @@ dependencies = [
 
 [[package]]
 name = "choruz-common"
-version = "0.1.2"
+version = "0.2.2"
 dependencies = [
  "chrono",
  "prometheus",
@@ -457,7 +458,7 @@ dependencies = [
 
 [[package]]
 name = "choruz-connector"
-version = "0.1.2"
+version = "0.2.2"
 dependencies = [
  "axum",
  "choruz-agent-runtime",
@@ -481,7 +482,7 @@ dependencies = [
 
 [[package]]
 name = "choruz-domain"
-version = "0.1.2"
+version = "0.2.2"
 dependencies = [
  "chrono",
  "serde",
@@ -490,7 +491,7 @@ dependencies = [
 
 [[package]]
 name = "choruz-events"
-version = "0.1.2"
+version = "0.2.2"
 dependencies = [
  "choruz-ids",
  "chrono",
@@ -500,7 +501,7 @@ dependencies = [
 
 [[package]]
 name = "choruz-executor"
-version = "0.1.2"
+version = "0.2.2"
 dependencies = [
  "async-trait",
  "choruz-events",
@@ -532,7 +533,7 @@ dependencies = [
 
 [[package]]
 name = "choruz-host-runtime"
-version = "0.1.2"
+version = "0.2.2"
 dependencies = [
  "base64",
  "choruz-agent-runtime",
@@ -556,7 +557,7 @@ dependencies = [
 
 [[package]]
 name = "choruz-ids"
-version = "0.1.2"
+version = "0.2.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -565,7 +566,7 @@ dependencies = [
 
 [[package]]
 name = "choruz-infrastructure"
-version = "0.1.2"
+version = "0.2.2"
 dependencies = [
  "tracing",
  "tracing-subscriber",
@@ -573,7 +574,7 @@ dependencies = [
 
 [[package]]
 name = "choruz-pipeline"
-version = "0.1.2"
+version = "0.2.2"
 dependencies = [
  "async-trait",
  "axum",
@@ -607,7 +608,7 @@ dependencies = [
 
 [[package]]
 name = "choruz-relay-client"
-version = "0.1.2"
+version = "0.2.2"
 dependencies = [
  "aes-gcm",
  "base64",
@@ -628,7 +629,7 @@ dependencies = [
 
 [[package]]
 name = "choruz-replay"
-version = "0.1.2"
+version = "0.2.2"
 dependencies = [
  "choruz-common",
  "choruz-ids",
@@ -644,7 +645,7 @@ dependencies = [
 
 [[package]]
 name = "choruz-router"
-version = "0.1.2"
+version = "0.2.2"
 dependencies = [
  "choruz-common",
  "choruz-events",
@@ -663,7 +664,7 @@ dependencies = [
 
 [[package]]
 name = "choruz-server"
-version = "0.1.2"
+version = "0.2.2"
 dependencies = [
  "choruz-infrastructure",
  "choruz-supervisor",
@@ -674,7 +675,7 @@ dependencies = [
 
 [[package]]
 name = "choruz-session"
-version = "0.1.2"
+version = "0.2.2"
 dependencies = [
  "choruz-events",
  "choruz-ids",
@@ -692,7 +693,7 @@ dependencies = [
 
 [[package]]
 name = "choruz-store"
-version = "0.1.2"
+version = "0.2.2"
 dependencies = [
  "choruz-common",
  "choruz-events",
@@ -711,7 +712,7 @@ dependencies = [
 
 [[package]]
 name = "choruz-supervisor"
-version = "0.1.2"
+version = "0.2.2"
 dependencies = [
  "choruz-common",
  "dirs",
@@ -728,7 +729,7 @@ dependencies = [
 
 [[package]]
 name = "choruz-tools"
-version = "0.1.2"
+version = "0.2.2"
 dependencies = [
  "async-trait",
  "choruz-common",
@@ -745,7 +746,7 @@ dependencies = [
 
 [[package]]
 name = "choruz-writer"
-version = "0.1.2"
+version = "0.2.2"
 dependencies = [
  "choruz-common",
  "choruz-events",
@@ -3079,9 +3080,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.37"
+version = "0.23.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "758025cb5fccfd3bc2fd74708fd4682be41d99e5dff73c377c0646c6012c73a4"
+checksum = "0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634"
 dependencies = [
  "aws-lc-rs",
  "once_cell",
@@ -3143,9 +3144,9 @@ checksum = "f87165f0995f63a9fbeea62b64d10b4d9d8e78ec6d7d51fb2125fda7bb36788f"
 
 [[package]]
 name = "rustls-webpki"
-version = "0.103.13"
+version = "0.103.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "61c429a8649f110dddef65e2a5ad240f747e85f7758a6bccc7e5777bd33f756e"
+checksum = "f3c3cf1d8b1e7d4927e2d154c3fcb02979afb9939629c62cd9048d4f07b60ac2"
 dependencies = [
  "aws-lc-rs",
  "ring",
@@ -3708,7 +3709,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "82a72c767771b47409d2345987fda8628641887d5466101319899796367354a0"
 dependencies = [
  "fastrand",
- "getrandom 0.4.2",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",

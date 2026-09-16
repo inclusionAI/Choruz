@@ -27,6 +27,27 @@ pub struct Analysis {
     pub previous_revision_outcome: String,
     pub problems: Vec<ProblemObservation>,
     pub addressed_problems: Vec<String>,
+    #[serde(default)]
+    pub solution_sources: Vec<SolutionSource>,
+    #[serde(default)]
+    pub solution_outcomes: Vec<SolutionOutcome>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SolutionSource {
+    pub problem_key: String,
+    pub record_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SolutionOutcome {
+    pub problem_key: String,
+    pub episode_ref: String,
+    pub evidence: Vec<String>,
+    pub applied_revision_ref: String,
+    pub outcome: choruz_domain::behavior::EvidenceKind,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -39,6 +60,77 @@ pub struct ProblemObservation {
     pub applied_revision_ref: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BehaviorDraft {
+    pub title: String,
+    pub input_background: String,
+    pub expected_behavior: String,
+    pub bad_behavior: String,
+    pub applicability: String,
+    pub tags: Vec<String>,
+    pub evidence_summary: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PrivacyReview {
+    pub accepted: bool,
+    pub reason: String,
+}
+
+pub async fn extract_behavior(
+    spec: TerminalSpec,
+    prompt: String,
+) -> Result<Option<BehaviorDraft>, AppError> {
+    const SKILL: &str = include_str!("../../../agent-templates/behavior-extraction.md");
+    let output = run_with_role(spec, format!("{SKILL}\n{prompt}"), false, SKILL).await?;
+    serde_json::from_str(output.trim())
+        .map_err(|_| AppError::Validation("Invalid behavior card draft".into()))
+}
+
+pub async fn review_behavior(
+    spec: TerminalSpec,
+    prompt: String,
+) -> Result<PrivacyReview, AppError> {
+    const SKILL: &str = include_str!("../../../agent-templates/behavior-privacy-review.md");
+    let output = run_with_role(spec, format!("{SKILL}\n{prompt}"), false, SKILL).await?;
+    let review: PrivacyReview = serde_json::from_str(output.trim())
+        .map_err(|_| AppError::Validation("Invalid behavior privacy review".into()))?;
+    if review.reason.trim().is_empty() || review.reason.len() > 2000 {
+        return Err(AppError::Validation(
+            "Invalid behavior privacy decision".into(),
+        ));
+    }
+    Ok(review)
+}
+
+pub async fn redact_behavior(
+    spec: TerminalSpec,
+    record: choruz_domain::behavior::BehaviorRecord,
+) -> Result<Option<choruz_domain::behavior::BehaviorRecord>, AppError> {
+    const SKILL: &str = include_str!("../../../agent-templates/behavior-public-projection.md");
+    let output = run_with_role(
+        spec,
+        format!("{SKILL}\n{}", serde_json::json!(record)),
+        false,
+        SKILL,
+    )
+    .await?;
+    let candidate: Option<choruz_domain::behavior::BehaviorRecord> =
+        serde_json::from_str(output.trim())
+            .map_err(|_| AppError::Validation("Invalid public behavior projection".into()))?;
+    if let Some(candidate) = &candidate {
+        candidate.validate().map_err(AppError::Validation)?;
+        if !record.same_evidence_identity(candidate) {
+            return Err(AppError::Validation(
+                "Public projection changed evidence identity".into(),
+            ));
+        }
+    }
+    Ok(candidate)
+}
+
 pub async fn analyze(spec: TerminalSpec, prompt: String) -> Result<Analysis, AppError> {
     decode(&run(spec, prompt, false).await?)
 }
@@ -47,8 +139,13 @@ pub async fn analyze(spec: TerminalSpec, prompt: String) -> Result<Analysis, App
 #[serde(deny_unknown_fields)]
 pub struct Review {
     pub accepted: bool,
+    pub reason: String,
     pub evidence: Vec<String>,
+    pub addressed_problems: Vec<String>,
 }
+
+pub const REVIEW_SKILL: &str =
+    include_str!("../../../agent-templates/experience-application-review.md");
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -129,11 +226,30 @@ fn decode_task_decisions(text: &str) -> Result<Vec<TaskDecision>, AppError> {
 /// Judge the immutable candidate without rewriting it. This also admits a
 /// team-only candidate whose executor needs no additional instruction.
 pub async fn review(spec: TerminalSpec, prompt: String) -> Result<Review, AppError> {
-    let output = run(spec, prompt, false).await?;
+    let output = run_with_role(
+        spec,
+        format!("{REVIEW_SKILL}\n{prompt}"),
+        false,
+        REVIEW_SKILL,
+    )
+    .await?;
+    decode_review(&output)
+}
+
+fn decode_review(output: &str) -> Result<Review, AppError> {
     let review: Review = serde_json::from_str(output.trim()).map_err(|_| {
-        AppError::Validation("Guidance review must return accepted and evidence".into())
+        AppError::Validation(
+            "Guidance review must return accepted, reason, evidence and addressed_problems".into(),
+        )
     })?;
-    if review.evidence.is_empty()
+    if review.reason.trim().is_empty()
+        || review.reason.len() > 4000
+        || review.addressed_problems.len() > 20
+        || review
+            .addressed_problems
+            .iter()
+            .any(|key| key.is_empty() || key.len() > 80)
+        || review.evidence.is_empty()
         || review.evidence.len() > 100
         || review
             .evidence
@@ -468,7 +584,32 @@ fn decode(text: &str) -> Result<Analysis, AppError> {
     let value: Analysis = serde_json::from_str(text.trim()).map_err(|_| {
         AppError::Validation("Analysis did not return the required JSON report".into())
     })?;
-    if value.evaluation_cases.len() > 20
+    if value.solution_outcomes.len() > 20
+        || value.solution_outcomes.iter().any(|outcome| {
+            !choruz_domain::behavior::valid_id(&outcome.problem_key)
+                || outcome.episode_ref.len() > 256
+                || outcome.episode_ref.is_empty()
+                || outcome.applied_revision_ref.len() > 256
+                || outcome.applied_revision_ref.is_empty()
+                || outcome.evidence.is_empty()
+                || outcome.evidence.len() > 100
+                || outcome
+                    .evidence
+                    .iter()
+                    .any(|r| r.is_empty() || r.len() > 256)
+                || !matches!(
+                    outcome.outcome,
+                    choruz_domain::behavior::EvidenceKind::Applied
+                        | choruz_domain::behavior::EvidenceKind::Effective
+                        | choruz_domain::behavior::EvidenceKind::Ineffective
+                )
+        })
+        || value.solution_sources.len() > 8
+        || value.solution_sources.iter().any(|source| {
+            !choruz_domain::behavior::valid_id(&source.record_id)
+                || !choruz_domain::behavior::valid_id(&source.problem_key)
+        })
+        || value.evaluation_cases.len() > 20
         || serde_json::to_vec(&value.evaluation_cases)
             .map_err(|e| AppError::Validation(e.to_string()))?
             .len()
@@ -529,6 +670,33 @@ fn decode(text: &str) -> Result<Analysis, AppError> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn guidance_review_accepts_only_the_bounded_decision_contract() {
+        let report = serde_json::json!({"accepted":true,"reason":"Supported by the source.","evidence":["source:1"],"addressed_problems":["missing-check"]});
+        let decoded = super::decode_review(&report.to_string()).unwrap();
+        assert!(decoded.accepted);
+        assert_eq!(decoded.addressed_problems, ["missing-check"]);
+        for (field, invalid) in [
+            ("reason", serde_json::json!("")),
+            ("evidence", serde_json::json!([])),
+            ("addressed_problems", serde_json::json!([""])),
+            (
+                "instruction",
+                serde_json::json!("Do not rewrite the candidate"),
+            ),
+        ] {
+            let mut bad = report.clone();
+            bad[field] = invalid;
+            assert!(super::decode_review(&bad.to_string()).is_err(), "{field}");
+        }
+        let mut missing = report;
+        missing
+            .as_object_mut()
+            .unwrap()
+            .remove("addressed_problems");
+        assert!(super::decode_review(&missing.to_string()).is_err());
+    }
+
     use super::completed_search;
 
     #[test]

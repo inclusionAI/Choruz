@@ -25,6 +25,12 @@ Use [the activity CLI](cli.md#activity-data) to export observations for the affe
 
 Set `CHORUZ_LOG_FORMAT=json` for structured service stderr and use the process supervisor's log rotation and retention. `/metrics` includes `choruz_http_responses_total{class="5xx"}` for server error rate and `choruz_activity_batches_total{outcome="failed"}` for authenticated ingestion failures. These are process counters, not deduplicated event totals; a retried committed batch increments the successful-attempt counter again. Persisted records are the source for behaviour analysis.
 
+## Behavior community publisher
+
+Public contribution requires `CHORUZ_COMMUNITY_HF_TOKEN` in the API gateway's service environment. Use a Hugging Face publisher identity authorized to propose changes to `gjcjcg/ai-bad-behavior-library`; protect the token with the service's secret manager, not a browser field or trace. An absent token leaves local learning and public reads available and displays the missing publisher configuration in the learning panel. Contribution still requires each learning owner's separate permission.
+
+Check the panel's per-record state and community synchronization error. A blocked preparation can be retried after resolving the analyst or privacy failure. An uncertain contribution may already have reached Hugging Face: inspect the dataset's discussions before taking any manual action. Acceptance is recognized only when the exact reviewed payload appears in an accepted dataset revision. A pending label means acceptance has not been observed, not that a reviewer is necessarily still working on it.
+
 ## Incident: API Gateway Down
 
 1. Check `launchctl print system/com.choruz.api-gateway` on macOS or `systemctl status choruz-api-gateway` on Linux.

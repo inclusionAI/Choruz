@@ -1,5 +1,7 @@
 mod attachments;
 mod auth;
+mod behavior_hub;
+mod behavior_worker;
 pub mod config;
 mod db_projection;
 mod evaluation_worker;
@@ -149,6 +151,14 @@ pub fn router_with_runtime(
             get(handlers_experience::get)
                 .put(handlers_experience::configure)
                 .patch(handlers_experience::select),
+        )
+        .route(
+            "/v1/runtime/bindings/{binding_id}/experience/community",
+            get(handlers_experience::community).put(handlers_experience::configure_community),
+        )
+        .route(
+            "/v1/runtime/bindings/{binding_id}/experience/community/{event_id}/retry",
+            post(handlers_experience::retry_community),
         )
         .route(
             "/v1/runtime/bindings/{binding_id}/experience/evaluations",

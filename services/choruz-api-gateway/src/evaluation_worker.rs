@@ -14,8 +14,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 const PROPOSAL: &str = include_str!("../../../agent-templates/experience-proposal.md");
-const APPLICATION_REVIEW: &str =
-    include_str!("../../../agent-templates/experience-application-review.md");
+use choruz_host_runtime::experience::REVIEW_SKILL as APPLICATION_REVIEW;
 const ANALYSIS: &str = include_str!("../../../agent-templates/experience-analysis.md");
 
 pub(crate) fn analyst_fingerprint(spec: &TerminalSpec) -> Result<String, AppError> {
@@ -213,6 +212,15 @@ async fn execute(state: &ApiState, claim: &mut EvaluationClaim) -> Result<Value,
         return Err(AppError::Conflict("Evaluation context changed".into()));
     }
     let host = RuntimeHost::for_binding(state, &binding)?;
+    let community_seed = if claim
+        .optimization
+        .as_ref()
+        .is_some_and(|search| matches!(search.pending, Some(SearchAction::Propose { .. })))
+    {
+        Some(state.db.evaluation_seed_evidence(claim).await?)
+    } else {
+        None
+    };
     if let Some(search) = &mut claim.optimization {
         let analyst_id = claim
             .analyst_binding_id
@@ -244,7 +252,7 @@ async fn execute(state: &ApiState, claim: &mut EvaluationClaim) -> Result<Value,
             );
             let review: choruz_host_runtime::experience::Review = RuntimeHost::for_binding(state,&analyst)?.call(HostRequest::ReviewExperience {
                 spec: Box::new(analyst_spec),
-                prompt: format!("{APPLICATION_REVIEW}\n{}", json!({"proposed_instruction":proposed.instruction,"proposed_team":proposed.team,"seeds":seeds,"seed_reference":seed_reference,"seed_evidence":evidence})),
+                prompt: json!({"proposed_instruction":proposed.instruction,"proposed_team":proposed.team,"seeds":seeds,"seed_reference":seed_reference,"seed_evidence":evidence}).to_string(),
             }).await?;
             let target = authorize_terminal_binding(state, &actor, &claim.binding_id)
                 .await
@@ -270,7 +278,7 @@ async fn execute(state: &ApiState, claim: &mut EvaluationClaim) -> Result<Value,
             });
             return Ok(json!({
                 "action": "application_review",
-                "review_passed": review.accepted && cited_seed_evidence,
+                "review_passed": review.accepted && cited_seed_evidence && review.addressed_problems.is_empty(),
                 "review": review,
             }));
         }
@@ -315,9 +323,14 @@ async fn execute(state: &ApiState, claim: &mut EvaluationClaim) -> Result<Value,
             SearchAction::Propose {
                 parents, component, ..
             } => {
-                let input = search
+                let mut input = search
                     .proposal_input(&claim.suite)
                     .map_err(AppError::Validation)?;
+                if let Some(seed) = &community_seed
+                    && seed["community_trials_enabled"] == true
+                {
+                    input["behavior_sources"] = seed["validation"]["behavior_sources"].clone();
+                }
                 let text: String = RuntimeHost::for_binding(state, &analyst)?
                     .call(HostRequest::ProposeExperience {
                         spec: Box::new(analyst_spec),

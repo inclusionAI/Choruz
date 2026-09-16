@@ -48,7 +48,7 @@ elif "trace" in data:
 elif "component" in data:
     answer = {"text": "Return the number only."}
 elif "seed_evidence" in data:
-    answer = {"accepted": True, "evidence": [data["seed_reference"]]}
+    answer = {"accepted": True, "reason": "Supported by the reviewed seed.", "evidence": [data["seed_reference"]], "addressed_problems": []}
 else:
     assert "check" not in data and "source" not in data and "expected" not in data
     if data["task"].startswith("Independently attempt each task"):

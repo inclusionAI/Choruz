@@ -48,7 +48,7 @@ collapsible_if = "allow"
 [workspace.package]
 edition = "2024"
 license = "Apache-2.0"
-version = "0.1.2"
+version = "0.2.2"
 
 [workspace.dependencies]
 async-trait = "0.1.89"
@@ -70,7 +70,7 @@ infer = { version = "0.16", default-features = false }
 postgres = { version = "0.19.12", features = ["with-chrono-0_4"] }
 rand = "0.8"
 reqwest = { version = "0.12.24", default-features = false, features = ["json", "rustls-tls"] }
-rustls = { version = "0.23.37", default-features = false, features = ["ring", "std"] }
+rustls = { version = "0.23.45", default-features = false, features = ["ring", "std"] }
 rusqlite = { version = "0.34", features = ["bundled"] }
 prometheus = "0.14.0"
 proptest = "1.9.0"

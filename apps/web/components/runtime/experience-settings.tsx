@@ -5,6 +5,7 @@ import { apiFetch, type RuntimeBinding } from "../../lib/api/choruz-api";
 import { Modal } from "../ui/modal";
 import { ExperienceDataset, ExperiencePerformance, type DatasetReport, type TaskPerformance } from "./experience-dataset";
 import { emptyOptimization, OptimizationFields, OptimizationHistory, type OptimizationSettings } from "./experience-optimization";
+import { ExperienceCommunity } from "./experience-community";
 
 type Revision = { id: string; analysis: string; instruction: string; disposition: string; created_at: string; validation: { dataset?: DatasetReport | null; evaluation_cases?: { episode_ref: string; input: string; check: unknown | null; reason: string; classification?: { task_type: string; capability: string; structure: string; outcome: string } }[]; review?: string; observed_revision_id?: string; observed_revision_outcome?: string; team?: { config: { order: "serial" | "parallel"; members: { name: string; prompt: string }[] }; review: string } | null } };
 type Learning = { policy: { enabled: boolean; analyst_binding_id: string; active_revision_id: string | null; last_error: string | null; checked_at: string | null; optimization_settings: OptimizationSettings | null; optimization_error: string | null } | null; revisions: Revision[]; task_performance?: TaskPerformance | null };
@@ -128,6 +129,7 @@ export function ExperienceSettings({ bindingId, sessionToken, onClose }: { bindi
         {revision.validation.review === "passed" && revision.disposition === "superseded" && <button className="btn-secondary" type="button" disabled={saving} onClick={() => void selectRevision(revision.id)}>Restore this revision</button>}
       </details>)}
       <OptimizationHistory endpoint={endpoint} sessionToken={sessionToken} />
+      {data.policy && <ExperienceCommunity key={endpoint} endpoint={endpoint} sessionToken={sessionToken} />}
     </div>}
   </Modal>;
 }

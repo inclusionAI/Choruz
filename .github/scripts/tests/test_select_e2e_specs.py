@@ -51,6 +51,12 @@ class DocsOnlyTest(unittest.TestCase):
 
 
 class SpecsForChangeTest(unittest.TestCase):
+    def test_learning_panel_keeps_its_device_runtime_regression(self):
+        for component in ("experience-settings.tsx", "experience-community.tsx"):
+            everything, specs = specs_for_change([f"apps/web/components/runtime/{component}"])
+            self.assertFalse(everything)
+            self.assertIn("tests/e2e/terminal.spec.ts", specs)
+
     def test_deleted_spec_is_not_passed_to_playwright(self):
         result = subprocess.run(
             [sys.executable, str(Path(__file__).resolve().parents[1] / "select_e2e_specs.py"),

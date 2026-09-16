@@ -264,6 +264,89 @@ fn references_before(
     Ok(verified)
 }
 
+pub fn behavior_references(
+    spec: &TerminalSpec,
+    cursor: &Cursor,
+    requested: &[String],
+) -> Result<Vec<HistoricalRecord>, AppError> {
+    let mut records = references(spec, cursor, requested)?;
+    let metadata = execution_metadata(
+        &source_path(spec, &cursor.session)?,
+        cursor,
+        requested,
+        spec.driver_type == "claude_terminal",
+    )?;
+    for record in &mut records {
+        if let Some(context) = metadata.get(&record.offset) {
+            record.record["_execution"] = context.clone();
+        }
+    }
+    if serde_json::to_vec(&records)
+        .map_err(|_| AppError::Internal("Encode attributed evidence".into()))?
+        .len()
+        > MAX_WINDOW_BYTES
+    {
+        return Err(AppError::Validation(
+            "Attributed evidence exceeds its source limit".into(),
+        ));
+    }
+    Ok(records)
+}
+
+fn execution_metadata(
+    path: &Path,
+    cursor: &Cursor,
+    references: &[String],
+    claude: bool,
+) -> Result<std::collections::BTreeMap<u64, Value>, AppError> {
+    let wanted: std::collections::BTreeSet<u64> = references
+        .iter()
+        .filter_map(|reference| {
+            reference
+                .strip_prefix(&format!("{}:", cursor.session))?
+                .parse()
+                .ok()
+        })
+        .filter(|offset| *offset < cursor.offset)
+        .collect();
+    let Some(last) = wanted.last() else {
+        return Ok(Default::default());
+    };
+    let mut reader = BufReader::new(File::open(path).map_err(io_error)?);
+    let mut offset = 0;
+    let mut model = Value::Null;
+    let mut version = Value::Null;
+    let mut result = std::collections::BTreeMap::new();
+    while offset <= *last {
+        let Some((raw, size)) = entry(&mut reader)? else {
+            break;
+        };
+        if claude {
+            if raw["version"].is_string() {
+                version = raw["version"].clone();
+            }
+            if raw["type"] == "assistant" {
+                model = raw["message"]["model"].clone();
+            }
+        } else {
+            if raw["type"] == "session_meta" {
+                version = raw["payload"]["cli_version"].clone();
+            }
+            if raw["type"] == "turn_context" {
+                model = raw["payload"]["model"].clone();
+            }
+        }
+        if wanted.contains(&offset)
+            && (raw["type"] == "assistant"
+                || (raw["type"] == "response_item" && raw["payload"]["role"] == "assistant"))
+        {
+            result.insert(offset, json!({"model":model,"harness_version":version}));
+        }
+        offset += size;
+    }
+    Ok(result)
+}
+
 fn entry(reader: &mut BufReader<File>) -> Result<Option<(Value, u64)>, AppError> {
     let mut bytes = Vec::new();
     reader
@@ -354,6 +437,65 @@ fn project(mut raw: Value, claude: bool) -> Option<Value> {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn behavior_attribution_tracks_native_model_changes_not_configured_aliases() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.jsonl");
+        for (claude, entries) in [
+            (
+                true,
+                vec![
+                    json!({"type":"assistant","version":"2.1","message":{"model":"actual-a"}}),
+                    json!({"type":"assistant","version":"2.2","message":{"model":"actual-b"}}),
+                    json!({"type":"assistant","message":{}}),
+                ],
+            ),
+            (
+                false,
+                vec![
+                    json!({"type":"session_meta","payload":{"cli_version":"0.1"}}),
+                    json!({"type":"turn_context","payload":{"model":"actual-a"}}),
+                    json!({"type":"response_item","payload":{"role":"assistant"}}),
+                    json!({"type":"turn_context","payload":{"model":"actual-b"}}),
+                    json!({"type":"response_item","payload":{"role":"assistant"}}),
+                    json!({"type":"turn_context","payload":{}}),
+                    json!({"type":"response_item","payload":{"role":"assistant"}}),
+                ],
+            ),
+        ] {
+            let mut text = String::new();
+            let mut offsets = Vec::new();
+            for entry in entries {
+                if entry["type"] == "assistant" || entry["type"] == "response_item" {
+                    offsets.push(text.len() as u64);
+                }
+                text.push_str(&format!("{entry}\n"));
+            }
+            std::fs::write(&path, &text).unwrap();
+            let cursor = Cursor {
+                session: "owned".into(),
+                offset: text.len() as u64,
+            };
+            let mut refs: Vec<_> = offsets
+                .iter()
+                .map(|offset| format!("owned:{offset}"))
+                .collect();
+            refs.push(format!("other:{}", text.len()));
+            let result = execution_metadata(&path, &cursor, &refs, claude).unwrap();
+            assert_eq!(result.len(), 3);
+            assert_eq!(result[&offsets[0]]["model"], "actual-a");
+            assert_eq!(result[&offsets[1]]["model"], "actual-b");
+            assert!(
+                result[&offsets[2]]["model"].is_null(),
+                "missing metadata must not inherit a previous model"
+            );
+            assert_eq!(
+                result[&offsets[1]]["harness_version"],
+                if claude { "2.2" } else { "0.1" }
+            );
+        }
+    }
 
     #[test]
     fn historical_response_rejects_oversized_serialized_record() {

@@ -58,6 +58,16 @@ runtimeTest("background experience follows the selected remote Agent and applies
   await dialog.getByLabel("Automatically apply a measured and reviewed improvement").check();
   await dialog.getByRole("button", { name: "Save settings", exact: true }).click();
   await expect(dialog.getByRole("button", { name: "Save settings", exact: true })).toBeEnabled();
+  const community = dialog.getByRole("region", { name: "Behavior community" });
+  await expect(community.getByRole("checkbox", { name: "Search accepted community experience" })).not.toBeChecked();
+  await expect(community.getByRole("checkbox", { name: "Automatically trial applicable solutions through learning review" })).toBeDisabled();
+  await expect(community.getByRole("checkbox", { name: "Contribute independently reviewed, redacted experience publicly" })).not.toBeChecked();
+  await community.getByRole("button", { name: "Save community permissions" }).click();
+  await expect(community.getByRole("button", { name: "Save community permissions" })).toBeEnabled();
+  const communityResponse = await page.request.get(`${API_BASE}/v1/runtime/bindings/${target.binding.id}/experience/community`, { headers });
+  expect(communityResponse.ok()).toBeTruthy();
+  expect((await communityResponse.json()).settings).toEqual({ search: false, automatic_trial: false, contribute: false });
+  await page.screenshot({ path: test.info().outputPath("behavior-permissions.png"), animations: "disabled" });
   await dialog.getByRole("button", { name: "Close", exact: true }).click();
   const endpoint = `${API_BASE}/v1/runtime/bindings/${target.binding.id}/experience`;
   const status = async () => {
@@ -88,6 +98,12 @@ runtimeTest("background experience follows the selected remote Agent and applies
   // prompt-only improvement. Only external model generation is replaced.
   await session.getByRole("button", { name: "Experience learning", exact: true }).click();
   await expect(dialog.getByRole("region", { name: "Evaluation history" })).toContainText("Application: applied");
+  const localCard = community.locator("details").filter({ hasText: "Completion without verification" }).first();
+  await expect(localCard.locator("summary")).toBeVisible({ timeout: 30_000 });
+  await localCard.locator("summary").click();
+  await expect(localCard).toContainText("Execution model:");
+  await expect(localCard).toContainText("The Agent claimed completion without checking.");
+  await page.screenshot({ path: test.info().outputPath("behavior-community.png"), animations: "disabled" });
   await expect(dialog.getByRole("table")).toContainText("Selected winner");
   for (let i = 0; i < 3; i++) {
     await dialog.getByLabel("Expected answer", { exact: true }).nth(i).fill("TEAM_CHECKED");

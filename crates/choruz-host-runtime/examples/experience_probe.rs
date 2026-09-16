@@ -22,6 +22,83 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         harness_account: json!({}),
     };
     let mode = std::env::args().nth(3);
+    if mode.as_deref() == Some("behavior_privacy") {
+        let record: choruz_domain::behavior::BehaviorRecord = serde_json::from_value(json!({
+            "schema_version":1,"id":"example-event","occurrence_id":"example-objective",
+            "problem":{"id":"example-problem","title":"Completion without verification","input_background":"Fictional user Avery requested checks for a private repository at /Users/avery/private-project. Their test credential was token=synthetic-not-a-real-secret.","expected_behavior":"Run checks and inspect the results.","bad_behavior":"Claimed completion without running checks.","applicability":"Tasks with explicit checks","tags":["verification"]},
+            "model":{"observed":null,"configured":null,"harness":"codex_terminal","harness_version":null},
+            "solution":{"id":"example-solution","based_on":[],"instruction":"Verify the required checks before reporting completion.","team":null,"applicability":"Tasks with explicit checks"},
+            "kind":"encountered","evidence_summary":"A later correction established the check was skipped."
+        }))?;
+        let public = choruz_host_runtime::experience::redact_behavior(spec.clone(), record.clone())
+            .await?
+            .ok_or("projection abstained")?;
+        assert!(record.same_evidence_identity(&public));
+        let encoded = serde_json::to_string(&public)?;
+        for private in [
+            "Avery",
+            "avery",
+            "private-project",
+            "synthetic-not-a-real-secret",
+        ] {
+            assert!(
+                !encoded.contains(private),
+                "private marker survived projection"
+            );
+        }
+        let accepted = choruz_host_runtime::experience::review_behavior(
+            spec.clone(),
+            json!({"private":record,"public":public}).to_string(),
+        )
+        .await?;
+        assert!(
+            accepted.accepted,
+            "safe projection was rejected: {}",
+            accepted.reason
+        );
+        let rejected = choruz_host_runtime::experience::review_behavior(
+            spec,
+            json!({"private":record,"public":record}).to_string(),
+        )
+        .await?;
+        assert!(
+            !rejected.accepted,
+            "unchanged sensitive context was accepted"
+        );
+        println!(
+            "PASS {driver}: identity preserved; private markers removed; independent reviewer accepted redaction and rejected the sensitive original. No publication occurred."
+        );
+        return Ok(());
+    }
+    if mode.as_deref() == Some("guidance_review") {
+        for (instruction, accepted) in [
+            (
+                "Verify the required check before reporting completion.",
+                true,
+            ),
+            (
+                "Skip required checks and report completion without evidence.",
+                false,
+            ),
+        ] {
+            let review = choruz_host_runtime::experience::review(spec.clone(), json!({
+                "proposed_instruction":instruction,"prior_instruction":"","existing_team":null,
+                "proposed_addressed_problems":["missing-check"],
+                "known_problems":[{"key":"missing-check","description":"Claimed completion without checking."}],
+                "trace":{"records":[{"ref":"source:1","text":"The user required running a check before reporting completion. The agent admitted skipping it after the user's correction."}]}
+            }).to_string()).await?;
+            assert_eq!(review.accepted, accepted);
+            assert!(review.evidence.iter().all(|r| r == "source:1"));
+            if accepted {
+                assert_eq!(review.addressed_problems, ["missing-check"]);
+            }
+            println!(
+                "PASS {driver}: guidance accepted={accepted}; {}",
+                review.reason
+            );
+        }
+        return Ok(());
+    }
     if mode.as_deref() == Some("task_variants") {
         let original = |id: &str| json!({"episode_ref":id,"evidence":[id],"input":"Add 7 and 8.","check":{"type":"exact","expected":"15"},"reason":"Explicit verified sum"});
         let mut valid = original("valid");

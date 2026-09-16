@@ -10,6 +10,77 @@ use choruz_common::AppError;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+pub(crate) async fn community(
+    headers: HeaderMap,
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let actor = require_human_operator(&headers, &state).await?;
+    let binding = authorize_terminal_binding(&state, &actor, &id).await?;
+    let conversation = state.db.get_conversation(&binding.conversation_id).await?;
+    let mut result = state
+        .db
+        .behavior_community(&conversation.workspace_id, &actor.id, &id)
+        .await?;
+    result["publisher_configured"] = json!(
+        std::env::var("CHORUZ_COMMUNITY_HF_TOKEN").is_ok_and(|token| !token.trim().is_empty())
+    );
+    Ok(Json(result))
+}
+
+pub(crate) async fn configure_community(
+    headers: HeaderMap,
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+    Json(settings): Json<choruz_domain::behavior::CommunitySettings>,
+) -> Result<Json<Value>, ApiError> {
+    let actor = require_human_operator(&headers, &state).await?;
+    let binding = authorize_terminal_binding(&state, &actor, &id).await?;
+    let conversation = state.db.get_conversation(&binding.conversation_id).await?;
+    state
+        .db
+        .configure_behavior_community(&conversation.workspace_id, &actor.id, &id, &settings)
+        .await?;
+    state
+        .db
+        .record_audit(
+            &conversation.workspace_id,
+            &actor.id,
+            "learning.community.configure",
+            "agent_binding",
+            &id,
+            json!(settings),
+        )
+        .await?;
+    Ok(Json(json!(settings)))
+}
+
+pub(crate) async fn retry_community(
+    headers: HeaderMap,
+    State(state): State<ApiState>,
+    Path((id, event)): Path<(String, String)>,
+) -> Result<Json<Value>, ApiError> {
+    let actor = require_human_operator(&headers, &state).await?;
+    let binding = authorize_terminal_binding(&state, &actor, &id).await?;
+    let conversation = state.db.get_conversation(&binding.conversation_id).await?;
+    state
+        .db
+        .retry_behavior(&conversation.workspace_id, &actor.id, &id, &event)
+        .await?;
+    state
+        .db
+        .record_audit(
+            &conversation.workspace_id,
+            &actor.id,
+            "learning.community.retry",
+            "behavior_event",
+            &event,
+            json!({}),
+        )
+        .await?;
+    Ok(Json(json!({"queued":true})))
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct EvaluationRequest {

@@ -2144,6 +2144,55 @@ paths:
       responses:
         "200":
           description: Binding host assigned
+  /v1/runtime/bindings/{bindingId}/experience/community/{eventId}/retry:
+    parameters:
+      - name: bindingId
+        in: path
+        required: true
+        schema: {type: string}
+      - name: eventId
+        in: path
+        required: true
+        schema: {type: string}
+    post:
+      operationId: retryBehaviorPreparation
+      summary: Retry owner-scoped blocked preparation before any public dispatch
+      responses:
+        '200': {description: Preparation queued; public projection and privacy review run again if contribution remains enabled.}
+        '409': {description: Record is not blocked before dispatch; uncertain contributions cannot be blindly retried.}
+        '403': {description: Caller cannot manage the binding.}
+  /v1/runtime/bindings/{bindingId}/experience/community:
+    parameters:
+      - in: path
+        name: bindingId
+        required: true
+        schema: {type: string}
+    get:
+      summary: Read owner-scoped behavior cards, evidence counts and community status
+      description: Local records may contain private contextual prose. Public records come only from accepted dataset revisions. Counts describe distinct reported occurrences, not model failure rates. Observed execution model is nullable and separate from configured model.
+      responses:
+        '200': {description: Settings, local records, accepted community records, synchronization and contribution status. No source trace or publisher credential.}
+        '403': {description: Human owner required}
+    put:
+      summary: Set independent community search, trial and contribution consent
+      description: Requires an owned learning policy. All switches default off. Trials require search. Contribution publishes only independently reviewed redacted records through dataset pull requests; disabling it cancels queued publication. No network request occurs in this handler.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [search, automatic_trial, contribute]
+              properties:
+                search: {type: boolean}
+                automatic_trial: {type: boolean}
+                contribute: {type: boolean}
+      responses:
+        '200': {description: Saved consent settings}
+        '400': {description: Invalid consent combination}
+        '403': {description: Human owner required}
+        '404': {description: Learning policy not configured}
   /v1/runtime/bindings/{bindingId}/experience:
     parameters:
       - name: bindingId

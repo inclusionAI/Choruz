@@ -2,6 +2,330 @@ use super::*;
 use choruz_application::db_service::ExperienceReport;
 
 #[tokio::test]
+async fn behavior_exchange_deduplicates_evidence_and_fences_publication_and_trials() {
+    use choruz_domain::behavior::{BehaviorRecord, CommunitySettings};
+    let database_a = TestDatabase::create().await;
+    let database_b = TestDatabase::create().await;
+    let a =
+        choruz_application::DbService::new(choruz_store::EventStore::new(&database_a.database_url));
+    let b =
+        choruz_application::DbService::new(choruz_store::EventStore::new(&database_b.database_url));
+    let alice = a
+        .create_human_user("publisher-a", "password-123")
+        .await
+        .unwrap();
+    let bob = b
+        .create_human_user("receiver-b", "password-123")
+        .await
+        .unwrap();
+    let agent_a = learning_binding(&database_a, &alice).await;
+    let analyst_a = learning_binding(&database_a, &alice).await;
+    let agent_b = learning_binding(&database_b, &bob).await;
+    let analyst_b = learning_binding(&database_b, &bob).await;
+    a.configure_experience(
+        &alice.workspace_id,
+        &alice.id,
+        &agent_a,
+        &analyst_a,
+        true,
+        None,
+    )
+    .await
+    .unwrap();
+    b.configure_experience(&bob.workspace_id, &bob.id, &agent_b, &analyst_b, true, None)
+        .await
+        .unwrap();
+    let claim = a.claim_experience().await.unwrap().unwrap();
+    let validation = json!({"review":"passed","problems":[{"key":"verification","description":"Required check was skipped.","episode_ref":"private-source:1","evidence":["private-source:2"],"applied_revision_id":null}],"addressed_problems":["verification"]});
+    let revision = a
+        .save_experience_candidate(
+            &claim,
+            ExperienceReport {
+                digest: "source-a",
+                references: &json!(["private-source:1", "private-source:2"]),
+                analysis: "The check was skipped.",
+                instruction: Some("Verify the required check before reporting completion."),
+                validation: &validation,
+                checkpoint: None,
+                activate: true,
+            },
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        a.save_experience_candidate(
+            &claim,
+            ExperienceReport {
+                digest: "source-a",
+                references: &json!([]),
+                analysis: "Duplicate delivery",
+                instruction: None,
+                validation: &validation,
+                checkpoint: None,
+                activate: false
+            }
+        )
+        .await
+        .unwrap()
+        .is_none()
+    );
+    let preparation = a.claim_behavior().await.unwrap().unwrap();
+    let local:BehaviorRecord=serde_json::from_value(json!({"schema_version":1,"id":preparation.id,"occurrence_id":preparation.occurrence_id,
+        "problem":{"id":preparation.problem_id,"title":"Verification was skipped","input_background":"A private task in /Users/example/private-project required verification.","expected_behavior":"Run the check.","bad_behavior":"Skipped the required verification.","applicability":"Tasks requiring verification","tags":["verification"]},
+        "model":{"observed":"execution-model-a","configured":"configured-alias","harness":"codex_terminal","harness_version":"1.0"},
+        "solution":preparation.solution,"kind":"encountered","evidence_summary":"A later correction established the missing check."})).unwrap();
+    let mut forged = local.clone();
+    forged.kind = choruz_domain::behavior::EvidenceKind::Effective;
+    assert!(
+        a.finish_behavior(&preparation, Some(&forged), None)
+            .await
+            .is_err()
+    );
+    assert!(
+        a.finish_behavior(&preparation, Some(&local), None)
+            .await
+            .unwrap()
+    );
+    let own_candidates = a
+        .behavior_candidates(&alice.workspace_id, &alice.id, &agent_a, "verification")
+        .await
+        .unwrap();
+    assert_eq!(own_candidates.len(), 1);
+    assert_eq!(own_candidates[0]["record"]["id"], local.id);
+    a.configure_experience(
+        &alice.workspace_id,
+        &alice.id,
+        &analyst_a,
+        &agent_a,
+        true,
+        None,
+    )
+    .await
+    .unwrap();
+    assert!(
+        a.behavior_candidates(&alice.workspace_id, &alice.id, &analyst_a, "verification")
+            .await
+            .unwrap()
+            .is_empty(),
+        "another binding's private context must not enter the analyst candidate input"
+    );
+    assert!(
+        a.claim_behavior_publication().await.unwrap().is_none(),
+        "local learning is not public contribution consent"
+    );
+    let consent = CommunitySettings {
+        search: true,
+        automatic_trial: false,
+        contribute: true,
+    };
+    a.configure_behavior_community(&alice.workspace_id, &alice.id, &agent_a, &consent)
+        .await
+        .unwrap();
+    let publication = a.claim_behavior_publication().await.unwrap().unwrap();
+    let mut public = local.clone();
+    public.problem.input_background = "An anonymous task required verification.".into();
+    assert!(
+        a.begin_behavior_publication(&publication, &public, &json!({"accepted":false}))
+            .await
+            .is_err()
+    );
+    a.finish_behavior_publication(
+        &publication,
+        None,
+        false,
+        Some("Privacy review did not pass"),
+    )
+    .await
+    .unwrap();
+    assert!(
+        a.retry_behavior(&alice.workspace_id, &bob.id, &agent_a, &public.id)
+            .await
+            .is_err()
+    );
+    a.retry_behavior(&alice.workspace_id, &alice.id, &agent_a, &public.id)
+        .await
+        .unwrap();
+    let publication = a.claim_behavior_publication().await.unwrap().unwrap();
+    a.configure_behavior_community(
+        &alice.workspace_id,
+        &alice.id,
+        &agent_a,
+        &CommunitySettings::default(),
+    )
+    .await
+    .unwrap();
+    assert!(
+        !a.begin_behavior_publication(&publication, &public, &json!({"accepted":true}))
+            .await
+            .unwrap(),
+        "revoked consent must fence an already prepared projection"
+    );
+    a.configure_behavior_community(&alice.workspace_id, &alice.id, &agent_a, &consent)
+        .await
+        .unwrap();
+    let publication = a.claim_behavior_publication().await.unwrap().unwrap();
+    assert!(
+        a.begin_behavior_publication(&publication, &public, &json!({"accepted":true}))
+            .await
+            .unwrap()
+    );
+    assert!(
+        a.claim_behavior_publication().await.unwrap().is_none(),
+        "a dispatched contribution cannot be leased again"
+    );
+    a.finish_behavior_publication(
+        &publication,
+        Some("https://huggingface.co/datasets/gjcjcg/ai-bad-behavior-library/discussions/1"),
+        true,
+        None,
+    )
+    .await
+    .unwrap();
+    let before = a
+        .behavior_community(&alice.workspace_id, &alice.id, &agent_a)
+        .await
+        .unwrap();
+    assert_eq!(before["local"][0]["state"], "pending");
+    assert!(
+        a.retry_behavior(&alice.workspace_id, &alice.id, &agent_a, &public.id)
+            .await
+            .is_err(),
+        "a dispatched contribution cannot be retried as new evidence"
+    );
+    assert!(
+        before["local"][0]["record"]["problem"]["input_background"]
+            .as_str()
+            .unwrap()
+            .contains("private-project")
+    );
+    let exchange = serde_json::to_vec(&public).unwrap();
+    assert!(!String::from_utf8_lossy(&exchange).contains("private-project"));
+    assert!(!String::from_utf8_lossy(&exchange).contains("private-source"));
+    let received: BehaviorRecord = serde_json::from_slice(&exchange).unwrap();
+    for db in [&a, &b] {
+        db.save_community_snapshot(
+            "accepted-revision",
+            std::slice::from_ref(&received),
+            &[(received.id.clone(), "b".repeat(40))].into(),
+        )
+        .await
+        .unwrap();
+        db.save_community_snapshot(
+            "accepted-revision",
+            std::slice::from_ref(&received),
+            &[(received.id.clone(), "b".repeat(40))].into(),
+        )
+        .await
+        .unwrap();
+    }
+    assert_eq!(
+        a.behavior_community(&alice.workspace_id, &alice.id, &agent_a)
+            .await
+            .unwrap()["local"][0]["state"],
+        "accepted"
+    );
+    a.community_sync_error("Temporary network failure")
+        .await
+        .unwrap();
+    a.community_sync_unchanged("accepted-revision")
+        .await
+        .unwrap();
+    assert!(
+        a.behavior_community(&alice.workspace_id, &alice.id, &agent_a)
+            .await
+            .unwrap()["sync"]["error"]
+            .is_null()
+    );
+    b.configure_behavior_community(
+        &bob.workspace_id,
+        &bob.id,
+        &agent_b,
+        &CommunitySettings {
+            search: true,
+            automatic_trial: false,
+            contribute: false,
+        },
+    )
+    .await
+    .unwrap();
+    assert!(
+        b.behavior_candidates(&bob.workspace_id, &bob.id, &agent_b, "verification")
+            .await
+            .unwrap()
+            .is_empty(),
+        "read consent must not authorize automatic trial"
+    );
+    b.configure_behavior_community(
+        &bob.workspace_id,
+        &bob.id,
+        &agent_b,
+        &CommunitySettings {
+            search: true,
+            automatic_trial: true,
+            contribute: false,
+        },
+    )
+    .await
+    .unwrap();
+    let candidates = b
+        .behavior_candidates(&bob.workspace_id, &bob.id, &agent_b, "verification")
+        .await
+        .unwrap();
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0]["record"]["id"], public.id);
+    let claim_b = b.claim_experience().await.unwrap().unwrap();
+    let report_b = json!({"review":"passed","problems":[{"key":"verification","description":"Required check was skipped.","episode_ref":"source-b:1","evidence":["source-b:2"],"applied_revision_id":null}],"addressed_problems":["verification"],"behavior_sources":[{"problem_key":"verification","candidate":candidates[0]}]});
+    b.save_experience_candidate(
+        &claim_b,
+        ExperienceReport {
+            digest: "source-b",
+            references: &json!(["source-b:1", "source-b:2"]),
+            analysis: "An independent instance encountered the same failure.",
+            instruction: Some("Verify the required check before reporting completion."),
+            validation: &report_b,
+            checkpoint: None,
+            activate: true,
+        },
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let preparation_b = b.claim_behavior().await.unwrap().unwrap();
+    assert_eq!(preparation_b.problem_id, public.problem.id);
+    assert_eq!(
+        preparation_b.solution.as_ref().unwrap().based_on,
+        [revision]
+    );
+    let mut evidence_b = public.clone();
+    evidence_b.id = preparation_b.id.clone();
+    evidence_b.occurrence_id = preparation_b.occurrence_id.clone();
+    evidence_b.model.observed = Some("execution-model-b".into());
+    evidence_b.solution = preparation_b.solution.clone();
+    assert!(
+        b.finish_behavior(&preparation_b, Some(&evidence_b), None)
+            .await
+            .unwrap()
+    );
+    assert!(
+        !b.finish_behavior(&preparation_b, Some(&evidence_b), None)
+            .await
+            .unwrap()
+    );
+    let combined = vec![public.clone(), public, evidence_b.clone(), evidence_b];
+    let counts = choruz_domain::behavior::counts(&combined);
+    assert_eq!(counts.encountered, 2);
+    assert_eq!(
+        counts.applied, 0,
+        "a saved guidance revision is not an actual application"
+    );
+    assert_eq!(
+        counts.effective, 0,
+        "a content review is not evidence of effectiveness"
+    );
+}
+
+#[tokio::test]
 async fn corrected_trace_answer_cancels_pending_run_without_rewriting_its_snapshot() {
     use choruz_application::db_service::EvaluationContext;
     use choruz_domain::evaluation::{OutputCheck, TraceCase};
@@ -59,7 +383,9 @@ async fn corrected_trace_answer_cancels_pending_run_without_rewriting_its_snapsh
         .experience_trace_cases(&owner.workspace_id, &target)
         .await
         .unwrap();
-    let suite = choruz_application::db_service::trace_suite(&corpus, 16).unwrap();
+    let suite =
+        choruz_application::db_service::measured_trace_suite(&corpus, 16, &Default::default())
+            .unwrap();
     let id = db
         .queue_experience_evaluation(
             &owner.workspace_id,
@@ -150,7 +476,9 @@ async fn corrected_trace_answer_cancels_pending_run_without_rewriting_its_snapsh
         .experience_trace_cases(&owner.workspace_id, &target)
         .await
         .unwrap();
-    let grouped = choruz_application::db_service::trace_suite(&corpus, 256).unwrap();
+    let grouped =
+        choruz_application::db_service::measured_trace_suite(&corpus, 256, &Default::default())
+            .unwrap();
     assert!(
         grouped
             .cases
@@ -262,6 +590,12 @@ async fn trace_objectives_become_frozen_automatic_evaluations_without_manual_ans
     ];
     for i in 0..12 {
         records.push(json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":format!("BENCHMARK: {i}. Increment this number. The exact accepted answer is {}.",i+1)}]}}).to_string());
+    }
+    // Byte offsets identify objectives and determine their train/holdout split.
+    // Keep them independent of the randomly allocated workspace path length.
+    for record in &mut records {
+        assert!(record.len() < 1024);
+        record.push_str(&" ".repeat(1023 - record.len()));
     }
     fs::write(&native, records.join("\n") + "\n").unwrap();
     let runtime = RuntimeStore::new(&database.database_url);
@@ -625,11 +959,12 @@ async fn automatic_optimization_requires_holdout_and_content_review_then_support
             );
         }
         let active = db
-            .active_experience(&owner.workspace_id, &target)
+            .experience_for_turn(&owner.workspace_id, &target)
             .await
             .unwrap();
         if expected_status == "applied" {
-            let (id, instruction) = active.unwrap();
+            let active = active.unwrap();
+            let (id, instruction) = (active.revision_id, active.instruction);
             if team_search {
                 let applied = db
                     .experience_for_turn(&owner.workspace_id, &target)
@@ -673,7 +1008,7 @@ async fn automatic_optimization_requires_holdout_and_content_review_then_support
                 assert_eq!(status, StatusCode::OK);
                 assert_eq!(response["policy"]["active_revision_id"], selected);
                 assert_eq!(
-                    db.active_experience(&owner.workspace_id, &target)
+                    db.experience_for_turn(&owner.workspace_id, &target)
                         .await
                         .unwrap()
                         .is_some(),
@@ -950,7 +1285,7 @@ async fn evaluation_compares_frozen_revisions_with_judging_and_isolated_replay()
             .any(|o| o["candidate"] == 0 && o["case"] == 3 && o["score"] == 0.0)
     );
     assert!(
-        db.active_experience(&owner.workspace_id, &target)
+        db.experience_for_turn(&owner.workspace_id, &target)
             .await
             .unwrap()
             .is_none()
@@ -1147,6 +1482,43 @@ async fn background_learning_cross_window_marker(retain_marker: bool) {
             .valid_terminal_session_anchor_for_context(None, None, Some(0), None)
             .is_some()
     );
+    if !retain_marker {
+        let shared: choruz_domain::behavior::BehaviorRecord = serde_json::from_value(json!({
+            "schema_version":1,"id":"shared-event","occurrence_id":"shared-objective",
+            "problem":{"id":"shared-verification","title":"Skipped verification","input_background":"A task required verification.","expected_behavior":"Verify the check.","bad_behavior":"Skipped verification.","applicability":"Explicit acceptance checks","tags":["verification"]},
+            "model":{"observed":"other-execution-model","configured":null,"harness":"codex_terminal","harness_version":"1.0"},
+            "solution":{"id":"shared-solution","based_on":[],"instruction":"Verify required checks before reporting completion.","applicability":"Explicit acceptance checks","team":null},
+            "kind":"effective","evidence_summary":"A later independent task ran the required check."})).unwrap();
+        db.save_community_snapshot(
+            "accepted-test-revision",
+            &[shared],
+            &[("shared-event".into(), "b".repeat(40))].into(),
+        )
+        .await
+        .unwrap();
+        db.configure_experience(
+            &owner.workspace_id,
+            &owner.id,
+            &target,
+            &analyst,
+            true,
+            None,
+        )
+        .await
+        .unwrap();
+        db.configure_behavior_community(
+            &owner.workspace_id,
+            &owner.id,
+            &target,
+            &choruz_domain::behavior::CommunitySettings {
+                search: true,
+                automatic_trial: true,
+                contribute: false,
+            },
+        )
+        .await
+        .unwrap();
+    }
     let app = router_with_db(choruz_application::ChatApp::new(), &database.database_url);
     let (status, body) = api_json_payload_request(
         app.clone(),
@@ -1166,13 +1538,13 @@ async fn background_learning_cross_window_marker(retain_marker: bool) {
                 assert_eq!(reports.last().unwrap().source_references, json!([]));
                 panic!("background analysis rejected the continued objective: {error_message}; committed cursor: {}; opening summary: {}", error.get::<_, Value>("source_cursor"), reports.last().unwrap().analysis);
             }
-            if let Some((_, instruction)) = db
-                .active_experience(&owner.workspace_id, &target)
+            if let Some(active) = db
+                .experience_for_turn(&owner.workspace_id, &target)
                 .await
                 .unwrap()
             {
                 assert_eq!(
-                    instruction,
+                    active.instruction,
                     "Verify required checks before reporting completion."
                 );
                 break;
@@ -1182,6 +1554,61 @@ async fn background_learning_cross_window_marker(retain_marker: bool) {
     })
     .await
     .expect("background worker must activate the reviewed native-source report");
+    if !retain_marker {
+        let community_url = format!("/v1/runtime/bindings/{target}/experience/community");
+        tokio::time::timeout(Duration::from_secs(60), async {
+            loop {
+                let (status, library) = api_json_payload_request(
+                    app.clone(),
+                    &owner,
+                    Method::GET,
+                    community_url.clone(),
+                    Value::Null,
+                )
+                .await;
+                assert_eq!(status, StatusCode::OK, "{library}");
+                assert_eq!(
+                    library["settings"],
+                    json!({"search":true,"automatic_trial":true,"contribute":false})
+                );
+                if library["local"]
+                    .as_array()
+                    .is_some_and(|entries| entries.iter().any(|entry| entry["record"].is_object()))
+                {
+                    let entries = library["local"].as_array().unwrap();
+                    let prepared = entries
+                        .iter()
+                        .find(|entry| entry["record"].is_object())
+                        .unwrap();
+                    assert_eq!(prepared["state"], "local");
+                    assert_eq!(
+                        prepared["record"]["problem"]["title"],
+                        "Completion without verification"
+                    );
+                    assert!(prepared["record"].get("source_references").is_none());
+                    assert_eq!(
+                        prepared["record"]["model"]["observed"],
+                        Value::Null,
+                        "configured model must not become observed evidence"
+                    );
+                    assert_eq!(library["community"][0]["id"], "shared-event");
+                    assert_eq!(prepared["record"]["problem"]["id"], "shared-verification");
+                    break;
+                }
+                assert!(
+                    !library["local"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|entry| entry["state"] == "blocked"),
+                    "{library}"
+                );
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("native source must become a local behavior card without publication consent");
+    }
     let revisions = db
         .experience_revisions(&owner.workspace_id, &owner.id, &target)
         .await
@@ -1202,10 +1629,17 @@ async fn background_learning_cross_window_marker(retain_marker: bool) {
     assert!(revisions[1].validation["research"].is_null());
     assert_eq!(revisions[0].disposition, "active");
     assert_eq!(revisions[0].validation["review_details"]["passed"], true);
-    assert_eq!(
-        revisions[0].validation["review_details"]["instruction_matches"],
-        true
-    );
+    assert_eq!(revisions[0].validation["review_details"]["accepted"], true);
+    if !retain_marker {
+        assert_eq!(
+            revisions[0].validation["behavior_sources"][0]["candidate"]["record"]["solution"]["id"],
+            "shared-solution"
+        );
+        assert_eq!(
+            revisions[0].validation["behavior_sources"][0]["candidate"]["revision"],
+            "accepted-test-revision"
+        );
+    }
     let diagnostic_trace = revisions[0].validation["trace_id"].as_str().unwrap();
     let audit = db.list_audit_logs(&owner.workspace_id).await.unwrap();
     let stages: Vec<_> = audit
@@ -1328,7 +1762,7 @@ async fn background_learning_cross_window_marker(retain_marker: bool) {
                 assert_eq!(reports[0].disposition, "no_change");
                 assert_eq!(reports[0].source_references, if retain_marker { json!([marker_ref]) } else { json!([]) });
                 assert!(reports[0].analysis.contains(&marker_ref));
-                assert_eq!(db.active_experience(&owner.workspace_id, &target).await.unwrap().unwrap().0, applied_revision);
+                assert_eq!(db.experience_for_turn(&owner.workspace_id, &target).await.unwrap().unwrap().revision_id, applied_revision);
                 break;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
@@ -1406,16 +1840,45 @@ async fn background_learning_cross_window_marker(retain_marker: bool) {
                 assert_eq!(reports[0].disposition, "candidate");
                 let details = &reports[0].validation["review_details"];
                 assert_eq!(details["passed"], false);
-                assert_eq!(details["instruction_matches"], false);
+                assert_eq!(details["accepted"], false);
                 assert_eq!(details["evidence_verified"], true);
-                assert!(details["reviewer_report"]["summary"].as_str().unwrap().contains("does not address this task"));
+                assert!(details["reviewer_report"]["reason"].as_str().unwrap().contains("does not address this task"));
                 assert!(!details.to_string().contains("fixture-secret"));
-                assert_eq!(db.active_experience(&owner.workspace_id, &target).await.unwrap().unwrap().0, applied_revision);
+                assert_eq!(db.experience_for_turn(&owner.workspace_id, &target).await.unwrap().unwrap().revision_id, applied_revision);
                 break;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }).await.expect("rejected content review must retain its reason without activation");
+    if !retain_marker {
+        let mut transcript = fs::OpenOptions::new().append(true).open(&native).unwrap();
+        for text in [
+            "Objective opener: verify a new independent task.".to_owned(),
+            format!("[choruz-experience revision={applied_revision}] Verify required checks before reporting completion."),
+            "Verified later outcome: I independently checked the result; the required check ran and passed.".into(),
+        ] {
+            writeln!(transcript,"{}",json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":text}]}})).unwrap();
+        }
+        drop(transcript);
+        tokio::time::timeout(Duration::from_secs(60),async {
+            loop {
+                client.execute("UPDATE experience_policy SET next_check_at=NOW() WHERE binding_id=$1 AND lease_token IS NULL", &[&target]).await.unwrap();
+                let reports=db.experience_revisions(&owner.workspace_id,&owner.id,&target).await.unwrap();
+                if reports.len()==8 {
+                    assert_eq!(reports[0].validation["outcome_review"]["passed"],true);
+                    assert_eq!(reports[0].validation["solution_outcomes"][0]["outcome"],"effective");
+                    let library=db.behavior_community(&owner.workspace_id,&owner.id,&target).await.unwrap();
+                    if library["counts"]["effective"] == 1 {
+                        let event=library["local"].as_array().unwrap().iter().find(|entry|entry["record"]["kind"]=="effective").unwrap();
+                        assert_eq!(event["record"]["solution"]["id"],applied_revision);
+                        assert_eq!(event["record"]["solution"]["based_on"],json!(["shared-solution"]));
+                        break;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }).await.expect("independent source-backed success must become versioned effectiveness evidence");
+    }
     let checkpoint: Value = client
         .query_one(
             "SELECT source_cursor FROM experience_policy WHERE binding_id=$1",
@@ -1434,7 +1897,7 @@ async fn background_learning_cross_window_marker(retain_marker: bool) {
             if let Some(error) = row.get::<_, Option<String>>("last_error") {
                 assert_eq!(error, "Learning problem lacks new source evidence");
                 assert_eq!(row.get::<_, Value>("source_cursor"), checkpoint);
-                assert_eq!(db.experience_revisions(&owner.workspace_id, &owner.id, &target).await.unwrap().len(), 7);
+                assert_eq!(db.experience_revisions(&owner.workspace_id, &owner.id, &target).await.unwrap().len(), if retain_marker {7} else {8});
                 let records = db.list_audit_logs(&owner.workspace_id).await.unwrap();
                 let failure = records.iter().find(|record| record.action == "learning.check" && record.metadata["outcome"] == "failed").expect("failed checks remain durable without creating a revision");
                 assert_eq!(failure.metadata["error_category"], "validation");
@@ -1537,6 +2000,36 @@ async fn experience_settings_scope_and_stale_analysis_activation() {
     .await;
     assert_eq!(status, StatusCode::OK, "{result}");
     assert_eq!(result["policy"]["analyst_binding_id"], analyst);
+    let community_endpoint = format!("/v1/runtime/bindings/{target}/experience/community");
+    for method in [Method::GET, Method::PUT] {
+        let (status, _) = api_json_payload_request(
+            app.clone(),
+            &outsider,
+            method,
+            community_endpoint.clone(),
+            json!({"search":false,"automatic_trial":false,"contribute":false}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+    let (status, _) = api_json_payload_request(
+        app.clone(),
+        &owner,
+        Method::PUT,
+        community_endpoint.clone(),
+        json!({"search":false,"automatic_trial":true,"contribute":false}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, _) = api_json_payload_request(
+        app.clone(),
+        &owner,
+        Method::PUT,
+        community_endpoint,
+        json!({"search":true,"automatic_trial":false,"contribute":false}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
     let (status, _) = api_json_request(app.clone(), &outsider, Method::GET, endpoint).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     drop(app);
@@ -1646,7 +2139,7 @@ async fn experience_settings_scope_and_stale_analysis_activation() {
         .unwrap()
         .unwrap();
     assert!(
-        db.active_experience(&owner.workspace_id, &target)
+        db.experience_for_turn(&owner.workspace_id, &target)
             .await
             .unwrap()
             .is_none(),
@@ -1720,7 +2213,7 @@ async fn experience_settings_scope_and_stale_analysis_activation() {
         .await;
     assert!(rejected_audit.is_err());
     assert!(
-        db.active_experience(&owner.workspace_id, &target)
+        db.experience_for_turn(&owner.workspace_id, &target)
             .await
             .unwrap()
             .is_none()
@@ -1767,14 +2260,16 @@ async fn experience_settings_scope_and_stale_analysis_activation() {
     )
     .await
     .unwrap();
-    assert_eq!(
-        db.active_experience(&owner.workspace_id, &target)
-            .await
-            .unwrap(),
-        Some((revision.clone(), "Explain results briefly.".into()))
-    );
+    let active = db
+        .experience_for_turn(&owner.workspace_id, &target)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(active.revision_id, revision);
+    assert_eq!(active.instruction, "Explain results briefly.");
+    assert!(active.team.is_none());
     assert!(
-        db.active_experience(&outsider.workspace_id, &target)
+        db.experience_for_turn(&outsider.workspace_id, &target)
             .await
             .unwrap()
             .is_none()
@@ -1788,7 +2283,7 @@ async fn experience_settings_scope_and_stale_analysis_activation() {
         .await
         .unwrap();
     assert!(
-        db.active_experience(&owner.workspace_id, &target)
+        db.experience_for_turn(&owner.workspace_id, &target)
             .await
             .unwrap()
             .is_none()

@@ -17,7 +17,7 @@ once per policy generation. Automatic application requires separate consent,
 strict validation improvement, held-out non-regression and fixed content review.
 Held-out results cannot choose a different winner or generate another proposal.
 
-Final review reserves a call under the evaluation lease. Application creates a
+Final review uses the [shared immutable-guidance contract](../simplification/2026-09-12-unify-guidance-review.md) and reserves a call under the evaluation lease. Application creates a
 revision and updates the existing selection pointer atomically, fencing older
 analysis. It preserves source provenance and records the first applied problem
 intervention without creating another occurrence. Clear and restore use the same

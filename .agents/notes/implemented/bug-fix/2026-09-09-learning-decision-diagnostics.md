@@ -18,7 +18,7 @@ The [background-learning decision](../feature/2026-09-08-background-experience-l
 
 **Dump every request into service logs.** Requests contain account configuration and private source material. Metadata in the existing durable audit store preserves execution evidence without exposing those payloads in process logs.
 
-**Infer rejection from a null instruction.** Evidence and addressed-problem validation can independently reject a returned instruction. Each predicate needs its own recorded result.
+**Infer acceptance from instruction text alone.** The [shared guidance review](../simplification/2026-09-12-unify-guidance-review.md) records an explicit decision; evidence and addressed-problem validation can independently reject it. Each predicate needs its own recorded result.
 
 ## Consequences
 
