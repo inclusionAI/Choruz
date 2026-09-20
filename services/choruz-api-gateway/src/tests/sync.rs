@@ -474,10 +474,63 @@ async fn sync_websocket_requires_auth_replays_unacked_and_isolates_device_acks()
         replay_cursor
     );
 
+    // A later committed message must survive an ACK for an older page, even
+    // after delivery on this socket and a reconnect of the same device.
+    assert_eq!(
+        api_send_text_message(
+            http_router.clone(),
+            &alice,
+            &conversation.id,
+            "socket-before-delayed-ack",
+            "committed before the old page is acknowledged",
+        )
+        .await,
+        StatusCode::CREATED
+    );
+    let later = next_ws_json(&mut resumed).await;
+    let later_cursor = later["next_cursor"].as_u64().unwrap();
+    assert!(later_cursor > replay_cursor);
+    assert!(
+        later["changes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|change| { change["payload"]["client_msg_id"] == "socket-before-delayed-ack" })
+    );
+    resumed
+        .send(Message::Text(
+            json!({"type":"sync_ack","cursor":replay_cursor})
+                .to_string()
+                .into(),
+        ))
+        .await
+        .unwrap();
+    loop {
+        let frame = next_ws_json(&mut resumed).await;
+        if frame["type"] == "sync_acked" {
+            assert_eq!(frame["cursor"], replay_cursor);
+            break;
+        }
+        assert_eq!(frame["type"], "sync_changes");
+    }
+    resumed.close(None).await.unwrap();
+    let mut resumed = connect_sync_socket(address, &alice, "browser-a", start).await;
+    assert_eq!(next_ws_json(&mut resumed).await["cursor"], replay_cursor);
+    let pending = next_ws_json(&mut resumed).await;
+    let pending_cursor = pending["next_cursor"].as_u64().unwrap();
+    assert!(pending_cursor >= later_cursor);
+    assert!(
+        pending["changes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|change| { change["payload"]["client_msg_id"] == "socket-before-delayed-ack" })
+    );
+
     // A client cannot ACK data that this connection was never sent.
     resumed
         .send(Message::Text(
-            json!({"type":"sync_ack","cursor":replay_cursor + 1})
+            json!({"type":"sync_ack","cursor":pending_cursor + 1})
                 .to_string()
                 .into(),
         ))
@@ -489,6 +542,7 @@ async fn sync_websocket_requires_auth_replays_unacked_and_isolates_device_acks()
 
     second.close(None).await.unwrap();
     server.abort();
+    assert!(server.await.unwrap_err().is_cancelled());
 }
 
 #[tokio::test]
