@@ -38,6 +38,31 @@ Check the panel's per-record state and community synchronization error. A blocke
 3. If the binary is missing or stale, activate a verified package using [the deployment procedure](deploy.md#managed-device-upgrades).
 4. If the newest release is bad, use that procedure's verified rollback with the installation's readiness URLs.
 
+## Incident: Headless host startup or child failure
+
+`choruz-server` starts embedded PostgreSQL and supervises the API gateway and pipeline. This is distinct from the externally managed database deployment in [deploy.md](deploy.md#ci-artifacts-and-publication). Keep the complete server stderr from the start attempt: child stdout and stderr join that stream, while `CHORUZ_LISTENING=3000` on stdout is the readiness handshake. That line is emitted only after both backend services pass their versioned readiness checks; a root-page or process-exists check is insufficient.
+
+Use the first failure in the stream, not only the final shutdown message:
+
+| Log pattern | Meaning and next action |
+| --- | --- |
+| `no migrations dir found (neither beside binary nor in workspace)` | The executable cannot find the release's SQL directory. A bundle requires `migrations/` beside `choruz-server`, `choruz-api-gateway` and `choruz-pipeline`; a source build resolves the ancestor containing both `Cargo.toml` and `apps/`, then its `migrations/`. Restore the complete matching release, not just the server binary. Changing the shell's working directory does not change this executable-relative search. |
+| `migrations dir` | The `migrations_dir` field identifies the selected directory. The bundle location takes precedence over the source location. Check it belongs to the same release as the binaries before diagnosing a migration error. |
+| `embedded postgres failed to start` | Read the `error` field: `pg setup`, `pg start`, database creation and migration errors name different stages. Correlate `embedded postgres booting`'s `data_dir` with the service account's writable data directory. Check disk space, permissions, first-install download access and port 5433 ownership. Do not delete `pgdata`, reset migrations or replace system libraries as a generic recovery step. |
+| `backend spawn failed` | Read the named child and readiness error. Restore missing sibling binaries from the same release. For a readiness timeout, inspect that child's preceding stderr and database connectivity. Ports 3000 and 3020 must be free or occupied by the expected compatible service; do not kill an unrelated listener. |
+| `backend child exited after startup` | The `error` field identifies the child and exit status, or the failure inspecting it. The supervisor stops the other children it owns. Preserve their preceding logs before the service manager retries the host. |
+| `backend child failed; terminating choruz-server` | This is the terminal consequence, not the root cause. The host exits unsuccessfully after stopping owned children and PostgreSQL. Find the preceding child-exit record, fix its cause, then restart the complete host. |
+
+Embedded PostgreSQL keeps its data under the service user's OS data directory, in `choruz/pgdata`; downloaded executables live in `choruz/pg-install`. Its command timeout is 60 seconds by default; `CHORUZ_POSTGRES_COMMAND_TIMEOUT_SECS` accepts a positive number of seconds. Increase it only when logs establish that an otherwise healthy storage operation exceeds the deadline. A missing executable interpreter or incompatible library is not a timeout.
+
+Preserve database backups and the exact failed release before recovery. Restore missing migration files from that release; do not edit applied SQL or remove migration tracking rows. A binary rollback does not reverse a schema change; follow [managed device upgrades](deploy.md#managed-device-upgrades) for compatibility checks and verified rollback.
+
+### Alerting and verification
+
+Configure the deployment's existing log collector or service manager to alert on startup failure, unexpected child exit and repeated host restarts. Include the host identity, service, timestamp, exit status and a link to its retained stderr. Do not forward full process environments, connection strings or account files into notifications. Choruz emits the failure signals; it does not provision a paging service or log retention for the operator.
+
+Check both versioned readiness endpoints after recovery, not just the API's liveness. A missing scrape or failed readiness probe is a host-availability incident even when no error counter is available: a process that never starts cannot serve metrics. Collect the pipeline's own metrics endpoint on port 3020 separately from the gateway's port 3000. Keep alerts scoped to the actual configured ports for managed deployments; the headless supervisor uses its fixed backend ports.
+
 ## Incident: Event Backlog Growing
 
 1. Query `/metrics` and inspect `choruz_event_backlog_total`.
