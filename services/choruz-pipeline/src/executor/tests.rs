@@ -1,5 +1,6 @@
 use super::*;
 use choruz_agent_runtime::{CreateBindingInput, DriverType, RuntimeStore};
+use choruz_executor::wal::AdapterWal;
 use choruz_session::CommandStatus;
 use serde_json::json;
 use std::env;
@@ -1928,46 +1929,91 @@ async fn non_executable_cli_is_a_non_retriable_configuration_error() {
 }
 
 #[tokio::test]
-async fn executor_context_wal_recovery_empty() {
+async fn executor_context_wal_recovery_reports_durable_results_and_errors() {
+    use axum::response::IntoResponse;
+
+    async fn metric_text() -> String {
+        let response = crate::meta::metrics().await.into_response();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        String::from_utf8(
+            axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap()
+    }
+
+    // This is the sole recovery caller in this test binary: exact process-wide
+    // samples therefore do not depend on test ordering or worker concurrency.
     let tmp = tempfile::tempdir().unwrap();
     let config = PipelineConfig::from_env();
     let mut ctx = ExecutorContext::from_config(&config);
-    ctx.wal_base_dir = tmp.path().to_path_buf();
-    // Should not panic on empty dir
-    ctx.recover_from_wal().await;
-}
-
-#[tokio::test]
-async fn executor_context_wal_recovery_with_incomplete() {
-    let tmp = tempfile::tempdir().unwrap();
     let wal_dir = tmp.path().join("wal");
-    std::fs::create_dir_all(&wal_dir).unwrap();
+    ctx.wal_base_dir = wal_dir.clone();
+    ctx.recover_from_wal().await;
+    let text = metric_text().await;
+    assert!(
+        text.lines()
+            .any(|line| line == "choruz_wal_recovery_success 1")
+    );
+    assert!(text.contains("choruz_wal_recovery_runs_total{outcome=\"success\"} 1\n"));
 
-    // Create a WAL with an incomplete turn
     let wal_path = wal_dir.join("test_session.db");
     let wal = AdapterWal::open(&wal_path).unwrap();
     wal.log_turn_start("turn-1", "attempt-1", "test prompt")
         .await
         .unwrap();
 
-    // Verify it's incomplete
     let incomplete = wal.find_incomplete_turns().await.unwrap();
     assert_eq!(incomplete.len(), 1);
     drop(wal);
-
-    // Run recovery
-    let config = PipelineConfig::from_env();
-    let mut ctx = ExecutorContext::from_config(&config);
-    ctx.wal_base_dir = wal_dir.clone();
+    let corrupt_path = wal_dir.join("corrupt.db");
+    fs::write(&corrupt_path, "not a SQLite database").unwrap();
     ctx.recover_from_wal().await;
 
-    // Verify the incomplete turn was marked as failed
     let wal2 = AdapterWal::open(&wal_path).unwrap();
     let incomplete2 = wal2.find_incomplete_turns().await.unwrap();
     assert!(
         incomplete2.is_empty(),
         "incomplete turns should be resolved after recovery"
     );
+    drop(wal2);
+    let text = metric_text().await;
+    assert!(
+        text.lines()
+            .any(|line| line == "choruz_wal_recovery_success 0")
+    );
+    assert!(text.contains("choruz_wal_recovery_runs_total{outcome=\"failed\"} 1\n"));
+    assert!(text.contains("choruz_wal_recovery_errors_total{stage=\"open\"} 1\n"));
+    assert!(
+        text.lines()
+            .any(|line| line == "choruz_wal_recovery_turns_total 1")
+    );
+    assert!(!text.contains("test prompt"));
+
+    let blocked_dir = tmp.path().join("not-a-directory");
+    fs::write(&blocked_dir, "owned fixture").unwrap();
+    ctx.wal_base_dir = blocked_dir;
+    ctx.recover_from_wal().await;
+    let text = metric_text().await;
+    assert!(text.contains("choruz_wal_recovery_runs_total{outcome=\"failed\"} 2\n"));
+    assert!(text.contains("choruz_wal_recovery_errors_total{stage=\"directory\"} 1\n"));
+
+    fs::remove_file(corrupt_path).unwrap();
+    ctx.wal_base_dir = wal_dir;
+    ctx.recover_from_wal().await;
+    let text = metric_text().await;
+    assert!(
+        text.lines()
+            .any(|line| line == "choruz_wal_recovery_success 1")
+    );
+    assert!(text.contains("choruz_wal_recovery_runs_total{outcome=\"success\"} 2\n"));
+    assert!(
+        text.lines()
+            .any(|line| line == "choruz_wal_recovery_turns_total 1")
+    );
+    assert!(text.contains("choruz_wal_recovery_duration_seconds_count 4\n"));
 }
 
 #[tokio::test]

@@ -12,7 +12,6 @@ use choruz_agent_runtime::headless::{
     pi_message_is_failed, prepare_harness_account_env,
 };
 use choruz_executor::sandbox::{SandboxManager, WorkspaceConfig};
-use choruz_executor::wal::AdapterWal;
 use choruz_session::{AgentCommand, PgSessionStore};
 use choruz_store::EventStore;
 use choruz_tools::gateway::{ToolExecutor, ToolGateway};
@@ -24,6 +23,8 @@ use choruz_host_runtime::inbox::{
     IncomingAttachment, incoming_attachments, stage_incoming_attachments as stage_into_inbox,
 };
 use choruz_host_runtime::instructions::ensure_claude_md;
+
+mod wal_recovery;
 
 // ---------------------------------------------------------------------------
 // Tool Gateway integration (audit #2)
@@ -299,77 +300,6 @@ impl ExecutorContext {
     pub fn with_event_store(mut self, store: EventStore) -> Self {
         self.event_store = Some(store);
         self
-    }
-
-    /// Recover incomplete turns from all WAL databases on startup.
-    ///
-    /// For each incomplete turn, we report failure to the session manager so it
-    /// can schedule a retry.
-    pub async fn recover_from_wal(&self) {
-        // Ensure WAL dir exists
-        if let Err(e) = tokio::fs::create_dir_all(&self.wal_base_dir).await {
-            tracing::error!(error = %e, "failed to create WAL base dir");
-            return;
-        }
-
-        let mut entries = match tokio::fs::read_dir(&self.wal_base_dir).await {
-            Ok(e) => e,
-            Err(e) => {
-                tracing::warn!(error = %e, "WAL base dir not readable, skipping recovery");
-                return;
-            }
-        };
-
-        let mut recovered_count = 0u32;
-        while let Ok(Some(entry)) = entries.next_entry().await {
-            let path = entry.path();
-            if path.extension().is_some_and(|ext| ext == "db") {
-                match AdapterWal::open(&path) {
-                    Ok(wal) => match wal.find_incomplete_turns().await {
-                        Ok(incomplete) => {
-                            for turn in &incomplete {
-                                tracing::warn!(
-                                    turn_id = %turn.turn_id,
-                                    attempt_id = %turn.attempt_id,
-                                    "WAL recovery: found incomplete turn, marking as failed"
-                                );
-                                if let Err(e) = wal
-                                    .log_turn_failed(
-                                        &turn.turn_id,
-                                        &turn.attempt_id,
-                                        "executor crash recovery: process was not running",
-                                    )
-                                    .await
-                                {
-                                    tracing::warn!(error = %e, "WAL: failed to record turn failure");
-                                }
-                                recovered_count += 1;
-                            }
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                path = %path.display(),
-                                error = %e,
-                                "failed to query WAL for incomplete turns"
-                            );
-                        }
-                    },
-                    Err(e) => {
-                        tracing::warn!(
-                            path = %path.display(),
-                            error = %e,
-                            "failed to open WAL database"
-                        );
-                    }
-                }
-            }
-        }
-
-        if recovered_count > 0 {
-            tracing::info!(recovered_count, "WAL crash recovery complete");
-        } else {
-            tracing::info!("WAL crash recovery: no incomplete turns found");
-        }
     }
 
     /// Execute a command headlessly (one-shot process, returns response text).
