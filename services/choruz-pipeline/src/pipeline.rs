@@ -81,7 +81,6 @@ pub async fn run_pipeline(config: PipelineConfig) {
             .with_event_store(event_store.clone()),
     );
 
-    // WAL crash recovery: find incomplete turns and mark them as failed
     tracing::info!("running WAL crash recovery...");
     executor_ctx.recover_from_wal().await;
 

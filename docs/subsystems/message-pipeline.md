@@ -112,6 +112,30 @@ Scheduled instants use [`choruz_application::schedule::next_run_at`](../../crate
 | Dispatch wakes on `choruz_commands` only | `command_listener_wakes_for_choruz_channel_not_legacy_channel` in [`pg_notify.rs`](../../services/choruz-pipeline/src/pg_notify.rs) (runs when `CHORUZ_LISTENER_TEST_DATABASE_URL` is set) |
 | Every headless turn refreshes the workspace instruction file before spawning | `ensure_claude_md` call in `spawn_headless_session`; tests in [`instructions.rs`](../../crates/choruz-host-runtime/src/instructions.rs) |
 
+## WAL recovery evidence
+
+[`executor/wal_recovery.rs`](../../services/choruz-pipeline/src/executor/wal_recovery.rs)
+owns startup reconciliation of incomplete SQLite WAL turns. It marks those turns
+failed; session leases and retries remain separate. Recovery is best effort:
+an unreadable file does not stop other files or pipeline startup. `/readyz`
+checks PostgreSQL, not WAL recovery.
+
+The pipeline's `/metrics` exposes these process-local metrics after the scan:
+
+| Metric | Meaning |
+|---|---|
+| `choruz_wal_recovery_success` | Last completed scan had no errors: 1; otherwise 0 |
+| `choruz_wal_recovery_runs_total{outcome}` | Completed scans, `success` or `failed` |
+| `choruz_wal_recovery_errors_total{stage}` | Errors at `directory`, `enumerate`, `open`, `query`, or `record` |
+| `choruz_wal_recovery_turns_total` | Incomplete turns successfully persisted as failed, not successful retries |
+| `choruz_wal_recovery_duration_seconds` | Histogram of completed scan durations, including failed scans |
+
+Counters reset on process restart. Labels contain no file paths or user data.
+Summary logs report `outcome`, `databases`, `incomplete`, `recovered`, and
+`errors`; `WAL recovery operation failed` records supply the stage, path and
+error. A process that cannot start cannot serve these metrics: retain a
+separate process-down alert. See the [WAL recovery runbook](../operations/runbook.md#incident-wal-recovery-reports-errors).
+
 ## Failure modes
 
 | Failure | Behaviour | Operator signal |
@@ -126,7 +150,7 @@ Scheduled instants use [`choruz_application::schedule::next_run_at`](../../crate
 | Outbox row unparsable or orphaned | `dead_letter_outbox_entry` after `OUTBOX_DEAD_LETTER_AFTER_ATTEMPTS` = 5 attempts, or immediately when the event no longer exists | `dead_letters` row |
 | Crash while a Maildir file is `.processing` | `claim_outbox_file` re-claims files older than `PROCESSING_STALE_AFTER` = 60s with a `.retry-<id>.processing` name | none beyond logs |
 | `LISTEN` connection drops | reconnect after 2s; the dispatch tick and CDC poll cover the gap | `dispatch LISTEN reconnecting` warn |
-| WAL has incomplete turns after a crash | `recover_from_wal` at boot marks them failed | `running WAL crash recovery` log |
+| WAL has incomplete turns after a crash | Startup marks them failed; errors leave recovery degraded without blocking startup | `WAL crash recovery complete` or `WAL crash recovery incomplete`; recovery metrics above |
 | Agent has no active binding or its workspace is missing on disk | turn fails with a non-retriable message | `executor_command_failed` |
 | Instruction file is not a recognised managed template | preserved, `tracing::warn`, sidecar `<workspace>/.choruz-bootstrap-warning.json` | run `choruz-pipeline rebootstrap` |
 

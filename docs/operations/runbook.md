@@ -63,6 +63,24 @@ Configure the deployment's existing log collector or service manager to alert on
 
 Check both versioned readiness endpoints after recovery, not just the API's liveness. A missing scrape or failed readiness probe is a host-availability incident even when no error counter is available: a process that never starts cannot serve metrics. Collect the pipeline's own metrics endpoint on port 3020 separately from the gateway's port 3000. Keep alerts scoped to the actual configured ports for managed deployments; the headless supervisor uses its fixed backend ports.
 
+## Incident: WAL recovery reports errors
+
+Alert on `choruz_wal_recovery_success == 0` from the pipeline metrics endpoint;
+keep process-down monitoring separate. A healthy `/readyz` does not certify WAL
+recovery. [Metric semantics](../subsystems/message-pipeline.md#wal-recovery-evidence)
+distinguish successful reconciliation from successful agent retries.
+
+1. Find the startup `WAL crash recovery incomplete` summary and accompanying
+   `WAL recovery operation failed` records. Use their `stage`, `path` and `error`
+   fields to distinguish access, corrupt database and persistence failures.
+2. Inspect the reported path under the configured sandbox's `_wal` directory.
+   Preserve the directory and SQLite sidecar files before any repair. Do not
+   delete a database merely to clear the alert or mark unfinished work successful.
+3. Correct the evidenced storage or permissions problem. Schedule a controlled
+   pipeline restart to rescan; restarting can interrupt active agents. Verify
+   the new summary and recovery metric, then check affected commands through
+   runtime status and retry/dead-letter records separately.
+
 ## Incident: Event Backlog Growing
 
 1. Query `/metrics` and inspect `choruz_event_backlog_total`.
