@@ -17,8 +17,8 @@ use axum::{
 };
 use choruz_agent_runtime::{
     AuditActor, BindingState, CodexTerminalCaptureInput, CreateBindingInput, DriverType,
-    RuntimeStore,
 };
+use choruz_application::runtime_store::RuntimeStore;
 use choruz_application::{
     ChannelTaskStatus, CreateAgentRequest, CreateChannelTaskRequest, CreateCompanyRequest,
     CreateDirectConversationRequest, CreateGroupRequest, CreatePrincipalRequest, ListEventsQuery,

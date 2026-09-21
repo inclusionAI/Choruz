@@ -2,10 +2,14 @@
 name = "choruz-application"
 version.workspace = true
 edition.workspace = true
-description = "DbService, the PostgreSQL-backed service layer behind the API gateway, and the in-memory ChatApp shell"
+description = "Platform persistence through DbService and RuntimeStore, and the in-memory ChatApp shell"
 license.workspace = true
 
 [dependencies]
+choruz-community = { path = "../choruz-community", version = "0.2.3" }
+choruz-agent-runtime = { path = "../choruz-agent-runtime", version = "0.2.3" }
+tokio.workspace = true
+choruz-evaluation = { path = "../choruz-evaluation", version = "0.2.3" }
 choruz-auth = { path = "../choruz-auth" }
 choruz-common = { path = "../choruz-common" }
 choruz-domain = { path = "../choruz-domain" }
@@ -26,6 +30,7 @@ tokio-postgres.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+uuid.workspace = true
 proptest.workspace = true
 serde_json.workspace = true
 

@@ -32,7 +32,7 @@ pub(crate) async fn configure_community(
     headers: HeaderMap,
     State(state): State<ApiState>,
     Path(id): Path<String>,
-    Json(settings): Json<choruz_domain::behavior::CommunitySettings>,
+    Json(settings): Json<choruz_community::behavior::CommunitySettings>,
 ) -> Result<Json<Value>, ApiError> {
     let actor = require_human_operator(&headers, &state).await?;
     let binding = authorize_terminal_binding(&state, &actor, &id).await?;
@@ -85,8 +85,8 @@ pub(crate) async fn retry_community(
 #[serde(deny_unknown_fields)]
 pub(crate) struct EvaluationRequest {
     revision_id: String,
-    suite: choruz_domain::evaluation::EvaluationSuite,
-    optimization: Option<choruz_domain::optimization::OptimizationConfig>,
+    suite: choruz_evaluation::evaluation::EvaluationSuite,
+    optimization: Option<choruz_evaluation::optimization::OptimizationConfig>,
 }
 
 pub(crate) async fn evaluate(
@@ -164,7 +164,7 @@ pub(crate) async fn evaluations(
 pub(crate) struct Settings {
     enabled: bool,
     analyst_binding_id: String,
-    optimization_settings: Option<choruz_domain::optimization::OptimizationSettings>,
+    optimization_settings: Option<choruz_evaluation::optimization::OptimizationSettings>,
 }
 
 #[derive(Deserialize)]

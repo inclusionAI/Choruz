@@ -1,0 +1,14 @@
+[package]
+name = "choruz-evaluation"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Fixed evaluation tasks and checkpointed prompt and team optimization"
+readme = "README.md"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

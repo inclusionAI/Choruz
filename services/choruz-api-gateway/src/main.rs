@@ -3,9 +3,9 @@ use std::{
     net::SocketAddr,
 };
 
-use choruz_agent_runtime::RuntimeStore;
 use choruz_api_gateway::{Config, LocalAuthConfig, router_with_runtime};
 use choruz_application::ChatApp;
+use choruz_application::runtime_store::RuntimeStore;
 use choruz_infrastructure::init_tracing;
 use choruz_session::PgSessionStore;
 

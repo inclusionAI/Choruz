@@ -1,26 +1,31 @@
 //! Public, revision-pinned HF dataset exchange. Never send source queries or traces.
+use crate::behavior::{BehaviorRecord, COMMUNITY_REPOSITORY, valid_id};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use choruz_common::AppError;
-use choruz_domain::behavior::{BehaviorRecord, COMMUNITY_REPOSITORY, valid_id};
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet},
     time::Duration,
 };
 
-pub(crate) struct Snapshot {
+/// A fully validated immutable revision. Persist records and object IDs together
+/// only after success; a failed fetch must not replace a caller's previous cache.
+pub struct Snapshot {
     pub revision: String,
     pub records: Vec<BehaviorRecord>,
     pub objects: BTreeMap<String, String>,
 }
 
-pub(crate) struct Hub {
+/// Exchange with the fixed public community dataset. This client owns neither
+/// privacy approval nor durable retry state; it never uploads source traces.
+pub struct Hub {
     client: reqwest::Client,
     origin: String,
 }
 
 impl Hub {
-    pub(crate) fn new() -> Result<Self, AppError> {
+    /// Build a bounded HTTPS client. Network failures expose no token or response body.
+    pub fn new() -> Result<Self, AppError> {
         Ok(Self {
             client: reqwest::Client::builder()
                 .timeout(Duration::from_secs(30))
@@ -41,7 +46,10 @@ impl Hub {
         })
     }
 
-    pub(crate) async fn snapshot(
+    /// Fetch one pinned revision, reusing records whose object IDs match the cache.
+    /// `None` means the supplied revision is current. Invalid identities, schema,
+    /// pagination or size limits fail the whole fetch rather than returning a partial cache.
+    pub async fn snapshot(
         &self,
         previous: Option<&str>,
         cached: &BTreeMap<String, (String, BehaviorRecord)>,
@@ -185,7 +193,10 @@ impl Hub {
         }))
     }
 
-    pub(crate) async fn contribute(
+    /// Submit an already privacy-reviewed record as a dataset PR, not an accepted record.
+    /// Schema validation does not establish privacy or consent. A network error after
+    /// dispatch has an uncertain outcome; callers must not blindly retry publication.
+    pub async fn contribute(
         &self,
         token: &str,
         record: &BehaviorRecord,

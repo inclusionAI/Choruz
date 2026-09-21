@@ -1,8 +1,9 @@
 //! Blind trials diagnose tasks; independent source-grounded review controls admission.
 use crate::{experience_diagnostics::LearningCheck, host_runtime::RuntimeHost};
 use choruz_common::AppError;
-use choruz_domain::evaluation::{TraceCase, case_review_covers};
-use choruz_host_runtime::{HostRequest, TerminalSpec, experience::TaskDecision};
+use choruz_evaluation::evaluation::{TraceCase, case_review_covers};
+use choruz_host_runtime::{HostRequest, TerminalSpec};
+use choruz_learning::TaskDecision;
 use serde_json::{Value, json};
 use sha2::Digest;
 use std::collections::{BTreeMap, BTreeSet};
@@ -179,6 +180,6 @@ async fn inspect_rounds(
         pending = retry;
     }
     Ok(
-        json!({"procedure_digest":hex::encode(sha2::Sha256::digest(choruz_host_runtime::experience::TASK_REVIEW_SKILL.as_bytes())),"attempts":history}),
+        json!({"procedure_digest":hex::encode(sha2::Sha256::digest(choruz_learning::TASK_REVIEW_SKILL.as_bytes())),"attempts":history}),
     )
 }

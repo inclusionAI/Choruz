@@ -2,7 +2,8 @@ use choruz_common::{AppError, AppResult};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::{AuditActor, RuntimeStore, binding::map_db_error};
+use super::{RuntimeStore, map_db_error};
+use choruz_agent_runtime::AuditActor;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

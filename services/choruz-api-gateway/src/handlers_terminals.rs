@@ -9,8 +9,9 @@ use axum::{
 };
 use choruz_agent_runtime::{
     BindingState, CodexTerminalCaptureInput, CodexTerminalCaptureMetadata, DriverType,
-    RuntimeBinding, RuntimeStore, TerminalSessionAnchorInput,
+    RuntimeBinding, TerminalSessionAnchorInput,
 };
+use choruz_application::runtime_store::RuntimeStore;
 use choruz_common::AppError;
 use choruz_domain::{ConversationType, Principal, PrincipalType};
 use choruz_host_runtime::{
@@ -1009,7 +1010,8 @@ mod tests {
         terminal_capture_error_is_permanent, terminal_resume_session_id,
     };
     use crate::host_runtime::{LocalHost, RuntimeHost};
-    use choruz_agent_runtime::{BindingState, DriverType, RuntimeBinding, RuntimeStore};
+    use choruz_agent_runtime::{BindingState, DriverType, RuntimeBinding};
+    use choruz_application::runtime_store::RuntimeStore;
     use choruz_host_runtime::CodexHomeReady;
     use chrono::Utc;
     use serde_json::json;

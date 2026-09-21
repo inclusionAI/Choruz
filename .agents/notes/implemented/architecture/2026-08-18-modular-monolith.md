@@ -16,6 +16,12 @@ Choruz is a modular monolith in Rust. Boundaries stay explicit through separate 
 
 ## Consequences
 
+The [evaluation library boundary](2026-09-19-composable-evaluation-library.md) preserves this deployment model while giving standalone callers the same fixed tasks and optimization state machine used by the platform.
+
+The [runtime persistence boundary](2026-09-19-runtime-without-platform-database.md) keeps platform binding and policy storage in application, leaving CLI configuration and discovery usable without a database client.
+
+The [community library boundary](2026-09-19-community-library.md) shares evidence records and dataset exchange without moving consent, publication state or activation out of the platform.
+
 - End-to-end chat behaviour shipped quickly because one process could own the whole flow.
 - The future split points are named (API gateway, realtime gateway, agent gateway, job runner) but not scaffolded: a split starts by moving a module out of `choruz-api-gateway` or the pipeline, not by reviving an empty binary.
 - Operational load stays low: one PostgreSQL, a handful of binaries, no service mesh.

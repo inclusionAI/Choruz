@@ -18,8 +18,16 @@ MEMBERS = {
 
 
 class PackagesForChangeTest(unittest.TestCase):
-    def test_agent_templates_test_the_pipeline_that_embeds_them(self):
-        self.assertEqual(packages_for_change(["agent-templates/core-protocol.md"], MEMBERS), (False, ["choruz-pipeline"]))
+    def test_packaged_prompts_select_their_owner_and_platform_consumers(self):
+        members = load_workspace(ROOT)
+        for owner, path in [
+            ("choruz-host-runtime", "crates/choruz-host-runtime/assets/agent-templates/core-protocol.md"),
+            ("choruz-learning", "crates/choruz-learning/assets/experience-analysis.md"),
+        ]:
+            everything, packages = packages_for_change([path], members)
+            self.assertFalse(everything)
+            for required in (owner, "choruz-host-runtime", "choruz-api-gateway", "choruz-pipeline"):
+                self.assertIn(required, packages)
 
     def test_leaf_change_selects_only_that_crate(self):
         self.assertEqual(packages_for_change(["services/choruz-api-gateway/src/main.rs"], MEMBERS), (False, ["choruz-api-gateway"]))

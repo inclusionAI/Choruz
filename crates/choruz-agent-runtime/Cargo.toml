@@ -2,24 +2,21 @@
 name = "choruz-agent-runtime"
 version.workspace = true
 edition.workspace = true
-description = "Agent runtime bindings, headless driver plumbing and native session discovery shared by the gateway, pipeline and connector"
+description = "CLI driver configuration and native session discovery without a platform database"
 license.workspace = true
+readme = "README.md"
 
 [dependencies]
-choruz-common = { path = "../choruz-common" }
+choruz-common = { path = "../choruz-common", version = "0.2.3" }
 chrono.workspace = true
-deadpool.workspace = true
-deadpool-postgres.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 rusqlite.workspace = true
-thiserror.workspace = true
 tokio.workspace = true
-tokio-postgres.workspace = true
 tracing.workspace = true
-uuid.workspace = true
 
 [dev-dependencies]
+uuid.workspace = true
 tempfile = "3"
 tokio.workspace = true
 

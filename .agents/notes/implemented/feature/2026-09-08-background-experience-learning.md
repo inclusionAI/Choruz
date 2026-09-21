@@ -8,7 +8,7 @@ An Agent can repeat a mistake or ignore a durable user preference across turns. 
 
 ## Decision
 
-An opt-in, binding-scoped policy selects a separate analysis Agent. A gateway worker reads the target's native transcript and shared conversation feedback through existing device operations. Fresh analysis processes use the selected account without resuming either Agent's active session. The independently written [analysis prompt](../../../../agent-templates/experience-analysis.md) groups work into meaningful attempts and preserves later corrections without assigning blame to missing user input.
+An opt-in, binding-scoped policy selects a separate analysis Agent. A gateway worker reads the target's native transcript and shared conversation feedback through existing device operations. Fresh analysis processes use the selected account without resuming either Agent's active session. The independently written [analysis prompt](../../../../crates/choruz-learning/assets/experience-analysis.md) groups work into meaningful attempts and preserves later corrections without assigning blame to missing user input.
 
 The worker consumes bounded, resumable windows instead of retaining only the transcript tail. Checkpoints, summaries and reviewed revisions commit together under a generation-fenced lease. Disabling learning or selecting a revision invalidates an in-flight result. Existing project instructions remain untouched; the current active revision supplies labeled context to subsequent structured and headless submissions, after the original routing envelope.
 

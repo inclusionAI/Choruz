@@ -351,15 +351,17 @@ mod tests {
     fn discovers_new_configs_restarts_crashes_and_stops_removed_connectors() {
         let temp = tempfile::tempdir().expect("temporary connector directory");
         let counter = temp.path().join("starts");
+        let ready = temp.path().join("ready");
         let stopped = temp.path().join("stopped");
         let script = temp.path().join("fake-connector");
         fs::write(
             &script,
             format!(
-                "#!/bin/sh\nprintf x >> '{}'\nif [ \"$(wc -c < '{}')\" -lt 2 ]; then exit 17; fi\ntrap \"touch '{}'; exit 0\" TERM INT\nwhile :; do sleep 0.1; done\n",
+                "#!/bin/sh\nprintf x >> '{}'\nif [ \"$(wc -c < '{}')\" -lt 2 ]; then exit 17; fi\ntrap \"touch '{}'; exit 0\" TERM INT\ntouch '{}'\nwhile :; do sleep 0.1; done\n",
                 counter.display(),
                 counter.display(),
-                stopped.display()
+                stopped.display(),
+                ready.display()
             ),
         )
         .expect("write fake connector");
@@ -381,9 +383,8 @@ mod tests {
         let config = temp.path().join("device.json");
         fs::write(&config, "{}").expect("add connector config after supervisor starts");
 
-        wait_until("crashed connector to restart", || {
-            fs::read(&counter).is_ok_and(|starts| starts.len() >= 2)
-        });
+        wait_until("crashed connector to restart", || ready.exists());
+        assert_eq!(fs::read(&counter).unwrap(), b"xx");
         fs::remove_file(config).expect("remove connector config");
         wait_until("removed connector to stop", || stopped.exists());
         drop(supervisor);

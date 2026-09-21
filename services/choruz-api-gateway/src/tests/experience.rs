@@ -3,7 +3,7 @@ use choruz_application::db_service::ExperienceReport;
 
 #[tokio::test]
 async fn behavior_exchange_deduplicates_evidence_and_fences_publication_and_trials() {
-    use choruz_domain::behavior::{BehaviorRecord, CommunitySettings};
+    use choruz_community::behavior::{BehaviorRecord, CommunitySettings};
     let database_a = TestDatabase::create().await;
     let database_b = TestDatabase::create().await;
     let a =
@@ -76,7 +76,7 @@ async fn behavior_exchange_deduplicates_evidence_and_fences_publication_and_tria
         "model":{"observed":"execution-model-a","configured":"configured-alias","harness":"codex_terminal","harness_version":"1.0"},
         "solution":preparation.solution,"kind":"encountered","evidence_summary":"A later correction established the missing check."})).unwrap();
     let mut forged = local.clone();
-    forged.kind = choruz_domain::behavior::EvidenceKind::Effective;
+    forged.kind = choruz_community::behavior::EvidenceKind::Effective;
     assert!(
         a.finish_behavior(&preparation, Some(&forged), None)
             .await
@@ -313,7 +313,7 @@ async fn behavior_exchange_deduplicates_evidence_and_fences_publication_and_tria
             .unwrap()
     );
     let combined = vec![public.clone(), public, evidence_b.clone(), evidence_b];
-    let counts = choruz_domain::behavior::counts(&combined);
+    let counts = choruz_community::behavior::counts(&combined);
     assert_eq!(counts.encountered, 2);
     assert_eq!(
         counts.applied, 0,
@@ -328,7 +328,7 @@ async fn behavior_exchange_deduplicates_evidence_and_fences_publication_and_tria
 #[tokio::test]
 async fn corrected_trace_answer_cancels_pending_run_without_rewriting_its_snapshot() {
     use choruz_application::db_service::EvaluationContext;
-    use choruz_domain::evaluation::{OutputCheck, TraceCase};
+    use choruz_evaluation::evaluation::{OutputCheck, TraceCase};
     let database = TestDatabase::create().await;
     let db =
         choruz_application::DbService::new(choruz_store::EventStore::new(&database.database_url));
@@ -450,7 +450,7 @@ async fn corrected_trace_answer_cancels_pending_run_without_rewriting_its_snapsh
     bridge.episode_ref = "z-bridge".into();
     bridge.input = "Equivalent wording".into();
     bridge.evidence = vec!["bridge-evidence".into()];
-    bridge.classification = Some(choruz_domain::evaluation::CaseClassification {
+    bridge.classification = Some(choruz_evaluation::evaluation::CaseClassification {
         task_type: "math".into(),
         capability: "reasoning".into(),
         structure: "single_step".into(),
@@ -973,7 +973,7 @@ async fn automatic_optimization_requires_holdout_and_content_review_then_support
                     .unwrap();
                 let team = applied.team.unwrap();
                 assert_eq!(team.members.len(), 2);
-                assert_eq!(team.order, choruz_domain::team::Order::Parallel);
+                assert_eq!(team.order, choruz_evaluation::team::Order::Parallel);
                 assert_eq!(team.members[0].prompt, "Derive the requested number.");
                 assert_eq!(team.members[1].prompt, "Check the requested format.");
                 let observations = report["optimization"]["observations"].as_array().unwrap();
@@ -1421,6 +1421,17 @@ async fn background_learning_verifies_marker_body_even_when_its_reference_was_re
     background_learning_cross_window_marker(true).await;
 }
 
+async fn make_learning_due(client: &impl tokio_postgres::GenericClient, binding: &str) {
+    // Leave due rows unlocked so a polling transaction cannot starve SKIP LOCKED.
+    client
+        .execute(
+            "UPDATE experience_policy SET next_check_at=NOW() WHERE binding_id=$1 AND lease_token IS NULL AND next_check_at>NOW()",
+            &[&binding],
+        )
+        .await
+        .unwrap();
+}
+
 #[cfg(unix)]
 async fn background_learning_cross_window_marker(retain_marker: bool) {
     use std::io::Write;
@@ -1483,7 +1494,7 @@ async fn background_learning_cross_window_marker(retain_marker: bool) {
             .is_some()
     );
     if !retain_marker {
-        let shared: choruz_domain::behavior::BehaviorRecord = serde_json::from_value(json!({
+        let shared: choruz_community::behavior::BehaviorRecord = serde_json::from_value(json!({
             "schema_version":1,"id":"shared-event","occurrence_id":"shared-objective",
             "problem":{"id":"shared-verification","title":"Skipped verification","input_background":"A task required verification.","expected_behavior":"Verify the check.","bad_behavior":"Skipped verification.","applicability":"Explicit acceptance checks","tags":["verification"]},
             "model":{"observed":"other-execution-model","configured":null,"harness":"codex_terminal","harness_version":"1.0"},
@@ -1510,7 +1521,7 @@ async fn background_learning_cross_window_marker(retain_marker: bool) {
             &owner.workspace_id,
             &owner.id,
             &target,
-            &choruz_domain::behavior::CommunitySettings {
+            &choruz_community::behavior::CommunitySettings {
                 search: true,
                 automatic_trial: true,
                 contribute: false,
@@ -1756,41 +1767,86 @@ async fn background_learning_cross_window_marker(retain_marker: bool) {
     // summary can tell the analyst which ref to cite, but cannot verify it.
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
-            client.execute("UPDATE experience_policy SET next_check_at=NOW() WHERE binding_id=$1 AND lease_token IS NULL", &[&target]).await.unwrap();
-            let reports = db.experience_revisions(&owner.workspace_id, &owner.id, &target).await.unwrap();
+            make_learning_due(&**client, &target).await;
+            let reports = db
+                .experience_revisions(&owner.workspace_id, &owner.id, &target)
+                .await
+                .unwrap();
             if reports.len() == 5 {
                 assert_eq!(reports[0].disposition, "no_change");
-                assert_eq!(reports[0].source_references, if retain_marker { json!([marker_ref]) } else { json!([]) });
+                assert_eq!(
+                    reports[0].source_references,
+                    if retain_marker {
+                        json!([marker_ref])
+                    } else {
+                        json!([])
+                    }
+                );
                 assert!(reports[0].analysis.contains(&marker_ref));
-                assert_eq!(db.experience_for_turn(&owner.workspace_id, &target).await.unwrap().unwrap().revision_id, applied_revision);
+                assert_eq!(
+                    db.experience_for_turn(&owner.workspace_id, &target)
+                        .await
+                        .unwrap()
+                        .unwrap()
+                        .revision_id,
+                    applied_revision
+                );
                 break;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
-    }).await.expect("marker window must commit without activation before the new failure");
+    })
+    .await
+    .expect("marker window must commit without activation before the new failure");
     let mut transcript = fs::OpenOptions::new().append(true).open(&native).unwrap();
     writeln!(transcript, "{}", json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"For the next task, your completion claim was again wrong: you never ran the required check."}]}})).unwrap();
     drop(transcript);
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             // Advance only this test's idle schedule, not an in-flight lease.
-            client.execute("UPDATE experience_policy SET next_check_at=NOW() WHERE binding_id=$1 AND lease_token IS NULL", &[&target]).await.unwrap();
+            make_learning_due(&**client, &target).await;
             let reports = db
                 .experience_revisions(&owner.workspace_id, &owner.id, &target)
                 .await
                 .unwrap();
-            let error: Option<String> = client.query_one("SELECT last_error FROM experience_policy WHERE binding_id=$1", &[&target]).await.unwrap().get("last_error");
-            assert!(error.is_none(), "historical marker must validate through scoped recovery: {error:?}");
+            let error: Option<String> = client
+                .query_one(
+                    "SELECT last_error FROM experience_policy WHERE binding_id=$1",
+                    &[&target],
+                )
+                .await
+                .unwrap()
+                .get("last_error");
+            assert!(
+                error.is_none(),
+                "historical marker must validate through scoped recovery: {error:?}"
+            );
             if reports.len() == 6 {
-                assert!(reports[0].source_references.as_array().unwrap().contains(&json!(marker_ref)));
-                assert_eq!(reports[0].validation["problems"][0]["applied_revision_id"], applied_revision);
+                assert!(
+                    reports[0]
+                        .source_references
+                        .as_array()
+                        .unwrap()
+                        .contains(&json!(marker_ref))
+                );
+                assert_eq!(
+                    reports[0].validation["problems"][0]["applied_revision_id"],
+                    applied_revision
+                );
                 assert_eq!(
                     reports[0].validation["escalation_candidates"],
                     json!(["skipped-verification"])
                 );
-                let context = db.experience_for_turn(&owner.workspace_id, &target).await.unwrap().unwrap();
+                let context = db
+                    .experience_for_turn(&owner.workspace_id, &target)
+                    .await
+                    .unwrap()
+                    .unwrap();
                 assert_eq!(context.revision_id, reports[0].id);
-                assert!(context.team.is_none(), "recurrence alone must not bypass measured team search consent");
+                assert!(
+                    context.team.is_none(),
+                    "recurrence alone must not bypass measured team search consent"
+                );
                 break;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
@@ -1834,22 +1890,39 @@ async fn background_learning_cross_window_marker(retain_marker: bool) {
     drop(transcript);
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
-            client.execute("UPDATE experience_policy SET next_check_at=NOW() WHERE binding_id=$1 AND lease_token IS NULL", &[&target]).await.unwrap();
-            let reports = db.experience_revisions(&owner.workspace_id, &owner.id, &target).await.unwrap();
+            make_learning_due(&**client, &target).await;
+            let reports = db
+                .experience_revisions(&owner.workspace_id, &owner.id, &target)
+                .await
+                .unwrap();
             if reports.len() == 7 {
                 assert_eq!(reports[0].disposition, "candidate");
                 let details = &reports[0].validation["review_details"];
                 assert_eq!(details["passed"], false);
                 assert_eq!(details["accepted"], false);
                 assert_eq!(details["evidence_verified"], true);
-                assert!(details["reviewer_report"]["reason"].as_str().unwrap().contains("does not address this task"));
+                assert!(
+                    details["reviewer_report"]["reason"]
+                        .as_str()
+                        .unwrap()
+                        .contains("does not address this task")
+                );
                 assert!(!details.to_string().contains("fixture-secret"));
-                assert_eq!(db.experience_for_turn(&owner.workspace_id, &target).await.unwrap().unwrap().revision_id, applied_revision);
+                assert_eq!(
+                    db.experience_for_turn(&owner.workspace_id, &target)
+                        .await
+                        .unwrap()
+                        .unwrap()
+                        .revision_id,
+                    applied_revision
+                );
                 break;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
-    }).await.expect("rejected content review must retain its reason without activation");
+    })
+    .await
+    .expect("rejected content review must retain its reason without activation");
     if !retain_marker {
         let mut transcript = fs::OpenOptions::new().append(true).open(&native).unwrap();
         for text in [
@@ -1860,24 +1933,43 @@ async fn background_learning_cross_window_marker(retain_marker: bool) {
             writeln!(transcript,"{}",json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":text}]}})).unwrap();
         }
         drop(transcript);
-        tokio::time::timeout(Duration::from_secs(60),async {
+        tokio::time::timeout(Duration::from_secs(60), async {
             loop {
-                client.execute("UPDATE experience_policy SET next_check_at=NOW() WHERE binding_id=$1 AND lease_token IS NULL", &[&target]).await.unwrap();
-                let reports=db.experience_revisions(&owner.workspace_id,&owner.id,&target).await.unwrap();
-                if reports.len()==8 {
-                    assert_eq!(reports[0].validation["outcome_review"]["passed"],true);
-                    assert_eq!(reports[0].validation["solution_outcomes"][0]["outcome"],"effective");
-                    let library=db.behavior_community(&owner.workspace_id,&owner.id,&target).await.unwrap();
+                make_learning_due(&**client, &target).await;
+                let reports = db
+                    .experience_revisions(&owner.workspace_id, &owner.id, &target)
+                    .await
+                    .unwrap();
+                if reports.len() == 8 {
+                    assert_eq!(reports[0].validation["outcome_review"]["passed"], true);
+                    assert_eq!(
+                        reports[0].validation["solution_outcomes"][0]["outcome"],
+                        "effective"
+                    );
+                    let library = db
+                        .behavior_community(&owner.workspace_id, &owner.id, &target)
+                        .await
+                        .unwrap();
                     if library["counts"]["effective"] == 1 {
-                        let event=library["local"].as_array().unwrap().iter().find(|entry|entry["record"]["kind"]=="effective").unwrap();
-                        assert_eq!(event["record"]["solution"]["id"],applied_revision);
-                        assert_eq!(event["record"]["solution"]["based_on"],json!(["shared-solution"]));
+                        let event = library["local"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .find(|entry| entry["record"]["kind"] == "effective")
+                            .unwrap();
+                        assert_eq!(event["record"]["solution"]["id"], applied_revision);
+                        assert_eq!(
+                            event["record"]["solution"]["based_on"],
+                            json!(["shared-solution"])
+                        );
                         break;
                     }
                 }
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
-        }).await.expect("independent source-backed success must become versioned effectiveness evidence");
+        })
+        .await
+        .expect("independent source-backed success must become versioned effectiveness evidence");
     }
     let checkpoint: Value = client
         .query_one(
@@ -1892,14 +1984,31 @@ async fn background_learning_cross_window_marker(retain_marker: bool) {
     drop(transcript);
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
-            client.execute("UPDATE experience_policy SET next_check_at=NOW() WHERE binding_id=$1 AND lease_token IS NULL", &[&target]).await.unwrap();
-            let row = client.query_one("SELECT last_error,source_cursor FROM experience_policy WHERE binding_id=$1", &[&target]).await.unwrap();
+            make_learning_due(&**client, &target).await;
+            let row = client
+                .query_one(
+                    "SELECT last_error,source_cursor FROM experience_policy WHERE binding_id=$1",
+                    &[&target],
+                )
+                .await
+                .unwrap();
             if let Some(error) = row.get::<_, Option<String>>("last_error") {
                 assert_eq!(error, "Learning problem lacks new source evidence");
                 assert_eq!(row.get::<_, Value>("source_cursor"), checkpoint);
-                assert_eq!(db.experience_revisions(&owner.workspace_id, &owner.id, &target).await.unwrap().len(), if retain_marker {7} else {8});
+                assert_eq!(
+                    db.experience_revisions(&owner.workspace_id, &owner.id, &target)
+                        .await
+                        .unwrap()
+                        .len(),
+                    if retain_marker { 7 } else { 8 }
+                );
                 let records = db.list_audit_logs(&owner.workspace_id).await.unwrap();
-                let failure = records.iter().find(|record| record.action == "learning.check" && record.metadata["outcome"] == "failed").expect("failed checks remain durable without creating a revision");
+                let failure = records
+                    .iter()
+                    .find(|record| {
+                        record.action == "learning.check" && record.metadata["outcome"] == "failed"
+                    })
+                    .expect("failed checks remain durable without creating a revision");
                 assert_eq!(failure.metadata["error_category"], "validation");
                 assert!(failure.metadata.get("error").is_none());
                 assert!(failure.metadata["trace_id"].is_string());
@@ -1907,7 +2016,9 @@ async fn background_learning_cross_window_marker(retain_marker: bool) {
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
-    }).await.expect("historical evidence alone must not count as a new failure");
+    })
+    .await
+    .expect("historical evidence alone must not count as a new failure");
     assert!(
         !workspace.join(".choruz/sessions").exists(),
         "reading a native trace must not launch a foreground session"
@@ -2044,7 +2155,22 @@ async fn experience_settings_scope_and_stale_analysis_activation() {
     )
     .await
     .unwrap();
-    let mut claim = db.claim_experience().await.unwrap().unwrap();
+    let (mut polling_client, connection) = tokio_postgres::connect(&database.database_url, NoTls)
+        .await
+        .unwrap();
+    tokio::spawn(async move {
+        let _ = connection.await;
+    });
+    make_learning_due(&polling_client, &target).await;
+    // Hold the polling transaction open to force overlap with SKIP LOCKED claiming.
+    let polling = polling_client.transaction().await.unwrap();
+    make_learning_due(&polling, &target).await;
+    let mut claim = db
+        .claim_experience()
+        .await
+        .unwrap()
+        .expect("polling must not lock an already-due learning job away from its worker");
+    polling.commit().await.unwrap();
     assert_eq!(claim.binding_id, target);
     let runtime = RuntimeStore::new(&database.database_url);
     let binding = runtime.get_binding(&target).await.unwrap();

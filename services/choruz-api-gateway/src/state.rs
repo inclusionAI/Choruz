@@ -1,5 +1,5 @@
-use choruz_agent_runtime::RuntimeStore;
 use choruz_application::ChatApp;
+use choruz_application::runtime_store::RuntimeStore;
 use choruz_session::PgSessionStore;
 
 use crate::attachments::AttachmentStore;

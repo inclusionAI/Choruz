@@ -17,7 +17,7 @@ runtimeTest("imports and resumes default and isolated account sessions on the se
   await mkdir(workspace);
   const db = await postgresQueryClient();
   const fixture = path.join(home, "structured-cli");
-  await writeFile(fixture, await readFile(path.resolve("tests/fixtures/structured-cli.py")), { mode: 0o700 });
+  await writeFile(fixture, await readFile(path.resolve("../../crates/choruz-host-runtime/tests/fixtures/structured-cli.py")), { mode: 0o700 });
   const selected = [] as Array<{ harness: string; native_session_id: string; workspace_path: string; harness_account_id: string | null; marker: string }>;
   for (const harness of ["claude", "codex"]) {
     const sessionId = randomUUID();

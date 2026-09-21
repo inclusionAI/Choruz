@@ -1,7 +1,7 @@
 //! Reviewed objective snapshots share the analysis transaction and scope.
 use super::DbService;
 use choruz_common::AppError;
-use choruz_domain::evaluation::{EvaluationCase, EvaluationSplit, EvaluationSuite, TraceCase};
+use choruz_evaluation::evaluation::{EvaluationCase, EvaluationSplit, EvaluationSuite, TraceCase};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -328,7 +328,7 @@ pub fn dataset_report(previous: &[TraceCase], cases: &[TraceCase]) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use choruz_domain::evaluation::OutputCheck;
+    use choruz_evaluation::evaluation::OutputCheck;
 
     #[test]
     fn objectives_are_deduplicated_partitioned_and_frozen_with_evidence() {
@@ -424,7 +424,7 @@ mod tests {
 
     #[test]
     fn semantic_groups_conflicts_and_category_sampling_preserve_meaning() {
-        use choruz_domain::evaluation::CaseClassification;
+        use choruz_evaluation::evaluation::CaseClassification;
         let mut cases: Vec<_> = (0..60)
             .map(|i| TraceCase {
                 variant: None,

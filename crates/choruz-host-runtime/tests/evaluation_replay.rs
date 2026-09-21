@@ -1,6 +1,6 @@
 #![cfg(unix)]
 
-use choruz_domain::evaluation::ReplayEnvironment;
+use choruz_evaluation::evaluation::ReplayEnvironment;
 use choruz_host_runtime::{TerminalSpec, evaluation_replay};
 use serde_json::json;
 use std::{collections::BTreeMap, os::unix::fs::PermissionsExt, process::Command};

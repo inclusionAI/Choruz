@@ -2072,7 +2072,7 @@ async fn runtime_host_pairing_is_single_use_and_host_token_is_revocable() {
     client.execute("INSERT INTO experience_policy(binding_id,workspace_id,owner_id,analyst_binding_id,enabled,next_check_at) VALUES($1,$2,$3,$4,TRUE,NOW()+INTERVAL '1 day')", &[&learned_binding,&operator.workspace_id,&operator.id,&imported_binding_id]).await.unwrap();
     client.execute("INSERT INTO experience_revision(id,binding_id,workspace_id,policy_generation,source_digest,source_references,analysis,instruction,disposition,validation) VALUES('remote-learning-test',$1,$2,1,'test','[]','reviewed','Explain the recommendation first.','active','{\"review\":\"passed\"}')", &[&learned_binding,&operator.workspace_id]).await.unwrap();
     client.execute("UPDATE experience_policy SET active_revision_id='remote-learning-test' WHERE binding_id=$1", &[&learned_binding]).await.unwrap();
-    client.execute("UPDATE experience_revision SET validation=validation || $1 WHERE id='remote-learning-test'", &[&serde_json::json!({"team":{"config":choruz_domain::team::Team::reviewer("Verify changed files.".into()),"review":"passed"}})]).await.unwrap();
+    client.execute("UPDATE experience_revision SET validation=validation || $1 WHERE id='remote-learning-test'", &[&serde_json::json!({"team":{"config":choruz_evaluation::team::Team::reviewer("Verify changed files.".into()),"review":"passed"}})]).await.unwrap();
 
     let sessions = PgSessionStore::new(&database.database_url);
     let session_key = format!("{}:{}", agent.id, conversation.id);

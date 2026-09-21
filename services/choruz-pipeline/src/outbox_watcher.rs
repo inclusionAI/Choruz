@@ -30,8 +30,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use choruz_agent_runtime::DriverType;
 use choruz_agent_runtime::RuntimeBinding;
-use choruz_agent_runtime::{DriverType, RuntimeStore};
+use choruz_application::runtime_store::RuntimeStore;
 use choruz_store::EventStore;
 
 pub async fn run_outbox_watcher_loop(

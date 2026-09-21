@@ -23,6 +23,7 @@ Claude's manual callback is the complete `authorization-code#state` value shown 
 
 ## Consequences
 
+- Codex initialization maps both pipe-write failure and missing RPC response to the same executable recovery instruction. A process-exit barrier tests the write-first failure deterministically; API acceptance separately verifies the failed login and account diagnostic are persisted.
 - One code path for the Harness login protocol; a protocol change lands in the crate and both executors follow.
 - A gateway restart abandons an in-flight local login; the row expires after 15 minutes and the panel offers "Sign in" again. Acceptable before a persistent job runner exists.
 - `CHORUZ_CLAUDE_BINARY` and `CHORUZ_CODEX_BINARY` now matter to the gateway as well as the connector; the gateway tests substitute protocol-faithful fake executables.

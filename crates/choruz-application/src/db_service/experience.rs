@@ -1,6 +1,6 @@
 use super::DbService;
 use choruz_common::AppError;
-use choruz_domain::optimization::OptimizationSettings;
+use choruz_evaluation::optimization::OptimizationSettings;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -59,7 +59,7 @@ pub struct ExperienceRevision {
 pub struct ExperienceTurn {
     pub revision_id: String,
     pub instruction: String,
-    pub team: Option<choruz_domain::team::Team>,
+    pub team: Option<choruz_evaluation::team::Team>,
 }
 
 impl DbService {
@@ -74,7 +74,7 @@ impl DbService {
         let row = client.query_opt("SELECT r.id,r.instruction,CASE WHEN r.validation->'team'->>'review'='passed' THEN r.validation->'team'->'config' END AS team FROM experience_policy p JOIN experience_revision r ON r.id=p.active_revision_id AND r.binding_id=p.binding_id AND r.workspace_id=p.workspace_id WHERE p.binding_id=$1 AND p.workspace_id=$2 AND p.enabled AND r.disposition='active'", &[&binding_id,&workspace_id]).await
             .map_err(|e| AppError::Internal(format!("read execution role: {e}")))?;
         row.map(|row| {
-            let team: Option<choruz_domain::team::Team> = row
+            let team: Option<choruz_evaluation::team::Team> = row
                 .get::<_, Option<Value>>("team")
                 .map(serde_json::from_value)
                 .transpose()
@@ -352,7 +352,7 @@ impl DbService {
         };
         let mut validation = validation.clone();
         if let Some(cases) = validation.get("evaluation_cases") {
-            let cases: Vec<choruz_domain::evaluation::TraceCase> =
+            let cases: Vec<choruz_evaluation::evaluation::TraceCase> =
                 serde_json::from_value(cases.clone())
                     .map_err(|_| AppError::Validation("Invalid evaluation cases".into()))?;
             validation["evaluation_cases"] =

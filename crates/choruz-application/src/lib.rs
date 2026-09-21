@@ -6,6 +6,7 @@ mod events;
 mod messages;
 mod principals;
 mod rate_limit;
+pub mod runtime_store;
 pub mod schedule;
 mod state;
 mod types;

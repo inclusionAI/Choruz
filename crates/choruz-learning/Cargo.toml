@@ -1,0 +1,20 @@
+[package]
+name = "choruz-learning"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Fixed evidence analysis and evaluation procedures with an injected runner"
+readme = "README.md"
+
+[dependencies]
+choruz-common = { path = "../choruz-common", version = "0.2.3" }
+choruz-evaluation = { path = "../choruz-evaluation", version = "0.2.3" }
+choruz-community = { path = "../choruz-community", version = "0.2.3" }
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
+
+[lints]
+workspace = true

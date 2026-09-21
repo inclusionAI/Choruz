@@ -6,12 +6,12 @@ use crate::{
 };
 use choruz_application::db_service::BehaviorClaim;
 use choruz_common::AppError;
-use choruz_domain::behavior::{BehaviorRecord, ModelAttribution, ProblemCard, SCHEMA_VERSION};
+use choruz_community::behavior::{BehaviorRecord, ModelAttribution, ProblemCard, SCHEMA_VERSION};
 use choruz_host_runtime::{
     HostRequest,
-    experience::BehaviorDraft,
     experience_source::{Cursor, HistoricalRecord},
 };
+use choruz_learning::BehaviorDraft;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::time::Duration;
@@ -21,7 +21,7 @@ pub(crate) async fn run(state: &ApiState) {
 }
 
 async fn run_community(state: &ApiState) {
-    let Ok(hub) = crate::behavior_hub::Hub::new() else {
+    let Ok(hub) = choruz_community::hub::Hub::new() else {
         tracing::error!("Community HTTP client could not start");
         return;
     };
@@ -122,7 +122,7 @@ async fn prepare_public(
             "Public projection retains a recognized credential".into(),
         ));
     }
-    let review: choruz_host_runtime::experience::PrivacyReview = host
+    let review: choruz_learning::PrivacyReview = host
         .call(HostRequest::ReviewBehavior {
             spec: Box::new(terminal_spec(&analyst, 120, 40, None, None)),
             prompt: json!({"private":claim.record,"public":public}).to_string(),
@@ -135,7 +135,7 @@ async fn prepare_public(
     }
     let dispatched = state
         .db
-        .begin_behavior_publication(claim, &public, &json!({"accepted":true,"reason":review.reason,"skill_sha256":format!("{:x}",Sha256::digest(include_bytes!("../../../agent-templates/behavior-privacy-review.md")))}))
+        .begin_behavior_publication(claim, &public, &json!({"accepted":true,"reason":review.reason,"skill_sha256":format!("{:x}",Sha256::digest(choruz_learning::PRIVACY_REVIEW_SKILL.as_bytes()))}))
         .await?;
     Ok(dispatched.then_some(public))
 }
