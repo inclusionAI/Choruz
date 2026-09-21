@@ -2,7 +2,7 @@
 //! and revision lifecycle. Private source linkage never enters the public cache.
 use super::DbService;
 use choruz_common::AppError;
-use choruz_domain::behavior::{BehaviorRecord, COMMUNITY_REPOSITORY, CommunitySettings, counts};
+use choruz_community::behavior::{BehaviorRecord, COMMUNITY_REPOSITORY, CommunitySettings, counts};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
@@ -21,8 +21,8 @@ pub struct BehaviorClaim {
     pub cursor: Value,
     pub applied_revision_id: Option<String>,
     pub generation: i64,
-    pub solution: Option<choruz_domain::behavior::SolutionVersion>,
-    pub kind: choruz_domain::behavior::EvidenceKind,
+    pub solution: Option<choruz_community::behavior::SolutionVersion>,
+    pub kind: choruz_community::behavior::EvidenceKind,
     pub occurrence_id: String,
 }
 
@@ -314,7 +314,7 @@ impl DbService {
         tx.execute("UPDATE experience_behavior_event SET lease_token=$2,lease_until=NOW()+INTERVAL '10 minutes',updated_at=NOW() WHERE id=$1", &[&id,&token]).await.map_err(storage)?;
         let solution = tx.query_opt("SELECT r.id,r.instruction,r.validation FROM experience_problem p JOIN experience_revision r ON r.id=COALESCE($4,p.prompt_revision_id) AND r.workspace_id=p.workspace_id AND r.binding_id=p.binding_id WHERE p.workspace_id=$1 AND p.binding_id=$2 AND p.problem_key=$3 AND r.validation->>'review'='passed'", &[&workspace,&binding,&key,&row.get::<_,Option<String>>("solution_revision_id")]).await.map_err(storage)?.map(|r| {
             let validation: Value = r.get("validation");
-            Ok::<_,AppError>(choruz_domain::behavior::SolutionVersion {id:r.get("id"),instruction:r.get("instruction"),applicability:row.get("description"),
+            Ok::<_,AppError>(choruz_community::behavior::SolutionVersion {id:r.get("id"),instruction:r.get("instruction"),applicability:row.get("description"),
                 based_on:validation["behavior_sources"].as_array().into_iter().flatten().filter_map(|source|source["candidate"]["record"]["solution"]["id"].as_str().map(str::to_owned)).collect(),
                 team: if validation["team"]["review"]=="passed" { serde_json::from_value(validation["team"]["config"].clone()).map_err(|_|AppError::Internal("Invalid solution execution team".into()))? } else { None } })
         }).transpose()?;

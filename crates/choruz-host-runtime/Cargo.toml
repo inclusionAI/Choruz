@@ -6,11 +6,13 @@ description = "Device-local runtime operations (terminals, Codex homes, session 
 license.workspace = true
 
 [dependencies]
-choruz-agent-runtime = { path = "../choruz-agent-runtime" }
-choruz-common = { path = "../choruz-common" }
-choruz-domain = { path = "../choruz-domain" }
-choruz-harness-login = { path = "../choruz-harness-login" }
-choruz-ids = { path = "../choruz-ids" }
+choruz-learning = { path = "../choruz-learning", version = "0.2.3" }
+choruz-community = { path = "../choruz-community", version = "0.2.3" }
+choruz-evaluation = { path = "../choruz-evaluation", version = "0.2.3" }
+choruz-agent-runtime = { path = "../choruz-agent-runtime", version = "0.2.3" }
+choruz-common = { path = "../choruz-common", version = "0.2.3" }
+choruz-harness-login = { path = "../choruz-harness-login", version = "0.1.0" }
+choruz-ids = { path = "../choruz-ids", version = "0.2.3" }
 chrono.workspace = true
 futures-util.workspace = true
 hex.workspace = true

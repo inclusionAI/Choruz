@@ -1,9 +1,11 @@
 use std::{env, fs, path::PathBuf, process::Command, sync::OnceLock};
 
 use choruz_agent_runtime::{
-    AuditActor, AutoMode, BindingState, CodexTerminalCaptureInput, CreateBindingInput, DriverType,
-    RuntimeStore, TerminalSessionAnchorInput, UntaggedHumanMode, UpsertPolicyInput,
-    normalize_workspace_path,
+    AuditActor, BindingState, CodexTerminalCaptureInput, CreateBindingInput, DriverType,
+    TerminalSessionAnchorInput, normalize_workspace_path,
+};
+use choruz_application::runtime_store::{
+    AutoMode, RuntimeStore, UntaggedHumanMode, UpsertPolicyInput,
 };
 use serde_json::json;
 use tokio_postgres::NoTls;

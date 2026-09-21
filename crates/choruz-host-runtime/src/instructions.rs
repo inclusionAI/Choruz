@@ -59,9 +59,9 @@ const CORE_PROTOCOL_PLACEHOLDER: &str = "{{CHORUZ_CORE_PROTOCOL}}";
 const STANDARD_EXTENSIONS_PLACEHOLDER: &str = "{{CHORUZ_STANDARD_EXTENSIONS}}";
 const DEFAULT_ROLE: &str = "You are an AI assistant on the Choruz platform.";
 const CLAUDE_INSTRUCTIONS_TEMPLATE: &str =
-    include_str!("../../../agent-templates/agent-claude-md-template.md");
+    include_str!("../assets/agent-templates/agent-claude-md-template.md");
 const CODEX_INSTRUCTIONS_TEMPLATE: &str =
-    include_str!("../../../agent-templates/agent-codex-md-template.md");
+    include_str!("../assets/agent-templates/agent-codex-md-template.md");
 const V6_CLAUDE_INSTRUCTIONS_TEMPLATE: &str =
     include_str!("instructions_fixtures/bootstrap-v6-claude.md");
 const V6_CODEX_INSTRUCTIONS_TEMPLATE: &str =
@@ -72,15 +72,15 @@ const V8_MULTI_AGENT_COLLABORATION: &str =
     include_str!("instructions_fixtures/bootstrap-v8-multi-agent-collaboration.md");
 const V9_MULTI_AGENT_COLLABORATION: &str =
     include_str!("instructions_fixtures/bootstrap-v9-multi-agent-collaboration.md");
-const CORE_PROTOCOL: &str = include_str!("../../../agent-templates/core-protocol.md");
+const CORE_PROTOCOL: &str = include_str!("../assets/agent-templates/core-protocol.md");
 const STANDARD_EXTENSIONS: &[&str] = &[
-    include_str!("../../../agent-templates/extensions/multi-agent-collaboration.md"),
-    include_str!("../../../agent-templates/extensions/command-results.md"),
-    include_str!("../../../agent-templates/extensions/file-sharing.md"),
-    include_str!("../../../agent-templates/extensions/agent-management.md"),
-    include_str!("../../../agent-templates/extensions/group-management.md"),
-    include_str!("../../../agent-templates/extensions/scheduled-tasks.md"),
-    include_str!("../../../agent-templates/extensions/collaboration-practices.md"),
+    include_str!("../assets/agent-templates/extensions/multi-agent-collaboration.md"),
+    include_str!("../assets/agent-templates/extensions/command-results.md"),
+    include_str!("../assets/agent-templates/extensions/file-sharing.md"),
+    include_str!("../assets/agent-templates/extensions/agent-management.md"),
+    include_str!("../assets/agent-templates/extensions/group-management.md"),
+    include_str!("../assets/agent-templates/extensions/scheduled-tasks.md"),
+    include_str!("../assets/agent-templates/extensions/collaboration-practices.md"),
 ];
 
 /// Sidecar file written when a bootstrap refresh is skipped because the

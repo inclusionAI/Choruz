@@ -9,7 +9,10 @@ members = [
   "crates/choruz-application",
   "crates/choruz-auth",
   "crates/choruz-common",
+  "crates/choruz-community",
   "crates/choruz-domain",
+  "crates/choruz-evaluation",
+  "crates/choruz-learning",
   "crates/choruz-events",
   "crates/choruz-executor",
   "crates/choruz-ids",
@@ -48,7 +51,7 @@ collapsible_if = "allow"
 [workspace.package]
 edition = "2024"
 license = "Apache-2.0"
-version = "0.2.2"
+version = "0.2.3"
 
 [workspace.dependencies]
 async-trait = "0.1.89"

@@ -88,7 +88,7 @@ async fn exercise_sockets(silent: Option<&str>) {
         experience_worker: None,
         app: app.clone(),
         db: db.clone(),
-        runtime: choruz_agent_runtime::RuntimeStore::new(&database.database_url),
+        runtime: choruz_application::runtime_store::RuntimeStore::new(&database.database_url),
         session: choruz_session::PgSessionStore::new(&database.database_url),
         attachments: crate::attachments::AttachmentStore::new(attachments.path(), store.clone()),
         auth: crate::LocalAuthConfig::new(

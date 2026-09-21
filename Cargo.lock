@@ -334,26 +334,22 @@ dependencies = [
 
 [[package]]
 name = "choruz-agent-runtime"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "choruz-common",
  "chrono",
- "deadpool",
- "deadpool-postgres",
  "rusqlite",
  "serde",
  "serde_json",
  "tempfile",
- "thiserror 2.0.18",
  "tokio",
- "tokio-postgres",
  "tracing",
  "uuid",
 ]
 
 [[package]]
 name = "choruz-api-gateway"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "aes-gcm",
  "axum",
@@ -362,11 +358,14 @@ dependencies = [
  "choruz-application",
  "choruz-auth",
  "choruz-common",
+ "choruz-community",
  "choruz-domain",
+ "choruz-evaluation",
  "choruz-harness-login",
  "choruz-host-runtime",
  "choruz-ids",
  "choruz-infrastructure",
+ "choruz-learning",
  "choruz-relay-client",
  "choruz-session",
  "choruz-store",
@@ -398,11 +397,14 @@ dependencies = [
 
 [[package]]
 name = "choruz-application"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
+ "choruz-agent-runtime",
  "choruz-auth",
  "choruz-common",
+ "choruz-community",
  "choruz-domain",
+ "choruz-evaluation",
  "choruz-store",
  "chrono",
  "chrono-tz",
@@ -414,13 +416,15 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "tokio",
  "tokio-postgres",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
 name = "choruz-auth"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "base64",
  "hmac 0.12.1",
@@ -433,7 +437,7 @@ dependencies = [
 
 [[package]]
 name = "choruz-cli"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "dirs",
  "libc",
@@ -447,7 +451,7 @@ dependencies = [
 
 [[package]]
 name = "choruz-common"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "chrono",
  "prometheus",
@@ -457,8 +461,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "choruz-community"
+version = "0.2.3"
+dependencies = [
+ "axum",
+ "base64",
+ "choruz-common",
+ "choruz-evaluation",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "choruz-connector"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "axum",
  "choruz-agent-runtime",
@@ -482,7 +500,7 @@ dependencies = [
 
 [[package]]
 name = "choruz-domain"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "chrono",
  "serde",
@@ -490,8 +508,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "choruz-evaluation"
+version = "0.2.3"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "choruz-events"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "choruz-ids",
  "chrono",
@@ -501,7 +527,7 @@ dependencies = [
 
 [[package]]
 name = "choruz-executor"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "async-trait",
  "choruz-events",
@@ -533,14 +559,16 @@ dependencies = [
 
 [[package]]
 name = "choruz-host-runtime"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "base64",
  "choruz-agent-runtime",
  "choruz-common",
- "choruz-domain",
+ "choruz-community",
+ "choruz-evaluation",
  "choruz-harness-login",
  "choruz-ids",
+ "choruz-learning",
  "chrono",
  "futures-util",
  "hex",
@@ -557,7 +585,7 @@ dependencies = [
 
 [[package]]
 name = "choruz-ids"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "serde",
  "serde_json",
@@ -566,15 +594,27 @@ dependencies = [
 
 [[package]]
 name = "choruz-infrastructure"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "tracing",
  "tracing-subscriber",
 ]
 
 [[package]]
+name = "choruz-learning"
+version = "0.2.3"
+dependencies = [
+ "choruz-common",
+ "choruz-community",
+ "choruz-evaluation",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "choruz-pipeline"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "async-trait",
  "axum",
@@ -608,7 +648,7 @@ dependencies = [
 
 [[package]]
 name = "choruz-relay-client"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "aes-gcm",
  "base64",
@@ -629,7 +669,7 @@ dependencies = [
 
 [[package]]
 name = "choruz-replay"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "choruz-common",
  "choruz-ids",
@@ -645,7 +685,7 @@ dependencies = [
 
 [[package]]
 name = "choruz-router"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "choruz-common",
  "choruz-events",
@@ -664,7 +704,7 @@ dependencies = [
 
 [[package]]
 name = "choruz-server"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "choruz-infrastructure",
  "choruz-supervisor",
@@ -675,7 +715,7 @@ dependencies = [
 
 [[package]]
 name = "choruz-session"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "choruz-events",
  "choruz-ids",
@@ -693,7 +733,7 @@ dependencies = [
 
 [[package]]
 name = "choruz-store"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "choruz-common",
  "choruz-events",
@@ -712,7 +752,7 @@ dependencies = [
 
 [[package]]
 name = "choruz-supervisor"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "choruz-common",
  "dirs",
@@ -729,7 +769,7 @@ dependencies = [
 
 [[package]]
 name = "choruz-tools"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "async-trait",
  "choruz-common",
@@ -746,7 +786,7 @@ dependencies = [
 
 [[package]]
 name = "choruz-writer"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "choruz-common",
  "choruz-events",

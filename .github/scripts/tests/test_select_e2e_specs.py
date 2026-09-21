@@ -105,11 +105,18 @@ class SpecsForChangeTest(unittest.TestCase):
         self.assertTrue(everything)
 
     def test_agent_templates_are_not_documentation(self):
-        self.assertFalse(docs_only(["agent-templates/core-protocol.md"]))
+        self.assertFalse(docs_only(["crates/choruz-host-runtime/assets/agent-templates/core-protocol.md"]))
+        self.assertFalse(docs_only(["crates/choruz-learning/assets/experience-analysis.md"]))
         self.assertEqual(
-            vitest_selection(["agent-templates/extensions/file-sharing.md"]),
+            vitest_selection(["crates/choruz-host-runtime/assets/agent-templates/extensions/file-sharing.md"]),
             ("related", ["lib/agents/agent-templates.test.ts"]),
         )
+
+    def test_shared_cli_fixture_keeps_both_browser_consumers(self):
+        everything, specs = specs_for_change(["crates/choruz-host-runtime/tests/fixtures/structured-cli.py"])
+        self.assertTrue(everything)
+        self.assertIn("tests/e2e/terminal.spec.ts", specs)
+        self.assertIn("tests/e2e/workspace-session-import.spec.ts", specs)
 
     def test_uncontained_change_keeps_the_specs_its_web_files_map_to(self):
         everything, specs = specs_for_change([

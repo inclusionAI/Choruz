@@ -229,10 +229,10 @@ def vitest_selection(changed: list[str]) -> tuple[str, list[str]]:
 # notes verifier must run on it, so it never counts as documentation-only.
 # The agent instruction fragments are Markdown too, but the pipeline embeds
 # them and both the pipeline fixtures and the web template tests pin them.
-GATED_PROSE_PATTERNS = (".agents/**", "agent-templates/**")
+GATED_PROSE_PATTERNS = (".agents/**", "crates/choruz-host-runtime/assets/**", "crates/choruz-learning/assets/**")
 
 # Files outside apps/web whose change a web unit test pins.
-VITEST_EXTRA_RELATED = (("agent-templates/**", "lib/agents/agent-templates.test.ts"),)
+VITEST_EXTRA_RELATED = (("crates/choruz-host-runtime/assets/agent-templates/**", "lib/agents/agent-templates.test.ts"),)
 
 
 def docs_only(changed: list[str]) -> bool:
@@ -274,6 +274,9 @@ def specs_for_change(changed: list[str]) -> tuple[bool, list[str]]:
         if not path:
             continue
         if not path.startswith(WEB):
+            if path == "crates/choruz-host-runtime/tests/fixtures/structured-cli.py":
+                add("tests/e2e/terminal.spec.ts")
+                add("tests/e2e/workspace-session-import.spec.ts")
             everything = True
             continue
         rel = path[len(WEB):]

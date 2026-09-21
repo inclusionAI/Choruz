@@ -26,7 +26,7 @@ When loaded from a personal skills directory, resolve repository links from this
 4. **Migrations are append-only.** No edit to a file listed in `scripts/historical-migrations.sha256`; a new `V0NN__name.sql` with a matching `docs/data-model.md` update.
 5. **Contracts first.** A wire, database or configuration change updates `openapi/` or the migration in the same diff.
 6. **Docs match the code.** A moved file, renamed key, changed default or new command updates the document that names it (`docs/`, README, the web docs pages under `apps/web/app/docs`) in the same diff. Comments state non-obvious contracts; flag narration, review history and duplicated rationale.
-7. **Model-visible text is tested.** A change to what agents receive (the `[choruz-incoming]` envelope, instruction templates in `services/choruz-pipeline/src/instructions.rs` and `agent-templates`, bootstrap fixtures) updates the instruction tests and fixtures, and states the agent-behaviour risk.
+7. **Model-visible text is tested.** A change to what agents receive (the `[choruz-incoming]` envelope, instruction templates in `services/choruz-pipeline/src/instructions.rs` and `crates/choruz-host-runtime/assets/agent-templates`, bootstrap fixtures) updates the instruction tests and fixtures, and states the agent-behaviour risk.
 8. **Required evidence exists.** The template's "Ran locally" names the commands the diff needed (see [choruz-pre-push-checks](../choruz-pre-push-checks/SKILL.md)); `CI (linux) required` is green on the exact head.
 
 ## Manual checks

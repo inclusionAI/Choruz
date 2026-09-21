@@ -190,16 +190,20 @@ async fn codex_probe(profile: &AccountProfile) -> Result<AccountProbe, String> {
 }
 
 async fn codex_initialize(stdin: &mut ChildStdin, reader: &mut Lines) -> Result<(), String> {
-    write_json_line(stdin, &serde_json::json!({"jsonrpc":"2.0","id":0,"method":"initialize","params":{"clientInfo":{"name":"choruz","title":"Choruz","version":"1"},"capabilities":{"experimentalApi":true}}})).await?;
-    wait_for_rpc(reader, 0).await.map_err(|_| {
+    async {
+        write_json_line(stdin, &serde_json::json!({"jsonrpc":"2.0","id":0,"method":"initialize","params":{"clientInfo":{"name":"choruz","title":"Choruz","version":"1"},"capabilities":{"experimentalApi":true}}})).await?;
+        wait_for_rpc(reader, 0).await?;
+        write_json_line(
+            stdin,
+            &serde_json::json!({"jsonrpc":"2.0","method":"initialized"}),
+        )
+        .await
+    }
+    .await
+    .map_err(|_| {
         "Codex app-server is unavailable; update Codex or set CHORUZ_CODEX_BINARY to a current Codex CLI"
             .to_owned()
-    })?;
-    write_json_line(
-        stdin,
-        &serde_json::json!({"jsonrpc":"2.0","method":"initialized"}),
-    )
-    .await
+    })
 }
 
 /// The model and exact quota snapshot of the signed-in Codex account.
@@ -786,6 +790,30 @@ pub fn codex_identity_probe(account: &serde_json::Value) -> Result<AccountProbe,
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn exited_codex_initialize_reports_the_cli_recovery_action() {
+        let mut child = tokio::process::Command::new("/bin/sh")
+            .args(["-c", "exit 2"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let mut stdin = child.stdin.take().unwrap();
+        let mut reader = tokio::io::AsyncBufReadExt::lines(tokio::io::BufReader::new(
+            child.stdout.take().unwrap(),
+        ));
+        // Waiting for exit fixes the write/exit ordering without a timing race.
+        child.wait().await.unwrap();
+        assert_eq!(
+            super::codex_initialize(&mut stdin, &mut reader)
+                .await
+                .unwrap_err(),
+            "Codex app-server is unavailable; update Codex or set CHORUZ_CODEX_BINARY to a current Codex CLI"
+        );
+    }
+
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 

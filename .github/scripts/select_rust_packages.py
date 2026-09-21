@@ -28,9 +28,6 @@ EXCLUDED: tuple[str, ...] = ()
 WORKSPACE_ARGS = " ".join(["--workspace", *(f"--exclude {name}" for name in EXCLUDED)])
 
 # Anything here touches every crate.
-# Files outside any package directory that one package embeds with include_str!.
-EXTRA_OWNERS = (("agent-templates/**", "choruz-pipeline"),)
-
 EVERYTHING_PATTERNS = (
     "Cargo.toml",
     "Cargo.lock",
@@ -105,8 +102,6 @@ def packages_for_change(changed: list[str], members: dict[str, dict]) -> tuple[b
         if any(_matches(path, pattern) for pattern in EVERYTHING_PATTERNS):
             return True, []
         owner = owner_of(path, members)
-        if owner is None:
-            owner = next((name for pattern, name in EXTRA_OWNERS if _matches(path, pattern) and name in members), None)
         if owner is None:
             continue  # not a Rust file the workspace owns
         stack = [owner]

@@ -86,11 +86,10 @@ jobs:
               - 'apps/choruz-*/**'
               - 'migrations/**'
               - 'infra/host/setup_test_database.sh'
-              - 'agent-templates/**'
             web: &web
               - *ci
               - 'apps/web/**'
-              - 'agent-templates/**'
+              - 'crates/choruz-host-runtime/assets/agent-templates/**'
               - 'package.json'
               - 'pnpm-lock.yaml'
               - 'pnpm-workspace.yaml'

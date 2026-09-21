@@ -216,7 +216,7 @@ pub async fn run_pipeline(config: PipelineConfig) {
     //     outbox drained by the executor after each turn; PTY agents have
     //     nobody else watching since the runner was retired.
     // -----------------------------------------------------------------------
-    let watcher_runtime = Arc::new(choruz_agent_runtime::RuntimeStore::new(
+    let watcher_runtime = Arc::new(choruz_application::runtime_store::RuntimeStore::new(
         &config.database_url,
     ));
     let watcher_event_store = event_store.clone();

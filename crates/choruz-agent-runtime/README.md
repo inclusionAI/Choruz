@@ -1,19 +1,23 @@
-# choruz-agent-runtime
+# Choruz agent runtime
 
-Agent runtime bindings and driver plumbing shared by the API gateway, the pipeline and the connector: `RuntimeStore` reads and writes `agent_runtime_bindings` and `conversation_runtime_policies` in PostgreSQL, `HeadlessDriver` names the coding CLIs (`Claude`, `Codex`, `Pi`, `Grok`, `OpenCode`) and parses their output, and `SessionCatalogScanner` lists native harness sessions a human can import. `services/choruz-api-gateway`, `services/choruz-pipeline` and `services/choruz-connector` depend on it.
+Prepare CLI arguments and account environments, interpret headless output, and discover native sessions without starting the Choruz platform or connecting to PostgreSQL. This library does not bundle agent binaries, perform sign-in, persist platform bindings or start a supervisor.
 
-## Entry points
+`HeadlessDriver` owns driver-specific arguments and output parsing. `configure_command_workspace` and `prepare_harness_account_env` preserve the selected workspace and account profile. The caller owns permission policy and process lifetime: argument helpers encode Choruz's unattended execution settings, not a sandbox suitable for arbitrary untrusted work.
 
-- `src/binding.rs` — `DriverType`, `BindingState`, `RuntimeBinding`, `RuntimeStore`, `normalize_workspace_path`
-- `src/headless.rs` — `HeadlessDriver`, `configure_command_workspace`, `harness_account_env`, `parse_output`, `validate_model`
-- `src/policy.rs` — `ConversationRuntimePolicy`, `AutoMode`, `UntaggedHumanMode`, `RuntimeStore::get_policy` / `upsert_policy`
-- `src/session_catalog.rs` — read-only discovery of native Claude, Codex, Pi, Grok and OpenCode sessions
+`SessionCatalogScanner` reads the selected native account stores. `latest_native_session` is narrower: it finds a workspace-scoped session only where the driver can establish that association; it never guesses a Codex binding from global session files. Read errors and missing sessions retain the distinctions in the returned types.
 
-## Tests
+## Validate standalone use
 
-`cargo test -p choruz-agent-runtime`. `tests/runtime_store.rs` creates a temporary database per test from `CHORUZ_PG_HOST`, `CHORUZ_PG_PORT`, `CHORUZ_PG_USER` and `CHORUZ_PG_PASSWORD`, so it needs a running PostgreSQL.
+The crate's tests need no platform database:
 
-## Related
+```sh
+cargo test -p choruz-agent-runtime
+```
 
-- [docs/subsystems/agent-runtime.md](../../docs/subsystems/agent-runtime.md) — bindings, drivers, sessions and harness accounts
-- [docs/architecture.md](../../docs/architecture.md)
+Use a path dependency on this directory to consume it from another Cargo project. Its only workspace dependency is `choruz-common`; neither crate depends on a PostgreSQL client. Both can be packaged together without publishing them:
+
+```sh
+cargo package -p choruz-common -p choruz-agent-runtime --allow-dirty
+```
+
+The platform's `RuntimeStore` and conversation policy persistence live in `choruz-application::runtime_store`. Native discovery does not authorize a binding update; the platform adapter checks the captured binding identity before persisting a result.

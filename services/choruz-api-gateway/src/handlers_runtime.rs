@@ -6,10 +6,12 @@ use axum::{
     http::{HeaderMap, StatusCode},
 };
 use choruz_agent_runtime::{
-    AuditActor, AutoMode, BindingState, ConversationRuntimePolicy, CreateBindingInput, DriverType,
-    RuntimeBinding, UntaggedHumanMode, UpsertPolicyInput,
+    AuditActor, BindingState, CreateBindingInput, DriverType, RuntimeBinding,
 };
 use choruz_application::DbService;
+use choruz_application::runtime_store::{
+    AutoMode, ConversationRuntimePolicy, UntaggedHumanMode, UpsertPolicyInput,
+};
 use choruz_common::AppError;
 use choruz_domain::{Conversation, ConversationType, Principal, PrincipalType};
 use serde::{Deserialize, Serialize};

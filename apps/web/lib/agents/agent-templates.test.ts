@@ -10,7 +10,7 @@ import {
   STANDARD_EXTENSION_FILES,
 } from "./agent-instruction-template";
 
-const ROOT = path.resolve(__dirname, "..", "..", "..", "..", "agent-templates");
+const ROOT = path.resolve(__dirname, "..", "..", "..", "..", "crates/choruz-host-runtime/assets/agent-templates");
 const read = (file: string) => readFileSync(path.join(ROOT, file), "utf-8");
 const fragments = {
   coreProtocol: read(CORE_PROTOCOL_FILE),

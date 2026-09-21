@@ -5,7 +5,7 @@ use crate::{
 };
 use choruz_application::db_service::EvaluationClaim;
 use choruz_common::AppError;
-use choruz_domain::{
+use choruz_evaluation::{
     evaluation::{EvaluationCandidate, EvaluationCase, JudgeResult},
     optimization::SearchAction,
 };
@@ -13,9 +13,9 @@ use choruz_host_runtime::{HostRequest, TerminalSpec};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-const PROPOSAL: &str = include_str!("../../../agent-templates/experience-proposal.md");
-use choruz_host_runtime::experience::REVIEW_SKILL as APPLICATION_REVIEW;
-const ANALYSIS: &str = include_str!("../../../agent-templates/experience-analysis.md");
+const PROPOSAL: &str = choruz_learning::PROPOSAL_SKILL;
+use choruz_learning::REVIEW_SKILL as APPLICATION_REVIEW;
+const ANALYSIS: &str = choruz_learning::ANALYSIS_SKILL;
 
 pub(crate) fn analyst_fingerprint(spec: &TerminalSpec) -> Result<String, AppError> {
     Ok(hex::encode(Sha256::digest(
@@ -42,12 +42,7 @@ pub(crate) fn fingerprint(spec: &TerminalSpec) -> Result<String, AppError> {
         "account":spec.harness_account["harness_account_id"],
         "profile":spec.harness_account["harness_account_profile_kind"]});
     Ok(hex::encode(Sha256::digest(
-        format!(
-            "{}:{}",
-            context,
-            choruz_host_runtime::experience::JUDGE_SKILL
-        )
-        .as_bytes(),
+        format!("{}:{}", context, choruz_learning::JUDGE_SKILL).as_bytes(),
     )))
 }
 
@@ -97,7 +92,7 @@ async fn queue_automatic(state: &ApiState, job: &Value) -> Result<(), AppError> 
     let analyst = authorize_terminal_binding(state, &actor, field("analyst")?)
         .await
         .map_err(|e| e.0)?;
-    let settings: choruz_domain::optimization::OptimizationSettings =
+    let settings: choruz_evaluation::optimization::OptimizationSettings =
         serde_json::from_value(job["settings"].clone())
             .map_err(|e| AppError::Internal(e.to_string()))?;
     let suite = if settings.trace_cases {
@@ -135,7 +130,7 @@ async fn queue_automatic(state: &ApiState, job: &Value) -> Result<(), AppError> 
             suite
                 .cases
                 .iter()
-                .filter(|c| c.split == choruz_domain::evaluation::EvaluationSplit::Train)
+                .filter(|c| c.split == choruz_evaluation::evaluation::EvaluationSplit::Train)
                 .count(),
         );
     }
@@ -250,7 +245,7 @@ async fn execute(state: &ApiState, claim: &mut EvaluationClaim) -> Result<Value,
                     .as_deref()
                     .ok_or_else(|| AppError::Validation("Missing seed revision".into()))?
             );
-            let review: choruz_host_runtime::experience::Review = RuntimeHost::for_binding(state,&analyst)?.call(HostRequest::ReviewExperience {
+            let review: choruz_learning::Review = RuntimeHost::for_binding(state,&analyst)?.call(HostRequest::ReviewExperience {
                 spec: Box::new(analyst_spec),
                 prompt: json!({"proposed_instruction":proposed.instruction,"proposed_team":proposed.team,"seeds":seeds,"seed_reference":seed_reference,"seed_evidence":evidence}).to_string(),
             }).await?;

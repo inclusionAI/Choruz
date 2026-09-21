@@ -12,7 +12,7 @@ The Next.js 16 / React 19 client: the dashboard and chat surface, the in-app doc
 - `tests/` — Playwright e2e specs and fixtures; unit tests sit beside the module they pin
 - `public/` — static assets
 
-The provisioning route composes agent instructions from the repository's top-level [`agent-templates/`](../../agent-templates/), which the pipeline embeds as well.
+The provisioning route composes agent instructions from the host runtime's packaged [`crates/choruz-host-runtime/assets/agent-templates/`](../../crates/choruz-host-runtime/assets/agent-templates/), which the pipeline embeds as well.
 
 The [Layout section of the web-client page](../../docs/subsystems/web-client.md#layout) says which folder a new module belongs in.
 

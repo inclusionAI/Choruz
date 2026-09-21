@@ -346,8 +346,8 @@ export async function buildInstructionsFromTemplate(
 ): Promise<string> {
   const templateFile = templateFileForDriver(driverType);
   const templateRoots = [
-    path.resolve(process.cwd(), "..", "..", "agent-templates"),
-    path.resolve(process.cwd(), "agent-templates"),
+    path.resolve(process.cwd(), "..", "..", "crates/choruz-host-runtime/assets/agent-templates"),
+    path.resolve(process.cwd(), "crates/choruz-host-runtime/assets/agent-templates"),
   ];
   const requiredFiles = [templateFile, CORE_PROTOCOL_FILE, ...STANDARD_EXTENSION_FILES];
   let assembledParts: string[] | null = null;

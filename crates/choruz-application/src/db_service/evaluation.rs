@@ -1,7 +1,7 @@
 use super::DbService;
 use choruz_common::AppError;
-use choruz_domain::evaluation::{EvaluationCandidate, EvaluationSuite};
-use choruz_domain::optimization::{Optimization, OptimizationConfig};
+use choruz_evaluation::evaluation::{EvaluationCandidate, EvaluationSuite};
+use choruz_evaluation::optimization::{Optimization, OptimizationConfig};
 use serde_json::{Value, json};
 
 pub struct EvaluationClaim {

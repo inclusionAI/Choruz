@@ -9,14 +9,14 @@ use choruz_application::db_service::{ExperienceClaim, ExperienceReport};
 use choruz_common::AppError;
 use choruz_host_runtime::{
     HostRequest,
-    experience::{Analysis, ProblemObservation},
     experience_source::{Cursor, HistoricalRecord},
 };
+use choruz_learning::{Analysis, ProblemObservation};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::time::Duration;
 
-const REVIEW: &str = include_str!("../../../agent-templates/experience-analysis.md");
+const REVIEW: &str = choruz_learning::ANALYSIS_SKILL;
 
 pub(crate) struct WorkerGuard(tokio::task::AbortHandle);
 
@@ -93,8 +93,8 @@ fn prepare_curation(claim: &mut ExperienceClaim, now: i64) {
 
 fn finish_curation(
     checkpoint: &mut serde_json::Map<String, Value>,
-    previous: &[choruz_domain::evaluation::TraceCase],
-    changes: &mut Vec<choruz_domain::evaluation::TraceCase>,
+    previous: &[choruz_evaluation::evaluation::TraceCase],
+    changes: &mut Vec<choruz_evaluation::evaluation::TraceCase>,
     complete: bool,
 ) {
     let mut seen: std::collections::BTreeSet<String> = checkpoint
@@ -591,7 +591,7 @@ async fn review(
     let outcome_review = if solution_outcomes.is_empty() {
         None
     } else {
-        let verification: choruz_host_runtime::experience::Review = check.call(
+        let verification: choruz_learning::Review = check.call(
             &RuntimeHost::for_binding(state, &analyst)?, "outcome_review", HostRequest::ReviewExperience {
                 spec: Box::new(terminal_spec(&analyst, 120, 40, None, None)),
                 prompt: json!({"proposed_instruction":claim.instruction,"proposed_addressed_problems":[],
@@ -741,7 +741,7 @@ async fn review(
     {
         json!({"passed":true,"reason":"unchanged_seed_for_trace_evaluation"})
     } else if let Some(instruction) = instruction {
-        let verification: choruz_host_runtime::experience::Review = check.call(&RuntimeHost::for_binding(state, &analyst)?, "content_review", HostRequest::ReviewExperience {
+        let verification: choruz_learning::Review = check.call(&RuntimeHost::for_binding(state, &analyst)?, "content_review", HostRequest::ReviewExperience {
             spec: Box::new(terminal_spec(&analyst, 120, 40, None, None)),
             prompt: json!({"prior_instruction":claim.instruction,"prior_summary":claim.source_summary,"prior_references":claim.source_references,"proposed_instruction":instruction,"trace":source,
                     "existing_team":team,"proposed_solution_sources":analysis.solution_sources,"behavior_candidates":behavior_candidates,
@@ -791,7 +791,7 @@ async fn review(
 
 fn review_diagnostics(
     addressed: &[String],
-    verification: &choruz_host_runtime::experience::Review,
+    verification: &choruz_learning::Review,
     known_reference: impl Fn(&String) -> bool,
 ) -> Value {
     let evidence_verified = verification.evidence.iter().all(known_reference);
@@ -917,14 +917,14 @@ mod tests {
         claim.source_cursor["session"] = json!({"offset":3});
         prepare_curation(&mut claim, 90001);
         assert_eq!(claim.source_cursor["session"]["offset"], 3);
-        let old = choruz_domain::evaluation::TraceCase {
+        let old = choruz_evaluation::evaluation::TraceCase {
             variant: None,
             group_ref: None,
             classification: None,
             episode_ref: "missing".into(),
             evidence: vec!["answer".into()],
             input: "Task".into(),
-            check: Some(choruz_domain::evaluation::OutputCheck::Exact {
+            check: Some(choruz_evaluation::evaluation::OutputCheck::Exact {
                 expected: "ok".into(),
             }),
             reason: "Checked".into(),
@@ -960,7 +960,7 @@ mod tests {
 
     #[test]
     fn review_diagnostics_distinguish_rejection_from_protocol_mismatch() {
-        let report = choruz_host_runtime::experience::Review {
+        let report = choruz_learning::Review {
             accepted: false,
             reason: "Missing evidence. token=fixture-secret".into(),
             evidence: vec!["verified".into()],

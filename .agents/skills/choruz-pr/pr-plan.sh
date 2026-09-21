@@ -48,7 +48,7 @@ echo "  Static checks: security scan (always)$(matches '^\.github/(workflows|act
 if [ "$rust_count" != 0 ] && [ -n "$cargo_args" ]; then
   echo "  Rust lint + tests: cargo ... $cargo_args"
 fi
-if matches '^(apps/web/|package\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml|\.github/(workflows|actions|scripts)/)'; then
+if matches '^(crates/choruz-host-runtime/assets/|apps/web/|package\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml|\.github/(workflows|actions|scripts)/)'; then
   case "$vitest" in
     all) echo "  Web: unit tests (all), typecheck, build" ;;
     related) echo "  Web: unit tests related to: $vitest_files; typecheck, build" ;;
@@ -58,7 +58,7 @@ fi
 if matches '^(migrations/|infra/host/|scripts/historical-migrations\.sha256|crates/|services/|apps/choruz-|Cargo\.|\.cargo/|rust-toolchain|infra/host/setup_test_database\.sh|\.github/(workflows|actions|scripts)/)'; then
   echo "  DB and API smoke"
 fi
-e2e_paths='^(apps/web/|package\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml|\.github/(workflows|actions|scripts)/|infra/host/|migrations/|crates/|services/|apps/choruz-|Cargo\.|\.cargo/|rust-toolchain|infra/host/setup_test_database\.sh)'
+e2e_paths='^(crates/choruz-host-runtime/assets/|apps/web/|package\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml|\.github/(workflows|actions|scripts)/|infra/host/|migrations/|crates/|services/|apps/choruz-|Cargo\.|\.cargo/|rust-toolchain|infra/host/setup_test_database\.sh)'
 if [ -n "$specs" ] && matches "$e2e_paths"; then
   echo "  Web E2E ($shards shard(s)): $specs"
 fi
@@ -74,7 +74,7 @@ if [ "$rust_count" != 0 ] && [ -n "$cargo_args" ]; then
   echo "  cargo fmt --check && cargo clippy $cargo_args --all-targets -- -D warnings"
   echo "  cargo test $cargo_args"
 fi
-if matches '^(apps/web/|package\.json|pnpm-lock\.yaml)'; then
+if matches '^(crates/choruz-host-runtime/assets/|apps/web/|package\.json|pnpm-lock\.yaml)'; then
   case "$vitest" in
     all) echo "  pnpm web:test" ;;
     related) echo "  pnpm --dir apps/web exec vitest related --run $vitest_files" ;;

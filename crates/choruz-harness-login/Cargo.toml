@@ -6,7 +6,7 @@ description = "Drives a Harness's own browser sign-in and reports the link, call
 license.workspace = true
 
 [dependencies]
-choruz-agent-runtime = { path = "../choruz-agent-runtime" }
+choruz-agent-runtime = { path = "../choruz-agent-runtime", version = "0.2.3" }
 chrono.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

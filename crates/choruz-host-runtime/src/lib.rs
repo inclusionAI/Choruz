@@ -11,12 +11,12 @@
 pub mod codex;
 pub mod computer_use;
 pub mod drivers;
-pub mod experience;
 pub mod experience_source;
 pub mod filesystem;
 pub mod harness;
 pub mod inbox;
 pub mod instructions;
+pub mod learning_runner;
 pub mod link;
 pub mod outbox;
 pub mod process;
@@ -84,7 +84,7 @@ pub enum HostRequest {
     },
     RedactBehavior {
         spec: Box<TerminalSpec>,
-        record: Box<choruz_domain::behavior::BehaviorRecord>,
+        record: Box<choruz_community::behavior::BehaviorRecord>,
     },
     ResearchExperience {
         spec: Box<TerminalSpec>,
@@ -99,7 +99,7 @@ pub enum HostRequest {
     JudgeExperience {
         spec: Box<TerminalSpec>,
         input: String,
-        check: choruz_domain::evaluation::OutputCheck,
+        check: choruz_evaluation::evaluation::OutputCheck,
         output: String,
     },
     ReplayExperience {
@@ -107,7 +107,7 @@ pub enum HostRequest {
         input: String,
         instruction: String,
         preflight: String,
-        environment: choruz_domain::evaluation::ReplayEnvironment,
+        environment: choruz_evaluation::evaluation::ReplayEnvironment,
     },
     ProposeExperience {
         spec: Box<TerminalSpec>,
@@ -248,10 +248,10 @@ pub async fn execute(request: HostRequest) -> Result<Value, AppError> {
             })
             .await
         }
-        HostRequest::AnalyzeExperience { spec, prompt } => {
-            serde_json::to_value(experience::analyze(*spec, prompt).await?)
-                .map_err(|e| AppError::Internal(format!("encode analysis report: {e}")))
-        }
+        HostRequest::AnalyzeExperience { spec, prompt } => serde_json::to_value(
+            choruz_learning::analyze(&learning_runner::CliRunner(*spec), prompt).await?,
+        )
+        .map_err(|e| AppError::Internal(format!("encode analysis report: {e}"))),
         HostRequest::BehaviorReferences {
             spec,
             cursor,
@@ -267,31 +267,37 @@ pub async fn execute(request: HostRequest) -> Result<Value, AppError> {
             })
             .await
         }
-        HostRequest::ExtractBehavior { spec, prompt } => {
-            serde_json::to_value(experience::extract_behavior(*spec, prompt).await?)
-                .map_err(|e| AppError::Internal(format!("encode behavior card: {e}")))
-        }
-        HostRequest::ReviewBehavior { spec, prompt } => {
-            serde_json::to_value(experience::review_behavior(*spec, prompt).await?)
-                .map_err(|e| AppError::Internal(format!("encode privacy review: {e}")))
-        }
-        HostRequest::RedactBehavior { spec, record } => {
-            serde_json::to_value(experience::redact_behavior(*spec, *record).await?)
-                .map_err(|e| AppError::Internal(format!("encode public behavior projection: {e}")))
-        }
-        HostRequest::ResearchExperience { spec, categories } => {
-            serde_json::to_value(experience::research(*spec, categories).await?)
-                .map_err(|e| AppError::Internal(format!("encode research: {e}")))
-        }
+        HostRequest::ExtractBehavior { spec, prompt } => serde_json::to_value(
+            choruz_learning::extract_behavior(&learning_runner::CliRunner(*spec), prompt).await?,
+        )
+        .map_err(|e| AppError::Internal(format!("encode behavior card: {e}"))),
+        HostRequest::ReviewBehavior { spec, prompt } => serde_json::to_value(
+            choruz_learning::review_behavior(&learning_runner::CliRunner(*spec), prompt).await?,
+        )
+        .map_err(|e| AppError::Internal(format!("encode privacy review: {e}"))),
+        HostRequest::RedactBehavior { spec, record } => serde_json::to_value(
+            choruz_learning::redact_behavior(&learning_runner::CliRunner(*spec), *record).await?,
+        )
+        .map_err(|e| AppError::Internal(format!("encode public behavior projection: {e}"))),
+        HostRequest::ResearchExperience { spec, categories } => serde_json::to_value(
+            choruz_learning::research(&learning_runner::CliRunner(*spec), categories).await?,
+        )
+        .map_err(|e| AppError::Internal(format!("encode research: {e}"))),
         HostRequest::EvaluateExperience {
             spec,
             input,
             instruction,
             preflight,
-        } => {
-            serde_json::to_value(experience::evaluate(*spec, input, instruction, preflight).await?)
-                .map_err(|e| AppError::Internal(format!("encode evaluation output: {e}")))
-        }
+        } => serde_json::to_value(
+            choruz_learning::evaluate(
+                &learning_runner::CliRunner(*spec),
+                input,
+                instruction,
+                preflight,
+            )
+            .await?,
+        )
+        .map_err(|e| AppError::Internal(format!("encode evaluation output: {e}"))),
         HostRequest::ReplayExperience {
             spec,
             input,
@@ -307,20 +313,23 @@ pub async fn execute(request: HostRequest) -> Result<Value, AppError> {
             input,
             check,
             output,
-        } => serde_json::to_value(experience::judge(*spec, input, check, output).await?)
-            .map_err(|e| AppError::Internal(format!("encode judge result: {e}"))),
-        HostRequest::ProposeExperience { spec, prompt } => {
-            serde_json::to_value(experience::propose(*spec, prompt).await?)
-                .map_err(|e| AppError::Internal(format!("encode guidance proposal: {e}")))
-        }
-        HostRequest::ReviewExperience { spec, prompt } => {
-            serde_json::to_value(experience::review(*spec, prompt).await?)
-                .map_err(|e| AppError::Internal(format!("encode guidance review: {e}")))
-        }
-        HostRequest::ReviewTasks { spec, prompt } => {
-            serde_json::to_value(experience::review_tasks(*spec, prompt).await?)
-                .map_err(|e| AppError::Internal(format!("encode task review: {e}")))
-        }
+        } => serde_json::to_value(
+            choruz_learning::judge(&learning_runner::CliRunner(*spec), input, check, output)
+                .await?,
+        )
+        .map_err(|e| AppError::Internal(format!("encode judge result: {e}"))),
+        HostRequest::ProposeExperience { spec, prompt } => serde_json::to_value(
+            choruz_learning::propose(&learning_runner::CliRunner(*spec), prompt).await?,
+        )
+        .map_err(|e| AppError::Internal(format!("encode guidance proposal: {e}"))),
+        HostRequest::ReviewExperience { spec, prompt } => serde_json::to_value(
+            choruz_learning::review(&learning_runner::CliRunner(*spec), prompt).await?,
+        )
+        .map_err(|e| AppError::Internal(format!("encode guidance review: {e}"))),
+        HostRequest::ReviewTasks { spec, prompt } => serde_json::to_value(
+            choruz_learning::review_tasks(&learning_runner::CliRunner(*spec), prompt).await?,
+        )
+        .map_err(|e| AppError::Internal(format!("encode task review: {e}"))),
         HostRequest::PrepareExecutionTeam {
             spec,
             role,

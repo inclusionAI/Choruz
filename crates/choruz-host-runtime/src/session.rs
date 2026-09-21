@@ -1157,11 +1157,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let directory = tempfile::tempdir().unwrap();
         let binary = directory.path().join("fixture-cli");
-        std::fs::write(
-            &binary,
-            include_str!("../../../apps/web/tests/fixtures/structured-cli.py"),
-        )
-        .unwrap();
+        std::fs::write(&binary, include_str!("../tests/fixtures/structured-cli.py")).unwrap();
         std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
         let id = choruz_common::new_id();
         struct Cleanup(String);
@@ -1215,7 +1211,7 @@ mod tests {
                 experience: None,
                 preflight: Some(Box::new(crate::harness::ExecutionTeam {
                     revision_id: "review-revision".into(),
-                    team: choruz_domain::team::Team::reviewer(
+                    team: choruz_evaluation::team::Team::reviewer(
                         "Verify workspace changes before reporting completion.".into(),
                     ),
                 })),
@@ -1253,7 +1249,7 @@ mod tests {
                     experience: None,
                     preflight: Some(Box::new(crate::harness::ExecutionTeam {
                         revision_id: "review-revision".into(),
-                        team: choruz_domain::team::Team::reviewer(
+                        team: choruz_evaluation::team::Team::reviewer(
                             "Verify workspace changes before reporting completion.".into(),
                         ),
                     })),

@@ -1,6 +1,5 @@
 mod attachments;
 mod auth;
-mod behavior_hub;
 mod behavior_worker;
 pub mod config;
 mod db_projection;
@@ -80,8 +79,8 @@ use axum::{
     extract::DefaultBodyLimit,
     routing::{delete, get, patch, post, put},
 };
-use choruz_agent_runtime::RuntimeStore;
 use choruz_application::ChatApp;
+use choruz_application::runtime_store::RuntimeStore;
 use choruz_session::PgSessionStore;
 pub fn router(app: ChatApp) -> Router {
     let attachment_root = std::env::var("CHORUZ_ATTACHMENT_DIR")

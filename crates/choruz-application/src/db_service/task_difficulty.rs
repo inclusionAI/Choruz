@@ -1,7 +1,7 @@
 //! Empirical training-task performance for the current executor and baseline.
 use super::DbService;
 use choruz_common::AppError;
-use choruz_domain::evaluation::TraceCase;
+use choruz_evaluation::evaluation::TraceCase;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 

@@ -12,7 +12,7 @@ runtimeTest("background experience follows the selected remote Agent and applies
   const { company, host, headers, home } = device;
   const cli = path.join(home, "learning-source-cli");
   const analystCli = path.join(home, "learning-analyst-cli");
-  await writeFile(cli, await readFile(path.resolve("tests/fixtures/structured-cli.py")), { mode: 0o700 });
+  await writeFile(cli, await readFile(path.resolve("../../crates/choruz-host-runtime/tests/fixtures/structured-cli.py")), { mode: 0o700 });
   await writeFile(analystCli, await readFile(path.resolve("../../crates/choruz-host-runtime/tests/fixtures/experience-analyst.py")), { mode: 0o700 });
   const agents = [];
   for (const [role, driver, binary] of [["source", "claude_terminal", cli], ["analyst", "codex_terminal", analystCli]]) {
@@ -179,7 +179,7 @@ for (const driver of ["claude_terminal", "codex_terminal"]) {
       const { company, host, headers, home } = device;
       const name = uniqueName("structured-dm");
       const fixture = path.join(home, `structured-${driver}`);
-      await writeFile(fixture, await readFile(path.resolve("tests/fixtures/structured-cli.py")), { mode: 0o700 });
+      await writeFile(fixture, await readFile(path.resolve("../../crates/choruz-host-runtime/tests/fixtures/structured-cli.py")), { mode: 0o700 });
       const created = await page.request.post(`${WEB_BASE}/api/agents/provision`, { data: {
         name, instructions: "Verify the selected device workspace.", driver_type: driver,
         workspace_id: company.id, ...(remote ? { runtime_host_id: host.id } : {}),
@@ -392,7 +392,7 @@ test.describe("Terminal view (PTY)", () => {
     const agent = await provisionAgent(page, "", terminalAgentName);
     terminalAgentId = agent.agentId;
     const binary = path.join(agent.workspacePath, "fixture-cli");
-    await writeFile(binary, await readFile(path.resolve("tests/fixtures/structured-cli.py")), {mode:0o700});
+    await writeFile(binary, await readFile(path.resolve("../../crates/choruz-host-runtime/tests/fixtures/structured-cli.py")), {mode:0o700});
     const db = await postgresQueryClient();
     const bindings = await db.query("UPDATE agent_runtime_bindings SET config_json=(config_json - 'model') || $1::jsonb WHERE agent_principal_id=$2 RETURNING id", [JSON.stringify({binary_path:binary}), agent.agentId]);
     expect(bindings.rows).toHaveLength(1);

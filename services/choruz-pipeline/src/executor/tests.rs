@@ -1,5 +1,6 @@
 use super::*;
-use choruz_agent_runtime::{CreateBindingInput, DriverType, RuntimeStore};
+use choruz_agent_runtime::{CreateBindingInput, DriverType};
+use choruz_application::runtime_store::RuntimeStore;
 use choruz_executor::wal::AdapterWal;
 use choruz_session::CommandStatus;
 use serde_json::json;

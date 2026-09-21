@@ -36,7 +36,7 @@ This is not a one-way shortening pass. Add or restore prose when code, types and
 - **Internal comments:** orient non-local structure and obviously complicated local structure: invariants, race ordering, ownership, security and workspace boundaries, surprising failure behaviour. Delete control-flow narration and code restatement.
 - **Module comments:** state the module's role, dependencies, responsibilities and non-obvious architecture choices, linking the choice's note.
 - **Tests:** explain only non-obvious test design: why a fixture, an indirect observation, a parallel-safety measure or a real entry path is necessary. Delete walkthroughs and inventories.
-- **Agent instruction templates and prompts** (`services/choruz-pipeline/src/instructions.rs`, `agent-templates`, `CLAUDE.md`): wording is behaviour. Change it with the instruction tests and fixtures, and state the agent-behaviour risk in the PR.
+- **Agent instruction templates and prompts** (`services/choruz-pipeline/src/instructions.rs`, `crates/choruz-host-runtime/assets/agent-templates`, `CLAUDE.md`): wording is behaviour. Change it with the instruction tests and fixtures, and state the agent-behaviour risk in the PR.
 - **READMEs and `docs/`:** the consumer contract: configuration, semantics, failures, limitations, extension points. Keep durable gaps and maintainer traps, not cleanup inventories.
 - **Agent Notes:** retain unique rationale, mechanisms, alternatives, consequences and named coverage gaps. Implemented notes state shipped reality in the present tense.
 - **Skills and agent instructions:** behavioural guardrails and explicit scope limits ("guidance, not a checklist"). Keep the workflow concise and link its source of truth.

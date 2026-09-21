@@ -1,0 +1,22 @@
+[package]
+name = "choruz-community"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Typed behavior evidence and revision-pinned community exchange"
+readme = "README.md"
+
+[dependencies]
+choruz-common = { path = "../choruz-common", version = "0.2.3" }
+choruz-evaluation = { path = "../choruz-evaluation", version = "0.2.3" }
+base64.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+axum.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true

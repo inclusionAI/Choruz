@@ -51,7 +51,7 @@ pub struct SolutionVersion {
     pub id: String,
     pub based_on: Vec<String>,
     pub instruction: String,
-    pub team: Option<crate::team::Team>,
+    pub team: Option<choruz_evaluation::team::Team>,
     pub applicability: String,
 }
 

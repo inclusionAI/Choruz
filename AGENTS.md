@@ -15,7 +15,7 @@ crates/          libraries, every package choruz-<role>: domain, application, in
 assets/          brand artwork and the provenance records for shipped visual assets
 migrations/      PostgreSQL schema; 0001..0032 frozen by checksum, new files V0NN__name.sql
 openapi/         the HTTP wire contract; a gateway test keeps it equal to the route table
-agent-templates/ the instruction fragments every agent receives; rendered by the pipeline and by web provisioning
+crates/choruz-host-runtime/assets/agent-templates/ the instruction fragments every agent receives; rendered by the pipeline and by web provisioning
 infra/host       the local stack: start, dev, migrate, e2e, smoke, chaos, perf and their tests; infra/ops release and backup
 scripts/         repository tooling and its tests (scripts/tests)
 docs/            architecture, operations, testing, data model

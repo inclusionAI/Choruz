@@ -699,7 +699,7 @@ async fn online_group_store_preserves_delivery_identity_and_revokes_only_the_inv
         .unwrap();
     let channel = choruz_common::new_id();
     let profile = tempfile::tempdir().unwrap();
-    choruz_agent_runtime::RuntimeStore::new(&database.database_url).create_binding(choruz_agent_runtime::CreateBindingInput {
+    choruz_application::runtime_store::RuntimeStore::new(&database.database_url).create_binding(choruz_agent_runtime::CreateBindingInput {
         conversation_id: conversation.id.clone(), agent_principal_id: agent.id.clone(), driver_type: choruz_agent_runtime::DriverType::ClaudeTerminal,
         workspace_path: profile.path().to_str().unwrap().into(), git_worktree_path: None,
         config_json: json!({"harness_account_name":"Research account", "private_token":"must-not-export", "harness_account_home":"/private/profile"}), audit_actor: None,
