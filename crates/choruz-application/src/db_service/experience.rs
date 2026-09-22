@@ -6,6 +6,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 pub struct ExperienceClaim {
+    pub decision_settings: Option<choruz_decision::settings::LearningSettings>,
     pub trace_cases: bool,
     pub measured: bool,
     pub binding_id: String,
@@ -33,6 +34,8 @@ pub struct ExperienceReport<'a> {
 
 #[derive(Debug, Serialize)]
 pub struct ExperiencePolicy {
+    pub active_decision_revision_id: Option<String>,
+    pub decision_settings: Option<choruz_decision::settings::LearningSettings>,
     pub optimization_settings: Option<OptimizationSettings>,
     pub optimization_error: Option<String>,
     pub binding_id: String,
@@ -63,6 +66,31 @@ pub struct ExperienceTurn {
 }
 
 impl DbService {
+    pub async fn configure_decisions(
+        &self,
+        workspace: &str,
+        owner: &str,
+        binding: &str,
+        settings: Option<&choruz_decision::settings::LearningSettings>,
+    ) -> Result<(), AppError> {
+        if let Some(settings) = settings {
+            settings
+                .validate()
+                .map_err(|e| AppError::Validation(e.to_string()))?;
+        }
+        let builder = settings.and_then(|s| s.builder_binding_id.as_deref());
+        let client = self.store.connect().await?;
+        let changed = client.execute("UPDATE experience_policy p SET decision_settings=$4, active_decision_revision_id=NULL, generation=generation+1,
+            source_cursor=CASE WHEN $4::jsonb->>'builder_binding_id' IS DISTINCT FROM decision_settings->>'builder_binding_id' THEN '{}'::jsonb ELSE source_cursor END,
+            next_check_at=NOW(),lease_token=NULL,lease_until=NULL,last_error=NULL,updated_at=NOW()
+            WHERE binding_id=$1 AND workspace_id=$2 AND owner_id=$3
+            AND ($5::text IS NULL OR EXISTS (SELECT 1 FROM agent_runtime_bindings b JOIN conversation c ON c.id=b.conversation_id WHERE b.id=$5 AND b.driver_type='codex_terminal' AND c.workspace_id=$2 AND b.id<>$1))",
+            &[&binding,&workspace,&owner,&settings.map(|s| json!(s)),&builder]).await.map_err(|e| AppError::Internal(format!("save decision settings: {e}")))?;
+        if changed != 1 {
+            return Err(AppError::Forbidden("Configure owned learning and select a separate Codex builder in the same workspace".into()));
+        }
+        Ok(())
+    }
     /// Capture the reviewed execution role from the selected revision. Disabled
     /// learning and rollback use the same policy pointer as prompt guidance.
     pub async fn experience_for_turn(
@@ -266,25 +294,36 @@ impl DbService {
                 COALESCE((SELECT source_references FROM experience_revision r WHERE r.binding_id=p.binding_id ORDER BY r.created_at DESC,r.id DESC LIMIT 1),'[]'::jsonb) AS source_references",
             &[&token],
         ).await.map_err(|e| AppError::Internal(format!("claim learning job: {e}")))?;
-        Ok(row.map(|row| ExperienceClaim {
-            trace_cases: row
-                .get::<_, Option<Value>>("optimization_settings")
-                .is_some_and(|s| s["trace_cases"] == true),
-            measured: row
-                .get::<_, Option<Value>>("optimization_settings")
-                .is_some(),
-            binding_id: row.get("binding_id"),
-            workspace_id: row.get("workspace_id"),
-            owner_id: row.get("owner_id"),
-            analyst_binding_id: row.get("analyst_binding_id"),
-            generation: row.get("generation"),
-            token,
-            active_revision_id: row.get("active_revision_id"),
-            instruction: row.get("instruction"),
-            source_cursor: row.get("source_cursor"),
-            source_summary: row.get("source_summary"),
-            source_references: row.get("source_references"),
-        }))
+        row.map(|row| {
+            Ok(ExperienceClaim {
+                decision_settings: row
+                    .get::<_, Option<Value>>("decision_settings")
+                    .map(serde_json::from_value)
+                    .transpose()
+                    .map_err(|_| AppError::Internal("Invalid stored decision settings".into()))?,
+                trace_cases: row
+                    .get::<_, Option<Value>>("optimization_settings")
+                    .is_some_and(|s| s["trace_cases"] == true)
+                    || row
+                        .get::<_, Option<Value>>("decision_settings")
+                        .is_some_and(|s| s["builder_binding_id"].is_string()),
+                measured: row
+                    .get::<_, Option<Value>>("optimization_settings")
+                    .is_some(),
+                binding_id: row.get("binding_id"),
+                workspace_id: row.get("workspace_id"),
+                owner_id: row.get("owner_id"),
+                analyst_binding_id: row.get("analyst_binding_id"),
+                generation: row.get("generation"),
+                token,
+                active_revision_id: row.get("active_revision_id"),
+                instruction: row.get("instruction"),
+                source_cursor: row.get("source_cursor"),
+                source_summary: row.get("source_summary"),
+                source_references: row.get("source_references"),
+            })
+        })
+        .transpose()
     }
 
     pub async fn experience_source_seen(
@@ -384,6 +423,10 @@ impl DbService {
                     tx.execute("UPDATE experience_revision SET validation=jsonb_set(validation,'{dataset}',$2) WHERE id=$1 AND workspace_id=$3", &[&id,&dataset,&claim.workspace_id]).await.map_err(|e| AppError::Internal(format!("save dataset version: {e}")))?;
                 }
                 let changed = super::trace_cases::changed_case_contexts(&previous_cases, &current);
+                // Corrections invalidate the evidence, not merely the current
+                // selection. The old program cannot be selected again.
+                tx.execute("UPDATE experience_revision SET validation=jsonb_set(validation,'{program_trial,status}','\"evidence_changed\"'::jsonb) WHERE binding_id=$1 AND workspace_id=$2 AND id<>$4 AND validation->'program_trial'->>'status'='validated' AND EXISTS (SELECT 1 FROM jsonb_array_elements(validation->'program_trial'->'suite'->'cases') c WHERE c->'source'->>'episode_ref'=ANY($3::text[]))", &[&claim.binding_id,&claim.workspace_id,&changed,&id]).await.map_err(|e| AppError::Internal(format!("invalidate program evidence: {e}")))?;
+                tx.execute("UPDATE experience_policy p SET active_decision_revision_id=NULL WHERE p.binding_id=$1 AND p.workspace_id=$2 AND EXISTS (SELECT 1 FROM experience_revision r WHERE r.id=p.active_decision_revision_id AND r.validation->'program_trial'->>'status'='evidence_changed')", &[&claim.binding_id,&claim.workspace_id]).await.map_err(|e| AppError::Internal(format!("clear invalid program: {e}")))?;
                 tx.execute("UPDATE experience_evaluation SET status='cancelled',error_code='case_evidence_changed',application_status=CASE WHEN auto_apply THEN 'cancelled' ELSE application_status END,lease_token=NULL,lease_until=NULL,updated_at=NOW() WHERE binding_id=$1 AND workspace_id=$2 AND status IN ('queued','running') AND EXISTS (SELECT 1 FROM jsonb_array_elements(suite->'cases') c WHERE c->'source'->>'episode_ref'=ANY($3::text[]))", &[&claim.binding_id,&claim.workspace_id,&changed]).await.map_err(|e| AppError::Internal(format!("invalidate changed trace evaluation: {e}")))?;
             }
             if let Some(problems) = validation["problems"].as_array() {
@@ -493,7 +536,7 @@ impl DbService {
         let row = client
             .query_opt(
                 "SELECT binding_id, analyst_binding_id, enabled, generation, active_revision_id,
-                    checked_at, last_error, optimization_settings, optimization_error FROM experience_policy
+                    checked_at, last_error, optimization_settings, optimization_error, decision_settings, active_decision_revision_id FROM experience_policy
              WHERE binding_id=$1 AND workspace_id=$2 AND owner_id=$3",
                 &[&binding_id, &workspace_id, &owner_id],
             )
@@ -501,6 +544,12 @@ impl DbService {
             .map_err(|e| AppError::Internal(format!("read learning settings: {e}")))?;
         row.map(|row| {
             Ok(ExperiencePolicy {
+                active_decision_revision_id: row.get("active_decision_revision_id"),
+                decision_settings: row
+                    .get::<_, Option<Value>>("decision_settings")
+                    .map(serde_json::from_value)
+                    .transpose()
+                    .map_err(|_| AppError::Internal("Invalid stored decision settings".into()))?,
                 optimization_error: row.get("optimization_error"),
                 optimization_settings: row
                     .get::<_, Option<Value>>("optimization_settings")

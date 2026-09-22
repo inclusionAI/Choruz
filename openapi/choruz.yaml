@@ -2193,6 +2193,215 @@ paths:
         '400': {description: Invalid consent combination}
         '403': {description: Human owner required}
         '404': {description: Learning policy not configured}
+  /v1/runtime/bindings/{bindingId}/experience/decisions:
+    parameters:
+      - in: path
+        name: bindingId
+        required: true
+        schema: {type: string}
+    patch:
+      operationId: selectDecisionProgram
+      summary: Select a validated program or clear the selection
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [revision_id]
+              properties:
+                revision_id: {type: [string, "null"]}
+      responses:
+        '200': {description: Selected program pointer updated.}
+        '403': {description: Policy not owned by the caller.}
+        '409': {description: Program is unvalidated or incompatible with current settings.}
+    put:
+      operationId: configureBackgroundDecisions
+      summary: Set opt-in decision capabilities for an owned learning policy
+      description: Non-null settings authorize transmission of this binding's bounded evidence to TypeSafe. Enabling assist_turns also sends later foreground task inputs to TypeSafe for bounded advice, with a five-second inference budget before native execution continues. Null disables decisions. Already-dispatched provider requests cannot be recalled; advice returned after consent or selection changes is discarded. A program builder must be an accessible Codex binding in the same workspace. Changing settings fences in-flight learning. Read saved settings and results through the experience endpoint.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [settings]
+              properties:
+                settings:
+                  type: [object, "null"]
+                  additionalProperties: false
+                  required: [model, minimum_confidence, classify, supervise, builder_binding_id]
+                  properties:
+                    model: {type: string, minLength: 1, maxLength: 128}
+                    minimum_confidence: {type: number, minimum: 0, maximum: 1}
+                    classify: {type: boolean}
+                    supervise: {type: boolean}
+                    assist_turns: {type: boolean, default: false, description: Include an opted-in selected program's bounded decision in subsequent native Agent turns. The Agent remains the executor.}
+                    builder_binding_id: {type: [string, "null"]}
+      responses:
+        '200': {description: Settings saved. No provider call runs in this handler.}
+        '400': {description: Invalid settings or unsupported builder.}
+        '403': {description: Binding or learning policy is not owned by this caller.}
+  /v1/runtime/bindings/{bindingId}/experience/decisions/execute:
+    parameters:
+      - in: path
+        name: bindingId
+        required: true
+        schema: {type: string}
+    post:
+      operationId: executeSelectedDecisionProgram
+      summary: Execute a selected validated program without generating a new one
+      description: Requires an enabled owned learning policy and current transmission consent. Returns an explicit abstention outside scope. A changed resolved provider model invalidates this execution. No browser or shell effects occur.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [input]
+              properties:
+                input: {type: string, minLength: 1, maxLength: 16000}
+      responses:
+        '200': {description: Program output or abstention, with decision evidence.}
+        '403': {description: Policy or binding not owned by the caller.}
+        '409': {description: No currently usable program or provider model changed.}
+  /v1/runtime/bindings/{bindingId}/browser-automation:
+    parameters:
+      - {in: path, name: bindingId, required: true, schema: {type: string}}
+    get:
+      operationId: getBrowserAutomation
+      summary: Read standing permission, learned workflows and recent run receipts
+      responses:
+        '200': {description: Scoped automation settings and history}
+        '403': {description: Binding access denied}
+    put:
+      operationId: configureBrowserAutomation
+      summary: Enable or stop automatic browser work once for a binding
+      description: Only the human learning owner may configure standing permission. Saving pins the execution account, cancels current runs and invalidates pending admissions. Null disables automation. Permission covers task and browser evidence sent to the decision provider and native reasoning Agent.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [settings]
+              properties:
+                settings:
+                  type: [object, "null"]
+                  additionalProperties: false
+                  required: [browser, allowed_urls, scope]
+                  properties:
+                    browser: {type: string, minLength: 1, maxLength: 128}
+                    scope: {type: string, minLength: 1, maxLength: 2000}
+                    allowed_urls: {type: array, minItems: 1, maxItems: 16, items: {type: string, maxLength: 4000}}
+      responses:
+        '200': {description: Permission saved and cancellation acknowledgement returned}
+        '403': {description: Human ownership required}
+        '409': {description: Enable learning and configure a builder first}
+  /v1/browser-workflows:
+    get:
+      operationId: listAgentBrowserWorkflows
+      summary: Discover learned browser workflows under this Agent's standing permission
+      responses:
+        '200': {description: Draft or validated workflows scoped to the execution binding}
+        '403': {description: Agent authentication required}
+  /v1/runtime/bindings/{bindingId}/browser-workflows/{runId}:
+    parameters:
+      - {in: path, name: bindingId, required: true, schema: {type: string}}
+      - {in: path, name: runId, required: true, schema: {type: string, maxLength: 128}}
+    post:
+      operationId: executeBrowserWorkflow
+      summary: Run a learned workflow for a current task under standing permission
+      description: The server resolves the stored workflow, browser, model and execution account. Scope and exact page URLs are checked before dispatch. The first actual task validates a workflow; historical tasks are never replayed for validation. Failed or uncertain revisions are suspended. Duplicate ids return the original receipt. Completion durably schedules one continuation, including after restart. Inputs remain transient. Visible-text checks are evidence, not proof of business correctness.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [revision_id, task, url, values, expected_text]
+              properties:
+                conversation_id: {type: [string, "null"], description: Originating accessible conversation; defaults to the binding conversation.}
+                revision_id: {type: string}
+                task: {type: string, minLength: 1, maxLength: 16000}
+                url: {type: string, maxLength: 4000}
+                values: {type: object, maxProperties: 16, additionalProperties: {type: string, maxLength: 4000}}
+                text_requests: {type: object, maxProperties: 16, additionalProperties: {type: string, maxLength: 4000}}
+                expected_text: {type: array, minItems: 1, maxItems: 16, items: {type: string, minLength: 1, maxLength: 1000}}
+      responses:
+        '200': {description: Durable run receipt}
+        '403': {description: Binding or standing permission denied}
+        '409': {description: Workflow suspended, out of scope, running or conflicting id}
+    get:
+      operationId: getBrowserWorkflow
+      summary: Read the original receipt without repeating an action
+      responses:
+        '200': {description: Running, finished, cancelled or outcome_unconfirmed}
+        '403': {description: Binding access denied}
+    delete:
+      operationId: cancelBrowserWorkflow
+      summary: Stop an admitted run without recalling dispatched actions
+      responses:
+        '200': {description: Cancellation requested and device acknowledgement}
+        '403': {description: Binding access denied}
+  /v1/runtime/bindings/{bindingId}/decisions:
+    parameters:
+      - in: path
+        name: bindingId
+        required: true
+        schema: {type: string}
+    post:
+      operationId: runStructuredDecision
+      summary: Run a bounded structured decision on the selected Agent's device
+      description: Human terminal access and explicit transmission consent are required. The selected device owns TYPESAFE_API_KEY. No credentials are accepted or returned. Classification and supervision are advisory; browser results select observed targets but do not execute actions or establish completion. Program output is nullable for abstention. No automatic retry occurs.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [transmit_to_typesafe, request]
+              properties:
+                transmit_to_typesafe: {type: boolean, enum: [true]}
+                request:
+                  type: object
+                  additionalProperties: false
+                  required: [model, minimum_confidence, job]
+                  properties:
+                    model: {type: string, minLength: 1, maxLength: 128}
+                    minimum_confidence: {type: number, minimum: 0, maximum: 1}
+                    job:
+                      oneOf:
+                        - type: object
+                          additionalProperties: false
+                          required: [kind, state]
+                          properties:
+                            kind: {type: string, enum: [classify, supervise]}
+                            state: {$ref: '#/components/schemas/DecisionState'}
+                        - type: object
+                          additionalProperties: false
+                          required: [kind, program, state]
+                          properties:
+                            kind: {type: string, enum: [program]}
+                            program: {$ref: '#/components/schemas/DecisionProgram'}
+                            state: {$ref: '#/components/schemas/DecisionState'}
+                        - type: object
+                          additionalProperties: false
+                          required: [kind, goal, observation]
+                          properties:
+                            kind: {type: string, enum: [browser]}
+                            goal: {type: string, minLength: 1, maxLength: 16000}
+                            observation: {$ref: '#/components/schemas/DecisionObservation'}
+      responses:
+        '200': {description: Validated decision or explicit program abstention with model and token usage.}
+        '400': {description: Invalid request or device provider configuration.}
+        '403': {description: Missing consent or terminal access.}
   /v1/runtime/bindings/{bindingId}/experience:
     parameters:
       - name: bindingId
@@ -2479,6 +2688,104 @@ components:
       name: x-choruz-host-token
       description: The token a runtime host received when its pairing code was redeemed
   schemas:
+    DecisionState:
+      description: Bounded task data, not instructions or authorization. Total encoded provider request is limited to 256 KiB.
+      oneOf:
+        - {type: string}
+        - {type: object, additionalProperties: true}
+        - {type: array, items: {}}
+    DecisionInstructions:
+      description: A nonempty string (up to 8000 UTF-8 bytes), object or array (up to 8000 JSON-encoded bytes). Question IDs are not inference instructions. Questions in one request cannot read each other's answers.
+      oneOf:
+        - {type: string, minLength: 1, maxLength: 8000}
+        - {type: object, minProperties: 1, additionalProperties: true}
+        - {type: array, minItems: 1, items: {}}
+    DecisionRubric:
+      description: A string, nonempty object or nonempty array, bounded to 4000 bytes (JSON-encoded for containers). Null leaves a Choice or Noul option undescribed; Score levels must be nonempty and non-null.
+      oneOf:
+        - {type: string, nullable: true, maxLength: 4000}
+        - {type: object, minProperties: 1, additionalProperties: true}
+        - {type: array, minItems: 1, items: {}}
+    DecisionQuestion:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [type, instructions, criteria]
+          properties:
+            type: {type: string, enum: [choice]}
+            instructions: {$ref: '#/components/schemas/DecisionInstructions'}
+            criteria:
+              type: object
+              minProperties: 2
+              maxProperties: 255
+              additionalProperties: {$ref: '#/components/schemas/DecisionRubric'}
+        - type: object
+          additionalProperties: false
+          required: [type, instructions, criteria]
+          properties:
+            type: {type: string, enum: [score]}
+            instructions: {$ref: '#/components/schemas/DecisionInstructions'}
+            criteria:
+              type: array
+              minItems: 2
+              maxItems: 10
+              items:
+                description: Nonempty, non-null level; up to 4000 bytes.
+                oneOf:
+                  - {type: string, minLength: 1, maxLength: 4000}
+                  - {type: object, minProperties: 1, additionalProperties: true}
+                  - {type: array, minItems: 1, items: {}}
+        - type: object
+          additionalProperties: false
+          required: [type, instructions]
+          properties:
+            type: {type: string, enum: [noul]}
+            instructions: {$ref: '#/components/schemas/DecisionInstructions'}
+            criteria:
+              type: object
+              additionalProperties: false
+              properties:
+                'true': {$ref: '#/components/schemas/DecisionRubric'}
+                'false': {$ref: '#/components/schemas/DecisionRubric'}
+    DecisionProgram:
+      type: object
+      additionalProperties: false
+      required: [name, applicability, questions, result_question, outputs, minimum_confidence]
+      description: Finite-output program. The result question must be Choice with an abstain option. Every other option must have exactly one output. The reserved _applicable head cannot be supplied. String bounds are enforced in UTF-8 bytes.
+      properties:
+        name: {type: string, minLength: 1, maxLength: 128}
+        applicability: {type: string, minLength: 1, maxLength: 4000}
+        questions:
+          type: object
+          minProperties: 1
+          maxProperties: 63
+          additionalProperties: {$ref: '#/components/schemas/DecisionQuestion'}
+        result_question: {type: string, minLength: 1, maxLength: 128}
+        outputs:
+          type: object
+          additionalProperties: {type: string, minLength: 1, maxLength: 16000}
+        minimum_confidence: {type: number, minimum: 0, maximum: 1}
+    DecisionObservation:
+      type: object
+      additionalProperties: false
+      required: [id, url, elements]
+      properties:
+        id: {type: string, minLength: 1, maxLength: 128}
+        url: {type: string, maxLength: 4000}
+        elements:
+          type: array
+          maxItems: 254
+          items:
+            type: object
+            additionalProperties: false
+            required: [id, description, operations]
+            properties:
+              id: {type: string, minLength: 1, maxLength: 128, description: Unique within this observation; cannot be none.}
+              description: {type: string, minLength: 1, maxLength: 2000}
+              operations:
+                type: array
+                maxItems: 3
+                items: {type: string, enum: [click, type_text, select]}
     HostServiceStatus:
       type: object
       additionalProperties: false

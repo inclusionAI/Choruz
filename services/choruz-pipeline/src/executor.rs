@@ -536,6 +536,30 @@ impl ExecutorContext {
                 })
         });
         let experience = context.map(|context| (context.revision_id, context.instruction));
+        let decision = if let Some(store) = &self.event_store {
+            choruz_application::DbService::new(store.clone())
+                .assist_turn(
+                    &binding.workspace_id,
+                    &binding_id,
+                    &effective_prompt,
+                    |request| async {
+                        serde_json::from_value(
+                            choruz_host_runtime::execute(
+                                choruz_host_runtime::HostRequest::Decision { request },
+                            )
+                            .await?,
+                        )
+                        .map_err(|e| {
+                            choruz_common::AppError::Internal(format!("decode turn decision: {e}"))
+                        })
+                    },
+                )
+                .await
+                .map_err(|e| format!("read decision assistance: {e}"))?
+        } else {
+            None
+        };
+        let preflight = choruz_host_runtime::harness::Preparation::new(preflight, decision);
         let mut effective_prompt =
             choruz_agent_runtime::headless::with_experience(effective_prompt, experience.as_ref());
 
@@ -553,7 +577,7 @@ impl ExecutorContext {
             LocalCliDriver::MathCode => &self.mathcode_cli_path,
         };
         if let Some(role) = preflight {
-            let plan = choruz_host_runtime::harness::prepare(
+            let plan = choruz_host_runtime::harness::prepare_turn(
                 choruz_host_runtime::TerminalSpec {
                     authentication: false,
                     terminal_id: binding_id.clone(),

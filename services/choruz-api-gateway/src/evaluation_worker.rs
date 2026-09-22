@@ -402,26 +402,7 @@ async fn evaluate_task(
             "Evaluation output exceeds its limit".into(),
         ));
     }
-    let judge = if case.check.model_calls() > 0 {
-        Some(
-            host.call::<JudgeResult>(HostRequest::JudgeExperience {
-                spec: Box::new(spec),
-                input: case.input.clone(),
-                check: case.check.clone(),
-                output: output.clone(),
-            })
-            .await?,
-        )
-    } else {
-        None
-    };
-    let mut score = match &judge {
-        Some(result) => {
-            result.validate().map_err(AppError::Validation)?;
-            result.score()
-        }
-        None => case.check.score(&output),
-    };
+    let (mut score, judge) = assess_output(host, spec, case, &output).await?;
     if replay
         .as_ref()
         .is_some_and(|r| r.checks.iter().any(|check| check["passed"] != true))
@@ -431,4 +412,33 @@ async fn evaluate_task(
     Ok(
         json!({"status":if score.is_some() {"completed"} else {"inconclusive"},"case_id":case.id,"split":case.split,"revision_id":candidate.revision_id,"score":score,"output":output,"preflight":preflight,"judge":judge,"replay":replay}),
     )
+}
+
+pub(crate) async fn assess_output(
+    host: &RuntimeHost,
+    spec: TerminalSpec,
+    case: &EvaluationCase,
+    output: &str,
+) -> Result<(Option<f64>, Option<JudgeResult>), AppError> {
+    let judge = if case.check.model_calls() > 0 {
+        Some(
+            host.call::<JudgeResult>(HostRequest::JudgeExperience {
+                spec: Box::new(spec),
+                input: case.input.clone(),
+                check: case.check.clone(),
+                output: output.to_owned(),
+            })
+            .await?,
+        )
+    } else {
+        None
+    };
+    let score = match &judge {
+        Some(result) => {
+            result.validate().map_err(AppError::Validation)?;
+            result.score()
+        }
+        None => case.check.score(output),
+    };
+    Ok((score, judge))
 }

@@ -46,8 +46,94 @@ pub enum SessionRequest {
         #[serde(default)]
         experience: Option<(String, String)>,
         #[serde(default)]
-        preflight: Option<Box<crate::harness::ExecutionTeam>>,
+        preflight: Option<Box<crate::harness::Preparation>>,
+        #[serde(default)]
+        reservation_id: Option<String>,
     },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReservedTurn {
+    pub reservation_id: Option<String>,
+    pub snapshot: SessionSnapshot,
+}
+
+pub fn reserve(
+    id: &str,
+    owner: &str,
+    instance: &str,
+    text: &str,
+    submission_id: &str,
+) -> Result<ReservedTurn, AppError> {
+    let session = SESSIONS
+        .lock()
+        .expect("sessions")
+        .get(id)
+        .cloned()
+        .ok_or_else(|| AppError::NotFound("Structured session is not open".into()))?;
+    let mut state = session.state.lock().expect("session state");
+    verify_owner(&state, owner)?;
+    if state.instance != instance
+        || text.trim().is_empty()
+        || text.len() > 128 * 1024
+        || submission_id.is_empty()
+        || submission_id.len() > 128
+    {
+        return Err(AppError::Conflict(
+            "Refresh the session before preparing a valid message".into(),
+        ));
+    }
+    if session
+        .submissions
+        .lock()
+        .expect("session submissions")
+        .contains_key(submission_id)
+    {
+        drop(state);
+        return command_owned(
+            id,
+            Some((owner, instance)),
+            SessionCommand::Send {
+                text: text.into(),
+                submission_id: submission_id.into(),
+            },
+            None,
+        )
+        .map(|snapshot| ReservedTurn {
+            reservation_id: None,
+            snapshot: snapshot.page(0),
+        });
+    }
+    if state.status != "ready"
+        || session
+            .preflight
+            .lock()
+            .expect("preflight reservation")
+            .is_some()
+    {
+        return Err(AppError::Conflict(
+            "Wait for the current turn preparation".into(),
+        ));
+    }
+    let reservation_id = choruz_common::new_id();
+    *session.preflight.lock().expect("preflight reservation") =
+        Some((reservation_id.clone(), Arc::new(tokio::sync::Notify::new())));
+    state.status = "running".into();
+    state.revision += 1;
+    let snapshot = state.clone().page(0);
+    drop(state);
+    let lease = PreflightReservation {
+        session,
+        id: reservation_id.clone(),
+    };
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(120)).await;
+        drop(lease);
+    });
+    Ok(ReservedTurn {
+        reservation_id: Some(reservation_id),
+        snapshot,
+    })
 }
 
 pub async fn execute(
@@ -64,6 +150,7 @@ pub async fn execute(
         },
         experience,
         preflight: Some(role),
+        reservation_id: existing_reservation,
     } = &request
     {
         let session = SESSIONS
@@ -73,7 +160,9 @@ pub async fn execute(
             .cloned()
             .ok_or_else(|| AppError::NotFound("Structured session is not open".into()))?;
         let cancellation = Arc::new(tokio::sync::Notify::new());
-        let reservation_id = choruz_common::new_id();
+        let reservation_id = existing_reservation
+            .clone()
+            .unwrap_or_else(choruz_common::new_id);
         {
             let mut state = session.state.lock().expect("session state");
             verify_owner(&state, owner)?;
@@ -109,7 +198,20 @@ pub async fn execute(
                 )
                 .map(|state| state.page(0));
             }
-            if state.status != "ready" {
+            if let Some(existing) = existing_reservation {
+                if state.status != "running"
+                    || session
+                        .preflight
+                        .lock()
+                        .expect("preflight reservation")
+                        .as_ref()
+                        .is_none_or(|(id, _)| id != existing)
+                {
+                    return Err(AppError::Conflict(
+                        "Turn preparation was cancelled or expired".into(),
+                    ));
+                }
+            } else if state.status != "ready" {
                 return Err(AppError::Conflict(
                     "Wait for the current turn to finish before sending another message".into(),
                 ));
@@ -124,7 +226,7 @@ pub async fn execute(
             id: reservation_id.clone(),
         };
         let plan = tokio::select! {
-            result = crate::harness::prepare(session.spec.clone(), role, text) => result?,
+            result = crate::harness::prepare_turn(session.spec.clone(), role, text) => result?,
             _ = cancellation.notified() => return Err(AppError::Conflict("Execution review was cancelled; the task was not sent".into())),
         };
         let result = command_prepared(
@@ -161,6 +263,7 @@ pub async fn execute(
             command: action,
             experience,
             preflight: _,
+            reservation_id: _,
         } => command_owned(&binding_id, Some((&owner, &instance)), action, experience)
             .map(|state| state.page(0)),
     })
@@ -1209,11 +1312,15 @@ mod tests {
                     submission_id: "cancelled-review".into(),
                 },
                 experience: None,
-                preflight: Some(Box::new(crate::harness::ExecutionTeam {
-                    revision_id: "review-revision".into(),
-                    team: choruz_evaluation::team::Team::reviewer(
-                        "Verify workspace changes before reporting completion.".into(),
-                    ),
+                reservation_id: None,
+                preflight: Some(Box::new(crate::harness::Preparation {
+                    decision: None,
+                    team: Some(crate::harness::ExecutionTeam {
+                        revision_id: "review-revision".into(),
+                        team: choruz_evaluation::team::Team::reviewer(
+                            "Verify workspace changes before reporting completion.".into(),
+                        ),
+                    }),
                 })),
             };
             let reviewing = tokio::spawn(execute(pool.clone(), request));
@@ -1238,6 +1345,28 @@ mod tests {
                 "cancelled review must not start a native task"
             );
         });
+        let reserved = async_runtime.block_on(async {
+            let reserved = reserve(
+                &id,
+                &ready.owner,
+                &ready.instance,
+                "Inspect workspace",
+                &submission,
+            )
+            .unwrap();
+            assert!(
+                reserve(
+                    &id,
+                    &ready.owner,
+                    &ready.instance,
+                    "Inspect workspace",
+                    &submission
+                )
+                .is_err(),
+                "a pending reservation must reject duplicate inference"
+            );
+            reserved
+        });
         async_runtime
             .block_on(execute(
                 pool.clone(),
@@ -1247,11 +1376,20 @@ mod tests {
                     instance: ready.instance.clone(),
                     command: send.clone(),
                     experience: None,
-                    preflight: Some(Box::new(crate::harness::ExecutionTeam {
-                        revision_id: "review-revision".into(),
-                        team: choruz_evaluation::team::Team::reviewer(
-                            "Verify workspace changes before reporting completion.".into(),
-                        ),
+                    reservation_id: reserved.reservation_id,
+                    preflight: Some(Box::new(crate::harness::Preparation {
+                        decision: Some(choruz_decision::programs::TurnDecision {
+                            revision_id: "decision-revision".into(),
+                            status: "unavailable".into(),
+                            evidence: json!({"reason":"provider_unavailable"}),
+                            elapsed_ms: 1,
+                        }),
+                        team: Some(crate::harness::ExecutionTeam {
+                            revision_id: "review-revision".into(),
+                            team: choruz_evaluation::team::Team::reviewer(
+                                "Verify workspace changes before reporting completion.".into(),
+                            ),
+                        }),
                     })),
                 },
             ))
@@ -1265,7 +1403,23 @@ mod tests {
             .text;
         assert!(native.contains("[choruz-team revision=review-revision]"));
         assert!(native.contains("Inspect the changed files before reporting completion."));
+        assert!(native.contains("\"status\":\"unavailable\""));
+        assert!(native.contains("Retain responsibility for verification and the final reply."));
         command_owned(&id, Some((&ready.owner, &ready.instance)), send, None).unwrap();
+        let repeated = async_runtime.block_on(async {
+            reserve(
+                &id,
+                &ready.owner,
+                &ready.instance,
+                "Inspect workspace",
+                &submission,
+            )
+            .unwrap()
+        });
+        assert!(
+            repeated.reservation_id.is_none(),
+            "accepted submissions must replay without new inference"
+        );
         assert_eq!(
             snapshot(&id)
                 .unwrap()

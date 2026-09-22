@@ -1,17 +1,22 @@
 mod attachments;
 mod auth;
 mod behavior_worker;
+mod browser_completion_worker;
 pub mod config;
 mod db_projection;
+mod decision_worker;
 mod evaluation_worker;
 mod experience_diagnostics;
 mod experience_worker;
 mod handlers_activity;
+mod handlers_browser_automation;
+mod handlers_browser_workflows;
 mod handlers_channel_tasks;
 mod handlers_companies;
 mod handlers_computer_use;
 mod handlers_conversations;
 mod handlers_cron;
+mod handlers_decisions;
 mod handlers_events;
 mod handlers_experience;
 mod handlers_filesystem;
@@ -145,6 +150,32 @@ pub fn router_with_runtime(
             post(handlers_principals::local_signup),
         )
         .route("/v1/me", get(handlers_principals::me))
+        .route(
+            "/v1/runtime/bindings/{binding_id}/experience/decisions",
+            axum::routing::put(handlers_decisions::configure).patch(handlers_decisions::select),
+        )
+        .route(
+            "/v1/runtime/bindings/{binding_id}/experience/decisions/execute",
+            post(handlers_decisions::execute),
+        )
+        .route(
+            "/v1/runtime/bindings/{binding_id}/browser-workflows/{run_id}",
+            post(handlers_browser_automation::run)
+                .get(handlers_browser_workflows::get)
+                .delete(handlers_browser_workflows::cancel),
+        )
+        .route(
+            "/v1/browser-workflows",
+            get(handlers_browser_automation::list_agent),
+        )
+        .route(
+            "/v1/runtime/bindings/{binding_id}/browser-automation",
+            get(handlers_browser_automation::get).put(handlers_browser_automation::configure),
+        )
+        .route(
+            "/v1/runtime/bindings/{binding_id}/decisions",
+            post(handlers_decisions::run),
+        )
         .route(
             "/v1/runtime/bindings/{binding_id}/experience",
             get(handlers_experience::get)

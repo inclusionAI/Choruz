@@ -1,0 +1,19 @@
+[package]
+name = "choruz-decision"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Bounded structured decisions and observation-bound action selection"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+reqwest.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
+axum.workspace = true
+
+[lints]
+workspace = true

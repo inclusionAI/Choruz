@@ -239,6 +239,54 @@ pub(crate) async fn command(
             })
     });
     let experience = context.map(|context| (context.revision_id, context.instruction));
+    let mut reservation_id = None;
+    let decision = if let SessionCommand::Send {
+        text,
+        submission_id,
+    } = &command
+    {
+        let conversation = state.db.get_conversation(&binding.conversation_id).await?;
+        if state
+            .db
+            .decision_for_turn(&conversation.workspace_id, &id)
+            .await?
+            .is_some()
+        {
+            let reserved: choruz_host_runtime::session::ReservedTurn = host
+                .call(choruz_host_runtime::HostRequest::ReserveSession {
+                    binding_id: id.clone(),
+                    owner: binding_owner(&binding),
+                    instance: instance.clone(),
+                    text: text.clone(),
+                    submission_id: submission_id.clone(),
+                })
+                .await?;
+            if reserved.reservation_id.is_none() {
+                return Ok(Json(reserved.snapshot));
+            }
+            reservation_id = reserved.reservation_id;
+            state
+                .db
+                .assist_turn(&conversation.workspace_id, &id, text, |request| {
+                    host.call(choruz_host_runtime::HostRequest::Decision { request })
+                })
+                .await
+                .unwrap_or(None)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    let preflight =
+        choruz_host_runtime::harness::Preparation::new(preflight, decision).or_else(|| {
+            reservation_id
+                .as_ref()
+                .map(|_| choruz_host_runtime::harness::Preparation {
+                    team: None,
+                    decision: None,
+                })
+        });
     let action = match &command {
         SessionCommand::Send { .. } => "session.send",
         SessionCommand::Respond { .. } => "session.respond",
@@ -253,6 +301,7 @@ pub(crate) async fn command(
             command,
             experience,
             preflight: preflight.map(Box::new),
+            reservation_id,
         })
         .await;
     crate::handlers_terminals::record_terminal_activity(

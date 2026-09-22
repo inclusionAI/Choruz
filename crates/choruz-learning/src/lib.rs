@@ -17,6 +17,59 @@ pub trait Runner: Sync {
 }
 
 pub const ANALYSIS_SKILL: &str = include_str!("../assets/experience-analysis.md");
+pub const PROGRAM_SKILL: &str = include_str!("../assets/decision-program.md");
+
+/// Both shapes are data, never executable source. Browser drafts require an
+/// independently authorized live run and cannot enter finite-output selection.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum GeneratedProgram {
+    Finite(choruz_decision::programs::Program),
+    Browser(choruz_decision::workflow::Workflow),
+}
+
+/// The caller supplies training examples only. Generated criteria are data;
+/// this function never executes model-authored code or approves deployment.
+pub async fn build_program(
+    runner: &impl Runner,
+    training: serde_json::Value,
+) -> Result<Option<GeneratedProgram>, AppError> {
+    let examples = training
+        .as_array()
+        .filter(|examples| !examples.is_empty() && examples.len() <= 24)
+        .ok_or_else(|| {
+            AppError::Validation("Program generation requires bounded training examples".into())
+        })?;
+    if examples.iter().any(|example| {
+        example
+            .get("input")
+            .and_then(serde_json::Value::as_str)
+            .is_none_or(|input| input.trim().is_empty())
+    }) || training.to_string().len() > 128 * 1024
+    {
+        return Err(AppError::Validation(
+            "Program training input is invalid or too large".into(),
+        ));
+    }
+    let text = runner
+        .run(
+            format!("{PROGRAM_SKILL}\nTraining examples:\n{training}"),
+            false,
+            PROGRAM_SKILL,
+        )
+        .await?;
+    let program: Option<GeneratedProgram> = serde_json::from_str(text.trim()).map_err(|_| {
+        AppError::Validation("Program builder did not return a structured program or null".into())
+    })?;
+    if let Some(program) = &program {
+        match program {
+            GeneratedProgram::Finite(program) => program.validate(),
+            GeneratedProgram::Browser(workflow) => workflow.validate(),
+        }
+        .map_err(|e| AppError::Validation(e.to_string()))?;
+    }
+    Ok(program)
+}
 pub const PROPOSAL_SKILL: &str = include_str!("../assets/experience-proposal.md");
 pub const PRIVACY_REVIEW_SKILL: &str = include_str!("../assets/behavior-privacy-review.md");
 
@@ -444,6 +497,66 @@ fn decode(text: &str) -> Result<Analysis, AppError> {
 
 #[cfg(test)]
 mod tests {
+    struct ProgramBuilder(&'static str);
+    impl super::Runner for ProgramBuilder {
+        async fn run(
+            &self,
+            prompt: String,
+            research: bool,
+            skill: &'static str,
+        ) -> Result<String, choruz_common::AppError> {
+            assert!(!research);
+            assert_eq!(skill, super::PROGRAM_SKILL);
+            assert!(skill.contains("cannot read\n  each other's answers"));
+            assert!(prompt.contains("training-example"));
+            Ok(self.0.into())
+        }
+    }
+
+    #[tokio::test]
+    async fn program_builder_validates_before_and_after_the_isolated_generation() {
+        let training = serde_json::json!([{"input":"training-example", "check":{"type":"exact","expected":"billing"}}]);
+        assert!(
+            super::build_program(&ProgramBuilder("null"), training.clone())
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let valid = r#"{"name":"Ticket queue","applicability":"Support tickets","questions":{"result":{"type":"choice","instructions":{"question":"Select queue from the ticket message and invoice"},"criteria":{"billing":{"when":"Billing question"},"abstain":null}}},"result_question":"result","outputs":{"billing":"billing"},"minimum_confidence":0.9}"#;
+        assert!(
+            super::build_program(&ProgramBuilder(valid), training.clone())
+                .await
+                .unwrap()
+                .is_some()
+        );
+        let browser = r#"{"name":"Save draft","allowed_urls":["https://example.org/editor"],"steps":[{"goal":"Save","operation":"click","labels":["button \"Save draft\""],"value_key":null}]}"#;
+        assert!(matches!(
+            super::build_program(&ProgramBuilder(browser), training.clone())
+                .await
+                .unwrap(),
+            Some(super::GeneratedProgram::Browser(_))
+        ));
+        for invalid in ["not JSON", "{}", r#"{"shell":"echo success"}"#] {
+            assert!(
+                super::build_program(&ProgramBuilder(invalid), training.clone())
+                    .await
+                    .is_err()
+            );
+        }
+        // These must be rejected before Runner::run (which asserts the input).
+        for invalid in [
+            serde_json::json!([]),
+            serde_json::json!({}),
+            serde_json::json!([{"input":""}]),
+        ] {
+            assert!(
+                super::build_program(&ProgramBuilder("null"), invalid)
+                    .await
+                    .is_err()
+            );
+        }
+    }
+
     #[test]
     fn guidance_review_accepts_only_the_bounded_decision_contract() {
         let report = serde_json::json!({"accepted":true,"reason":"Supported by the source.","evidence":["source:1"],"addressed_problems":["missing-check"]});

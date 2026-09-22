@@ -8,6 +8,7 @@
 //! Interactive terminals are streams rather than requests and live in
 //! [`terminal`]; [`link`] carries both to a remote device.
 
+pub mod browser_workflow;
 pub mod codex;
 pub mod computer_use;
 pub mod drivers;
@@ -53,6 +54,29 @@ pub const SEND_HELPER: &str = include_str!("../assets/choruz-send.sh");
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum HostRequest {
+    BrowserWorkflow {
+        id: String,
+        expires_at: u64,
+        request: browser_workflow::Execution,
+        assistant: Option<Box<TerminalSpec>>,
+    },
+    CancelBrowserWorkflow {
+        id: String,
+    },
+    ReserveSession {
+        binding_id: String,
+        owner: String,
+        instance: String,
+        text: String,
+        submission_id: String,
+    },
+    BuildDecisionProgram {
+        spec: Box<TerminalSpec>,
+        training: Value,
+    },
+    Decision {
+        request: choruz_decision::task::DecisionTask,
+    },
     ExperienceTrace {
         spec: Box<TerminalSpec>,
         #[serde(default)]
@@ -230,6 +254,67 @@ pub struct CodexHomeReady {
 /// Run one request on this device. Filesystem work runs on a blocking thread.
 pub async fn execute(request: HostRequest) -> Result<Value, AppError> {
     match request {
+        HostRequest::BrowserWorkflow {
+            id,
+            expires_at,
+            request,
+            assistant,
+        } => {
+            let report = browser_workflow::execute_once(
+                id,
+                expires_at,
+                request,
+                assistant.map(|spec| *spec),
+            )
+            .await
+            .map_err(|error| AppError::Validation(error.to_string()))?;
+            serde_json::to_value(report).map_err(|error| AppError::Internal(error.to_string()))
+        }
+        HostRequest::CancelBrowserWorkflow { id } => {
+            browser_workflow::cancel(&id)
+                .map_err(|error| AppError::Validation(error.to_string()))?;
+            Ok(json!({"cancel_requested":true}))
+        }
+        HostRequest::ReserveSession {
+            binding_id,
+            owner,
+            instance,
+            text,
+            submission_id,
+        } => serde_json::to_value(session::reserve(
+            &binding_id,
+            &owner,
+            &instance,
+            &text,
+            &submission_id,
+        )?)
+        .map_err(|e| AppError::Internal(e.to_string())),
+        HostRequest::BuildDecisionProgram { spec, training } => {
+            if spec.driver_type != "codex_terminal" {
+                return Err(AppError::Validation(
+                    "Program generation requires a Codex builder".into(),
+                ));
+            }
+            serde_json::to_value(
+                choruz_learning::build_program(&learning_runner::CliRunner(*spec), training)
+                    .await?,
+            )
+            .map_err(|e| AppError::Internal(e.to_string()))
+        }
+        HostRequest::Decision { request } => {
+            let key = std::env::var("TYPESAFE_API_KEY").map_err(|_| {
+                AppError::Validation(
+                    "Configure TYPESAFE_API_KEY on the selected device before using decisions"
+                        .into(),
+                )
+            })?;
+            let client = choruz_decision::client::Client::new(key)
+                .map_err(|e| AppError::Validation(e.to_string()))?;
+            request.run(&client).await.map_err(|e| match e {
+                choruz_decision::Error::Invalid(_) => AppError::Validation(e.to_string()),
+                _ => AppError::Internal(e.to_string()),
+            })
+        }
         HostRequest::ExperienceTrace { spec, cursor } => {
             blocking(move || {
                 serde_json::to_value(experience_source::read(&spec, cursor)?)

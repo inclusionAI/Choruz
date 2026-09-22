@@ -11,6 +11,7 @@ members = [
   "crates/choruz-common",
   "crates/choruz-community",
   "crates/choruz-domain",
+  "crates/choruz-decision",
   "crates/choruz-evaluation",
   "crates/choruz-learning",
   "crates/choruz-events",

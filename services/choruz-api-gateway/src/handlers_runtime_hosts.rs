@@ -80,7 +80,7 @@ pub(crate) struct ClaimedCommand {
     fork_session: bool,
     harness_account: Option<ClaimedHarnessAccount>,
     metadata: Value,
-    preflight: Option<choruz_host_runtime::harness::ExecutionTeam>,
+    preflight: Option<choruz_host_runtime::harness::Preparation>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1036,6 +1036,20 @@ pub(crate) async fn claim_command(
             })
     });
     let experience = context.map(|context| (context.revision_id, context.instruction));
+    let decision = state
+        .db
+        .assist_turn(
+            &host.company_id,
+            &binding.id,
+            &command.prompt,
+            |request| async {
+                crate::host_runtime::RuntimeHost::for_binding(&state, &binding)?
+                    .call(choruz_host_runtime::HostRequest::Decision { request })
+                    .await
+            },
+        )
+        .await?;
+    let preflight = choruz_host_runtime::harness::Preparation::new(preflight, decision);
     Ok(Json(Some(ClaimedCommand {
         command_id: command.command_id,
         attempt_id: assignment.attempt_id,

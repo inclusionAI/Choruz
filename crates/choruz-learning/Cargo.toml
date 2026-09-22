@@ -7,6 +7,7 @@ description = "Fixed evidence analysis and evaluation procedures with an injecte
 readme = "README.md"
 
 [dependencies]
+choruz-decision = { path = "../choruz-decision", version = "0.2.3" }
 choruz-common = { path = "../choruz-common", version = "0.2.3" }
 choruz-evaluation = { path = "../choruz-evaluation", version = "0.2.3" }
 choruz-community = { path = "../choruz-community", version = "0.2.3" }

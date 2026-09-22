@@ -37,7 +37,7 @@ fn home() -> Result<PathBuf, AppError> {
         .ok_or_else(|| AppError::Validation("Device HOME is not configured".into()))
 }
 
-fn binary(tool: Tool) -> PathBuf {
+pub(crate) fn binary(tool: Tool) -> PathBuf {
     if let Ok(home) = home() {
         let local = home.join(".local/bin").join(tool.binary());
         if local.is_file() {
@@ -140,7 +140,7 @@ async fn run(program: PathBuf, args: &[&str], seconds: u64) -> Result<Vec<u8>, S
     run_command(program, args, seconds, false).await
 }
 
-async fn run_command(
+pub(crate) async fn run_command(
     program: PathBuf,
     args: &[&str],
     seconds: u64,

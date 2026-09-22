@@ -6,6 +6,7 @@ description = "Device-local runtime operations (terminals, Codex homes, session 
 license.workspace = true
 
 [dependencies]
+choruz-decision = { path = "../choruz-decision", version = "0.2.3" }
 choruz-learning = { path = "../choruz-learning", version = "0.2.3" }
 choruz-community = { path = "../choruz-community", version = "0.2.3" }
 choruz-evaluation = { path = "../choruz-evaluation", version = "0.2.3" }
@@ -31,6 +32,7 @@ libc = "0.2"
 
 [dev-dependencies]
 tokio.workspace = true
+tracing-subscriber.workspace = true
 
 [lints]
 workspace = true

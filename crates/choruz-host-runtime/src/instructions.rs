@@ -17,7 +17,7 @@ use sha2::{Digest, Sha256};
 
 /// Current modular agent-instruction bootstrap version.
 ///
-/// The runtime recognises the current managed layout plus the v6-v9
+/// The runtime recognises the current managed layout plus the v6-v11
 /// managed layouts so protocol refreshes preserve designed roles. Older
 /// bootstrap bodies are preserved with a warning and require explicit offline
 /// rebootstrap.
@@ -48,7 +48,10 @@ use sha2::{Digest, Sha256};
 /// - v10: rely on the assignee's authoritative `your_tasks:` key and keep its
 ///   task update plus routed completion report in one turn instead of waiting
 ///   on asynchronously emitted command results.
-pub const BOOTSTRAP_INSTRUCTION_VERSION: u32 = 10;
+/// - v11: discover and consume human-reviewed browser reuse grants without
+///   confusing matching, admission or action acknowledgement with completion.
+/// - v12: standing browser permission and durable asynchronous continuation.
+pub const BOOTSTRAP_INSTRUCTION_VERSION: u32 = 12;
 
 const BOOTSTRAP_VERSION_HEADER_PREFIX: &str = "<!-- choruz-bootstrap-version: ";
 const BOOTSTRAP_VERSION_HEADER_SUFFIX: &str = " -->";
@@ -81,6 +84,7 @@ const STANDARD_EXTENSIONS: &[&str] = &[
     include_str!("../assets/agent-templates/extensions/group-management.md"),
     include_str!("../assets/agent-templates/extensions/scheduled-tasks.md"),
     include_str!("../assets/agent-templates/extensions/collaboration-practices.md"),
+    include_str!("../assets/agent-templates/extensions/browser-workflows.md"),
 ];
 
 /// Sidecar file written when a bootstrap refresh is skipped because the
@@ -143,7 +147,7 @@ fn render_instructions_with_extensions(path: &Path, role: &str, extensions: &[&s
 }
 
 fn render_v7_instructions(path: &Path, role: &str) -> String {
-    let mut extensions = STANDARD_EXTENSIONS.to_vec();
+    let mut extensions = STANDARD_EXTENSIONS[..7].to_vec();
     extensions[0] = V7_MULTI_AGENT_COLLABORATION;
     render_instructions_with_extensions(path, role, &extensions).replacen(
         &format!("choruz-bootstrap-version: {BOOTSTRAP_INSTRUCTION_VERSION}"),
@@ -153,7 +157,7 @@ fn render_v7_instructions(path: &Path, role: &str) -> String {
 }
 
 fn render_v8_instructions(path: &Path, role: &str) -> String {
-    let mut extensions = STANDARD_EXTENSIONS.to_vec();
+    let mut extensions = STANDARD_EXTENSIONS[..7].to_vec();
     extensions[0] = V8_MULTI_AGENT_COLLABORATION;
     render_instructions_with_extensions(path, role, &extensions).replacen(
         &format!("choruz-bootstrap-version: {BOOTSTRAP_INSTRUCTION_VERSION}"),
@@ -163,11 +167,19 @@ fn render_v8_instructions(path: &Path, role: &str) -> String {
 }
 
 fn render_v9_instructions(path: &Path, role: &str) -> String {
-    let mut extensions = STANDARD_EXTENSIONS.to_vec();
+    let mut extensions = STANDARD_EXTENSIONS[..7].to_vec();
     extensions[0] = V9_MULTI_AGENT_COLLABORATION;
     render_instructions_with_extensions(path, role, &extensions).replacen(
         &format!("choruz-bootstrap-version: {BOOTSTRAP_INSTRUCTION_VERSION}"),
         "choruz-bootstrap-version: 9",
+        1,
+    )
+}
+
+fn render_v10_instructions(path: &Path, role: &str) -> String {
+    render_instructions_with_extensions(path, role, &STANDARD_EXTENSIONS[..7]).replacen(
+        &format!("choruz-bootstrap-version: {BOOTSTRAP_INSTRUCTION_VERSION}"),
+        "choruz-bootstrap-version: 10",
         1,
     )
 }
@@ -203,6 +215,20 @@ fn extract_managed_role<'a>(path: &Path, content: &'a str) -> Option<&'a str> {
         return extract_role_from_layout(
             content_body,
             &render_v9_instructions(path, ROLE_PLACEHOLDER),
+        );
+    }
+    if version == Some(10) {
+        return extract_role_from_layout(
+            content_body,
+            &render_v10_instructions(path, ROLE_PLACEHOLDER),
+        );
+    }
+    if version == Some(11) {
+        let mut extensions = STANDARD_EXTENSIONS.to_vec();
+        extensions[7] = include_str!("instructions_fixtures/bootstrap-v11-browser-workflows.md");
+        return extract_role_from_layout(
+            content_body,
+            &render_instructions_with_extensions(path, ROLE_PLACEHOLDER, &extensions),
         );
     }
     let v6_template = match path.file_name().and_then(|name| name.to_str()) {
@@ -678,6 +704,7 @@ mod tests {
         V6_CLAUDE_INSTRUCTIONS_TEMPLATE, V6_CODEX_INSTRUCTIONS_TEMPLATE, body_sha256_hex,
         ensure_claude_md, force_rewrite_bootstrap, parse_version_and_body, render_instructions,
         render_v7_instructions, render_v8_instructions, render_v9_instructions,
+        render_v10_instructions,
     };
 
     /// Versioned Choruz bootstrap fixtures used to verify explicit
@@ -1216,22 +1243,47 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bootstrap_refreshes_v9_managed_files_without_losing_roles() {
-        for filename in ["CLAUDE.md", "AGENTS.md"] {
-            let dir = TempDir::new().unwrap();
-            let path = dir.path().join(filename);
-            let role = format!("You are the carefully designed {filename} reviewer.");
-            tokio::fs::write(&path, v9_instructions(filename, &role))
-                .await
-                .unwrap();
+    async fn bootstrap_refreshes_recent_managed_files_without_losing_roles() {
+        for version in [9, 10, 11] {
+            for filename in ["CLAUDE.md", "AGENTS.md"] {
+                let dir = TempDir::new().unwrap();
+                let path = dir.path().join(filename);
+                let role = format!("You are the carefully designed {filename} reviewer.");
+                let prior = if version == 9 {
+                    v9_instructions(filename, &role)
+                } else if version == 10 {
+                    render_v10_instructions(Path::new(filename), &role)
+                } else {
+                    let mut extensions = super::STANDARD_EXTENSIONS.to_vec();
+                    extensions[7] =
+                        include_str!("instructions_fixtures/bootstrap-v11-browser-workflows.md");
+                    super::render_instructions_with_extensions(
+                        Path::new(filename),
+                        &role,
+                        &extensions,
+                    )
+                    .replacen(
+                        "choruz-bootstrap-version: 12",
+                        "choruz-bootstrap-version: 11",
+                        1,
+                    )
+                };
+                tokio::fs::write(&path, prior).await.unwrap();
 
-            let outcome = ensure_claude_md(dir.path(), None).await;
-            assert_eq!(outcome.refreshed, vec![path.clone()]);
-            assert!(outcome.preserved_edited.is_empty());
-            assert_eq!(
-                read_string(&path).await,
-                canonical_instructions(filename, &role)
-            );
+                let outcome = ensure_claude_md(dir.path(), None).await;
+                assert_eq!(outcome.refreshed, vec![path.clone()]);
+                assert!(outcome.preserved_edited.is_empty());
+                assert_eq!(
+                    read_string(&path).await,
+                    canonical_instructions(filename, &role)
+                );
+                assert!(read_string(&path).await.contains("browser_workflow_status"));
+                assert!(
+                    read_string(&path)
+                        .await
+                        .contains("platform resumes the original conversation")
+                );
+            }
         }
     }
 

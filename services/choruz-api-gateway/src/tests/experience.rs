@@ -1,6 +1,992 @@
 use super::*;
 use choruz_application::db_service::ExperienceReport;
 
+#[cfg(unix)]
+#[path = "browser_handoff.rs"]
+mod browser_handoff;
+
+#[tokio::test]
+async fn browser_workflow_admission_is_scoped_durable_and_never_replays() {
+    let database = TestDatabase::create().await;
+    let db =
+        choruz_application::DbService::new(choruz_store::EventStore::new(&database.database_url));
+    let owner = db
+        .create_human_user("browser-owner", "test-password-123")
+        .await
+        .unwrap();
+    let outsider = db
+        .create_human_user("browser-outsider", "test-password-123")
+        .await
+        .unwrap();
+    let binding = learning_binding(&database, &owner).await;
+    let analyst = learning_binding(&database, &owner).await;
+    db.configure_experience(
+        &owner.workspace_id,
+        &owner.id,
+        &binding,
+        &analyst,
+        true,
+        None,
+    )
+    .await
+    .unwrap();
+    let (client, connection) = tokio_postgres::connect(&database.database_url, NoTls)
+        .await
+        .unwrap();
+    tokio::spawn(async move {
+        let _ = connection.await;
+    });
+    client
+        .execute(
+            "UPDATE experience_policy SET decision_settings=$2 WHERE binding_id=$1",
+            &[
+                &binding,
+                &json!({"model":"fixture","builder_binding_id":analyst}),
+            ],
+        )
+        .await
+        .unwrap();
+    let settings = choruz_decision::browser_settings::BrowserSettings {
+        browser: "fixture".into(),
+        allowed_urls: vec!["https://example.org/".into()],
+        scope: "Save drafts".into(),
+    };
+    assert!(
+        db.configure_browser_automation(
+            &owner.workspace_id,
+            &binding,
+            &outsider.id,
+            "fixture",
+            Some(&settings)
+        )
+        .await
+        .is_err()
+    );
+    db.configure_browser_automation(
+        &owner.workspace_id,
+        &binding,
+        &owner.id,
+        "fixture",
+        Some(&settings),
+    )
+    .await
+    .unwrap();
+    let policy = db
+        .browser_automation(&owner.workspace_id, &binding)
+        .await
+        .unwrap();
+    let generation = policy["generation"].as_i64().unwrap();
+    let learning = policy["learning_generation"].as_i64().unwrap();
+    let body = json!({"revision_id":"revision","task":"Save draft","url":"https://example.org/","values":{},"expected_text":["Draft saved"],"text_requests":{}});
+    let typed: crate::handlers_browser_automation::RunRequest =
+        serde_json::from_value(body.clone()).unwrap();
+    let hash = crate::handlers_browser_workflows::request_hash(
+        &LocalAuthConfig::from_env().session_secret,
+        &typed,
+    )
+    .unwrap();
+    assert_ne!(
+        hash,
+        crate::handlers_browser_workflows::request_hash("different-secret", &typed).unwrap()
+    );
+    // Concurrent runs share one permission lock; exactly one acquires the browser.
+    let (a, b) = tokio::join!(
+        db.admit_automatic_browser(
+            &owner.workspace_id,
+            &binding,
+            &owner.id,
+            "test-run",
+            &hash,
+            "revision",
+            generation,
+            learning,
+            "fixture",
+            None
+        ),
+        db.admit_automatic_browser(
+            &owner.workspace_id,
+            &binding,
+            &owner.id,
+            "other-run",
+            &hash,
+            "revision",
+            generation,
+            learning,
+            "fixture",
+            None
+        )
+    );
+    assert_eq!(usize::from(a.is_ok()) + usize::from(b.is_ok()), 1);
+    let id = if a.is_ok() { "test-run" } else { "other-run" };
+    db.finish_browser_workflow(
+        &owner.workspace_id,
+        &binding,
+        id,
+        &json!({"report":{"checks_matched":true,"completed_steps":1}}),
+    )
+    .await
+    .unwrap();
+    // Restart and disable cannot turn redelivery into a new browser operation.
+    db.configure_browser_automation(&owner.workspace_id, &binding, &owner.id, "fixture", None)
+        .await
+        .unwrap();
+    let app = router_with_db(choruz_application::ChatApp::new(), &database.database_url);
+    let endpoint = format!("/v1/runtime/bindings/{binding}/browser-workflows/{id}");
+    let (status, result) = api_json_payload_request(
+        app.clone(),
+        &owner,
+        Method::POST,
+        endpoint.clone(),
+        body.clone(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    assert_eq!(result["result"]["report"]["completed_steps"], 1);
+    let mut changed = body;
+    changed["task"] = json!("Delete draft");
+    assert_eq!(
+        api_json_payload_request(app.clone(), &owner, Method::POST, endpoint.clone(), changed)
+            .await
+            .0,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        api_json_payload_request(app, &outsider, Method::GET, endpoint, json!({}))
+            .await
+            .0,
+        StatusCode::FORBIDDEN
+    );
+    assert!(
+        db.admit_automatic_browser(
+            &owner.workspace_id,
+            &binding,
+            &owner.id,
+            "late-run",
+            &hash,
+            "revision",
+            generation,
+            learning,
+            "fixture",
+            None
+        )
+        .await
+        .is_err()
+    );
+    db.configure_browser_automation(
+        &owner.workspace_id,
+        &binding,
+        &owner.id,
+        "fixture",
+        Some(&settings),
+    )
+    .await
+    .unwrap();
+    let latest = db
+        .browser_automation(&owner.workspace_id, &binding)
+        .await
+        .unwrap();
+    let latest = latest["generation"].as_i64().unwrap();
+    assert!(
+        db.admit_automatic_browser(
+            &owner.workspace_id,
+            &binding,
+            &owner.id,
+            "changed-learning",
+            &hash,
+            "revision",
+            latest,
+            learning + 1,
+            "fixture",
+            None
+        )
+        .await
+        .is_err()
+    );
+    assert!(
+        db.admit_automatic_browser(
+            &owner.workspace_id,
+            &binding,
+            &owner.id,
+            "changed-account",
+            &hash,
+            "revision",
+            latest,
+            learning,
+            "other-account",
+            None
+        )
+        .await
+        .is_err()
+    );
+    db.admit_automatic_browser(
+        &owner.workspace_id,
+        &binding,
+        &owner.id,
+        "cancelled-run",
+        &hash,
+        "revision",
+        latest,
+        learning,
+        "fixture",
+        None,
+    )
+    .await
+    .unwrap();
+    db.cancel_browser_workflow(&owner.workspace_id, &binding, "cancelled-run")
+        .await
+        .unwrap();
+    assert!(
+        db.claim_browser_dispatch(&owner.workspace_id, &binding, "cancelled-run")
+            .await
+            .unwrap()
+            .is_none(),
+        "cancelled admission must never dispatch"
+    );
+    db.finish_browser_workflow(
+        &owner.workspace_id,
+        &binding,
+        "cancelled-run",
+        &json!({"late":true}),
+    )
+    .await
+    .unwrap();
+    let cancelled = db
+        .browser_workflow_run(&owner.workspace_id, &binding, "cancelled-run")
+        .await
+        .unwrap();
+    assert_eq!(cancelled["status"], "cancelled");
+    assert!(cancelled["result"].is_null());
+    assert!(
+        db.admit_automatic_browser(
+            &owner.workspace_id,
+            &binding,
+            &owner.id,
+            "blind-retry",
+            &hash,
+            "revision",
+            latest,
+            learning,
+            "fixture",
+            None
+        )
+        .await
+        .is_err()
+    );
+}
+
+#[tokio::test]
+async fn decision_worker_builds_on_device_then_evaluates_selects_and_executes() {
+    use choruz_decision::{
+        Answer, Provider, Question, Request as DecisionRequest, Response as DecisionResponse, Usage,
+    };
+    use choruz_host_runtime::{
+        HostRequest,
+        link::{ControllerFrame, LinkRequest},
+    };
+    struct FixtureProvider;
+    impl Provider for FixtureProvider {
+        async fn decide(
+            &self,
+            request: DecisionRequest,
+        ) -> choruz_decision::Result<DecisionResponse> {
+            request.validate()?;
+            assert!(
+                request.state.is_string(),
+                "only the task input reaches inference"
+            );
+            Ok(DecisionResponse {
+                model: "fixture-version".into(),
+                usage: Usage {
+                    input_tokens: 1,
+                    output_tokens: 1,
+                },
+                answers: request
+                    .questions
+                    .into_iter()
+                    .map(|(id, question)| {
+                        if id == "result" {
+                            let value = serde_json::to_value(&question).unwrap();
+                            assert_eq!(
+                                value["instructions"]["question"],
+                                "Select queue from the task input"
+                            );
+                            assert_eq!(value["criteria"]["billing"]["when"], "Billing issue");
+                            assert_eq!(
+                                value["criteria"].get("abstain"),
+                                Some(&serde_json::Value::Null)
+                            );
+                        }
+                        let Question::Choice { criteria, .. } = question else {
+                            panic!("expected choice")
+                        };
+                        let chosen = if id == "_applicable" {
+                            "yes"
+                        } else {
+                            "billing"
+                        };
+                        (
+                            id,
+                            Answer::Choice {
+                                choice: chosen.into(),
+                                confidence: 0.99,
+                                probabilities: criteria
+                                    .keys()
+                                    .map(|key| (key.clone(), if key == chosen { 1.0 } else { 0.0 }))
+                                    .collect(),
+                            },
+                        )
+                    })
+                    .collect(),
+            })
+        }
+    }
+    struct Builder;
+    impl choruz_learning::Runner for Builder {
+        async fn run(
+            &self,
+            _: String,
+            research: bool,
+            skill: &'static str,
+        ) -> Result<String, AppError> {
+            assert!(!research);
+            assert_eq!(skill, choruz_learning::PROGRAM_SKILL);
+            Ok(json!({"name":"Billing tickets","applicability":"Billing support tickets","questions":{"result":{"type":"choice","instructions":{"question":"Select queue from the task input"},"criteria":{"billing":{"when":"Billing issue"},"abstain":null}}},"result_question":"result","outputs":{"billing":"billing_queue"},"minimum_confidence":0.9}).to_string())
+        }
+    }
+    let database = TestDatabase::create().await;
+    let store = choruz_store::EventStore::new(&database.database_url);
+    let db = choruz_application::DbService::new(store.clone());
+    let owner = db
+        .create_human_user("decision-workflow", "test-password-123")
+        .await
+        .unwrap();
+    let target = learning_binding(&database, &owner).await;
+    let builder = learning_binding(&database, &owner).await;
+    let runtime = RuntimeStore::new(&database.database_url);
+    let client = runtime.connect().await.unwrap();
+    for id in [&target, &builder] {
+        client.execute("UPDATE agent_runtime_bindings SET driver_type='codex_terminal',config_json=$2 WHERE id=$1", &[id,&json!({"runtime_host_id":"decision-device"})]).await.unwrap();
+    }
+    db.configure_experience(
+        &owner.workspace_id,
+        &owner.id,
+        &target,
+        &builder,
+        true,
+        None,
+    )
+    .await
+    .unwrap();
+    let settings = choruz_decision::settings::LearningSettings {
+        model: "fixture-alias".into(),
+        minimum_confidence: 0.9,
+        classify: true,
+        supervise: true,
+        assist_turns: false,
+        builder_binding_id: Some(builder.clone()),
+    };
+    db.configure_decisions(&owner.workspace_id, &owner.id, &target, Some(&settings))
+        .await
+        .unwrap();
+    let claim = db.claim_experience().await.unwrap().unwrap();
+    let app = choruz_application::ChatApp::new();
+    let files = tempfile::tempdir().unwrap();
+    let links = crate::host_link::HostLinkHub::default();
+    let (link, mut incoming) = links.decision_fixture("decision-device");
+    let state = crate::ApiState {
+        experience_worker: None,
+        app: app.clone(),
+        db: db.clone(),
+        runtime,
+        session: PgSessionStore::new(&database.database_url),
+        event_store: store.clone(),
+        attachments: crate::attachments::AttachmentStore::new(files.path(), store),
+        auth: LocalAuthConfig::from_env(),
+        sync_wakeups: crate::sync_wakeup::SyncWakeupHub::spawn(database.database_url.clone()),
+        remote_control_bridges: crate::remote_control_bridge::RemoteControlBridgeHub::new().0,
+        local_host: crate::host_runtime::LocalHost::new(),
+        host_links: links,
+        online: crate::online_groups::OnlineHub::spawn(app, db.clone()),
+    };
+    let cases: Vec<choruz_evaluation::evaluation::TraceCase> = (0..30).map(|i| serde_json::from_value(json!({"episode_ref":format!("objective-{i}"),"evidence":[format!("source-{i}")],"input":format!("Billing ticket number {i}"),"check":{"type":"judge","expected":"billing_queue","rubric":"Select the billing queue for billing tickets."},"reason":"Confirmed by user"})).unwrap()).collect();
+    let suite =
+        choruz_application::db_service::measured_trace_suite(&cases, 24, &Default::default())
+            .unwrap();
+    let expected_training: Vec<_> = suite
+        .cases
+        .iter()
+        .filter(|c| c.split == choruz_evaluation::evaluation::EvaluationSplit::Train)
+        .map(|c| json!({"input":c.input,"check":c.check,"action_evidence":[]}))
+        .collect();
+    let calls = std::sync::atomic::AtomicUsize::new(0);
+    let judged = std::sync::atomic::AtomicUsize::new(0);
+    let decisions = std::sync::atomic::AtomicUsize::new(0);
+    let submitted = std::sync::atomic::AtomicBool::new(false);
+    let revoke_at = std::sync::atomic::AtomicUsize::new(0);
+    let device = async {
+        while let Some(frame) = incoming.recv().await {
+            let ControllerFrame::Call { id, request } = serde_json::from_str(&frame).unwrap()
+            else {
+                panic!("expected call")
+            };
+            let request = match *request {
+                LinkRequest::Host { request } => request,
+                LinkRequest::Session { request } => {
+                    let choruz_host_runtime::session::SessionRequest::Command {
+                        preflight,
+                        reservation_id,
+                        ..
+                    } = request
+                    else {
+                        panic!("expected native command")
+                    };
+                    assert_eq!(reservation_id.as_deref(), Some("reserved-turn"));
+                    let evidence = preflight.unwrap().decision;
+                    if revoke_at.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+                        let evidence = evidence.unwrap();
+                        assert_eq!(evidence.status, "proposed");
+                        assert_eq!(evidence.evidence["output"], "billing_queue");
+                    } else {
+                        assert!(
+                            evidence.is_none(),
+                            "withdrawn advice must not reach native execution"
+                        );
+                    }
+                    assert!(!submitted.swap(true, std::sync::atomic::Ordering::SeqCst));
+                    link.settle(
+                        &id,
+                        Ok(serde_json::to_value(
+                            choruz_host_runtime::session_protocol::SessionSnapshot::default(),
+                        )
+                        .unwrap()),
+                    );
+                    continue;
+                }
+                _ => panic!("unexpected link operation"),
+            };
+            calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let output = match request {
+                HostRequest::BuildDecisionProgram { spec, training } => {
+                    assert_eq!(spec.terminal_id, builder);
+                    assert_eq!(
+                        training,
+                        json!(expected_training),
+                        "held-out inputs and answers must not reach the builder"
+                    );
+                    serde_json::to_value(
+                        choruz_learning::build_program(&Builder, training)
+                            .await
+                            .unwrap(),
+                    )
+                    .unwrap()
+                }
+                HostRequest::Decision { request } => {
+                    decisions.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    if revoke_at.load(std::sync::atomic::Ordering::SeqCst) == 2 {
+                        db.select_decision_program(&owner.workspace_id, &owner.id, &target, None)
+                            .await
+                            .unwrap();
+                    }
+                    request.run(&FixtureProvider).await.unwrap()
+                }
+                HostRequest::ReserveSession { .. } => {
+                    if revoke_at.load(std::sync::atomic::Ordering::SeqCst) == 1 {
+                        db.select_decision_program(&owner.workspace_id, &owner.id, &target, None)
+                            .await
+                            .unwrap();
+                    }
+                    serde_json::to_value(choruz_host_runtime::session::ReservedTurn {
+                        reservation_id: (!submitted.load(std::sync::atomic::Ordering::SeqCst))
+                            .then(|| "reserved-turn".into()),
+                        snapshot: choruz_host_runtime::session_protocol::SessionSnapshot::default(),
+                    })
+                    .unwrap()
+                }
+                HostRequest::JudgeExperience {
+                    spec,
+                    input,
+                    check,
+                    output,
+                } => {
+                    assert_eq!(
+                        spec.terminal_id, target,
+                        "held-out judging must not use the builder profile"
+                    );
+                    assert_ne!(spec.terminal_id, builder);
+                    assert!(
+                        suite
+                            .cases
+                            .iter()
+                            .any(|case| case.input == input && json!(case.check) == json!(check))
+                    );
+                    assert_eq!(output, "billing_queue");
+                    judged.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    json!({"verdict":"pass","reason":"Fixture judge selected the expected queue"})
+                }
+                _ => panic!("unexpected operation"),
+            };
+            link.settle(&id, Ok(output));
+        }
+    };
+    let workflow = async {
+        let host = crate::host_runtime::RuntimeHost::for_host(&state, "decision-device").unwrap();
+        let check = crate::experience_diagnostics::LearningCheck::new(&state, &claim);
+        let trial = crate::decision_worker::build(&state, &claim, &check, &host, &cases, &[], &[])
+            .await
+            .unwrap();
+        assert_eq!(trial["status"], "validated", "{trial}");
+        assert_eq!(
+            trial["results"].as_array().unwrap().len(),
+            suite.cases.len()
+        );
+        assert_eq!(trial["resolved_model"], "fixture-version");
+        assert_eq!(
+            judged.load(std::sync::atomic::Ordering::SeqCst),
+            suite.cases.len()
+        );
+        let revision = db
+            .save_experience_candidate(
+                &claim,
+                ExperienceReport {
+                    digest: "workflow",
+                    references: &json!([]),
+                    analysis: "Validated trial",
+                    instruction: None,
+                    validation: &json!({"program_trial":trial}),
+                    checkpoint: None,
+                    activate: false,
+                },
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            db.selected_decision_program(&owner.workspace_id, &owner.id, &target)
+                .await
+                .is_err(),
+            "evaluation does not automatically select"
+        );
+        let router = Router::new()
+            .route(
+                "/v1/runtime/bindings/{id}/experience/decisions",
+                axum::routing::patch(crate::handlers_decisions::select),
+            )
+            .route(
+                "/v1/runtime/bindings/{id}/experience/decisions/execute",
+                post(crate::handlers_decisions::execute),
+            )
+            .with_state(state.clone());
+        let endpoint = format!("/v1/runtime/bindings/{target}/experience/decisions");
+        let (status, body) = api_json_payload_request(
+            router.clone(),
+            &owner,
+            Method::PATCH,
+            endpoint.clone(),
+            json!({"revision_id":revision}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let (status, body) = api_json_payload_request(
+            router,
+            &owner,
+            Method::POST,
+            format!("{endpoint}/execute"),
+            json!({"input":"A new billing ticket"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["result"]["output"], "billing_queue");
+        assert_eq!(body["revision_id"], revision);
+        assert!(
+            db.decision_for_turn(&owner.workspace_id, &target)
+                .await
+                .unwrap()
+                .is_none(),
+            "manual selection does not opt in to foreground disclosure"
+        );
+        let mut foreground = settings.clone();
+        foreground.assist_turns = true;
+        db.configure_decisions(&owner.workspace_id, &owner.id, &target, Some(&foreground))
+            .await
+            .unwrap();
+        db.select_decision_program(&owner.workspace_id, &owner.id, &target, Some(&revision))
+            .await
+            .unwrap();
+        let sessions = Router::new()
+            .route("/session/{id}", post(crate::handlers_sessions::command))
+            .with_state(state.clone());
+        let before = decisions.load(std::sync::atomic::Ordering::SeqCst);
+        for _ in 0..2 {
+            let (status, body) = api_json_payload_request(sessions.clone(), &owner, Method::POST, format!("/session/{target}"), json!({"instance":"device-instance","action":"send","text":"A billing ticket","submission_id":"same-submission"})).await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+        }
+        assert!(submitted.load(std::sync::atomic::Ordering::SeqCst));
+        assert_eq!(
+            decisions.load(std::sync::atomic::Ordering::SeqCst),
+            before + 1,
+            "a repeated HTTP submission must not repeat provider inference"
+        );
+        for boundary in [1, 2] {
+            submitted.store(false, std::sync::atomic::Ordering::SeqCst);
+            revoke_at.store(boundary, std::sync::atomic::Ordering::SeqCst);
+            db.select_decision_program(&owner.workspace_id, &owner.id, &target, Some(&revision))
+                .await
+                .unwrap();
+            let before = decisions.load(std::sync::atomic::Ordering::SeqCst);
+            let (status, body) = api_json_payload_request(sessions.clone(), &owner, Method::POST, format!("/session/{target}"), json!({"instance":"device-instance","action":"send","text":"A billing ticket","submission_id":format!("revoked-{boundary}")})).await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            assert!(
+                submitted.load(std::sync::atomic::Ordering::SeqCst),
+                "revocation must still hand the task to its native Agent"
+            );
+            assert_eq!(
+                decisions.load(std::sync::atomic::Ordering::SeqCst) - before,
+                usize::from(boundary == 2)
+            );
+        }
+        db.configure_decisions(&owner.workspace_id, &owner.id, &target, None)
+            .await
+            .unwrap();
+        let before = calls.load(std::sync::atomic::Ordering::SeqCst);
+        let blocked: Result<Value, AppError> = check
+            .call(
+                &host,
+                "revoked_generation",
+                HostRequest::BuildDecisionProgram {
+                    spec: Box::new(crate::handlers_terminals::terminal_spec(
+                        &state.runtime.get_binding(&builder).await.unwrap(),
+                        120,
+                        40,
+                        None,
+                        None,
+                    )),
+                    training: json!(expected_training),
+                },
+            )
+            .await;
+        assert!(blocked.is_err());
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            before,
+            "revoked claim must not dispatch"
+        );
+    };
+    tokio::time::timeout(Duration::from_secs(20), async {
+        tokio::select! { _ = device => panic!("device stopped early"), _ = workflow => {} }
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn decision_trials_are_reserved_once_and_selection_requires_current_consent() {
+    let database = TestDatabase::create().await;
+    let db =
+        choruz_application::DbService::new(choruz_store::EventStore::new(&database.database_url));
+    let owner = db
+        .create_human_user("trial-owner", "test-password-123")
+        .await
+        .unwrap();
+    let outsider = db
+        .create_human_user("trial-outsider", "test-password-123")
+        .await
+        .unwrap();
+    let target = learning_binding(&database, &owner).await;
+    let analyst = learning_binding(&database, &owner).await;
+    db.configure_experience(
+        &owner.workspace_id,
+        &owner.id,
+        &target,
+        &analyst,
+        true,
+        None,
+    )
+    .await
+    .unwrap();
+    let settings = choruz_decision::settings::LearningSettings {
+        model: "test-model".into(),
+        minimum_confidence: 0.9,
+        classify: false,
+        supervise: false,
+        assist_turns: true,
+        builder_binding_id: None,
+    };
+    db.configure_decisions(&owner.workspace_id, &owner.id, &target, Some(&settings))
+        .await
+        .unwrap();
+    let claim = db.claim_experience().await.unwrap().unwrap();
+    assert!(
+        db.reserve_decision_program_trial(&claim, "corpus-1")
+            .await
+            .unwrap()
+    );
+    assert!(
+        !db.reserve_decision_program_trial(&claim, "corpus-1")
+            .await
+            .unwrap()
+    );
+    let objective = json!({"episode_ref":"ticket-1","evidence":["ticket-1"],"input":"Refund request","check":{"type":"exact","expected":"billing_queue"},"reason":"Confirmed result"});
+    let validation = json!({"evaluation_cases":[objective.clone()],"program_trial":{"suite":{"cases":[{"source":objective.clone()}]},"status":"validated","model":"test-model","resolved_model":"test-model-version","program":{
+        "name":"Ticket route","applicability":"Billing tickets","minimum_confidence":0.9,
+        "questions":{"result":{"type":"choice","instructions":"Select ticket queue","criteria":{"billing":"Billing issue","abstain":"Unknown"}}},
+        "result_question":"result","outputs":{"billing":"billing_queue"}
+    }}});
+    let revision = db
+        .save_experience_candidate(
+            &claim,
+            ExperienceReport {
+                digest: "trial",
+                references: &json!([]),
+                analysis: "Fixture trial",
+                instruction: None,
+                validation: &validation,
+                checkpoint: None,
+                activate: false,
+            },
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        db.select_decision_program(
+            &outsider.workspace_id,
+            &outsider.id,
+            &target,
+            Some(&revision)
+        )
+        .await
+        .is_err()
+    );
+    assert!(
+        db.select_decision_program(&owner.workspace_id, &owner.id, &target, Some("missing"))
+            .await
+            .is_err()
+    );
+    db.select_decision_program(&owner.workspace_id, &owner.id, &target, Some(&revision))
+        .await
+        .unwrap();
+    assert_eq!(
+        db.selected_decision_program(&owner.workspace_id, &owner.id, &target)
+            .await
+            .unwrap()
+            .0,
+        revision
+    );
+    let mut corrected = objective;
+    let selected = db
+        .decision_for_turn(&owner.workspace_id, &target)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(selected.revision_id, revision);
+    assert_eq!(selected.model, "test-model-version");
+    for (output, model, expected) in [
+        (Some("inspect"), "test-model-version", "proposed"),
+        (None, "test-model-version", "abstained"),
+        (Some("inspect"), "changed-version", "unavailable"),
+    ] {
+        let evidence = db
+            .assist_turn(
+                &owner.workspace_id,
+                &target,
+                "Inspect workspace",
+                |_| async {
+                    Ok(choruz_decision::programs::ProgramResult {
+                        output: output.map(str::to_owned),
+                        decision: choruz_decision::Response {
+                            model: model.into(),
+                            answers: Default::default(),
+                            usage: choruz_decision::Usage {
+                                input_tokens: 10,
+                                output_tokens: 1,
+                            },
+                        },
+                    })
+                },
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(evidence.status, expected);
+    }
+    let revoked = db
+        .assist_turn(
+            &owner.workspace_id,
+            &target,
+            "Inspect workspace",
+            |_| async {
+                db.select_decision_program(&owner.workspace_id, &owner.id, &target, None)
+                    .await
+                    .unwrap();
+                Err(AppError::Internal("provider unavailable".into()))
+            },
+        )
+        .await
+        .unwrap();
+    assert!(
+        revoked.is_none(),
+        "an in-flight result must not survive withdrawn selection"
+    );
+    assert!(
+        db.assist_turn(
+            &owner.workspace_id,
+            &target,
+            "Inspect workspace",
+            |_| async { panic!("revoked selection must not dispatch a device request") }
+        )
+        .await
+        .unwrap()
+        .is_none()
+    );
+    db.select_decision_program(&owner.workspace_id, &owner.id, &target, Some(&revision))
+        .await
+        .unwrap();
+    assert!(
+        db.decision_for_turn(&outsider.workspace_id, &target)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    corrected["check"] = Value::Null;
+    corrected["reason"] = json!("User withdrew the expected answer");
+    db.save_experience_candidate(
+        &claim,
+        ExperienceReport {
+            digest: "corrected-evidence",
+            references: &json!([]),
+            analysis: "Expected answer withdrawn",
+            instruction: None,
+            validation: &json!({"evaluation_cases":[corrected]}),
+            checkpoint: None,
+            activate: false,
+        },
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(
+        db.selected_decision_program(&owner.workspace_id, &owner.id, &target)
+            .await
+            .is_err()
+    );
+    assert!(
+        db.select_decision_program(&owner.workspace_id, &owner.id, &target, Some(&revision))
+            .await
+            .is_err(),
+        "withdrawn evidence must prevent reactivation"
+    );
+    assert!(
+        db.decision_for_turn(&owner.workspace_id, &target)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    db.configure_decisions(&owner.workspace_id, &owner.id, &target, None)
+        .await
+        .unwrap();
+    assert!(
+        db.selected_decision_program(&owner.workspace_id, &owner.id, &target)
+            .await
+            .is_err()
+    );
+    assert!(
+        !db.reserve_decision_program_trial(&claim, "corpus-2")
+            .await
+            .unwrap(),
+        "revoked claim must not start another paid trial"
+    );
+    assert!(
+        db.save_experience_candidate(
+            &claim,
+            ExperienceReport {
+                digest: "late-trial",
+                references: &json!([]),
+                analysis: "Stale result",
+                instruction: None,
+                validation: &validation,
+                checkpoint: None,
+                activate: false
+            }
+        )
+        .await
+        .unwrap()
+        .is_none()
+    );
+}
+
+#[tokio::test]
+async fn decision_settings_require_owned_binding_and_explicit_transmission() {
+    let database = TestDatabase::create().await;
+    let db =
+        choruz_application::DbService::new(choruz_store::EventStore::new(&database.database_url));
+    let owner = db
+        .create_human_user("decision-owner", "test-password-123")
+        .await
+        .unwrap();
+    let outsider = db
+        .create_human_user("decision-outsider", "test-password-123")
+        .await
+        .unwrap();
+    let target = learning_binding(&database, &owner).await;
+    let analyst = learning_binding(&database, &owner).await;
+    db.configure_experience(
+        &owner.workspace_id,
+        &owner.id,
+        &target,
+        &analyst,
+        false,
+        None,
+    )
+    .await
+    .unwrap();
+    let app = router_with_db(choruz_application::ChatApp::new(), &database.database_url);
+    let endpoint = format!("/v1/runtime/bindings/{target}/experience/decisions");
+    let settings = json!({"model":"test-model","minimum_confidence":0.9,"classify":true,"supervise":true,"builder_binding_id":null});
+    let (status, _) = api_json_payload_request(
+        app.clone(),
+        &outsider,
+        Method::PUT,
+        endpoint.clone(),
+        json!({"settings":settings}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, body) = api_json_payload_request(
+        app.clone(),
+        &owner,
+        Method::PUT,
+        endpoint.clone(),
+        json!({"settings":settings}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["policy"]["decision_settings"]["model"], "test-model");
+    let mut invalid = settings.clone();
+    invalid["builder_binding_id"] = json!(analyst);
+    let (status, _) = api_json_payload_request(
+        app.clone(),
+        &owner,
+        Method::PUT,
+        endpoint.clone(),
+        json!({"settings":invalid}),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "a Claude binding must not become a Codex builder"
+    );
+    let (status, _) = api_json_payload_request(app.clone(), &owner, Method::POST, format!("/v1/runtime/bindings/{target}/decisions"), json!({
+        "transmit_to_typesafe":false,"request":{"model":"test-model","minimum_confidence":0.9,"job":{"kind":"classify","state":"private task"}}
+    })).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, body) =
+        api_json_payload_request(app, &owner, Method::PUT, endpoint, json!({"settings":null}))
+            .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body["policy"]["decision_settings"].is_null());
+}
+
 #[tokio::test]
 async fn behavior_exchange_deduplicates_evidence_and_fences_publication_and_trials() {
     use choruz_community::behavior::{BehaviorRecord, CommunitySettings};

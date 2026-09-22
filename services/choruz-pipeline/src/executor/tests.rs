@@ -960,6 +960,11 @@ async fn supported_cli_driver_bindings_execute_with_fake_binaries() {
             client.execute("INSERT INTO experience_revision(id,binding_id,workspace_id,policy_generation,source_digest,source_references,analysis,instruction,disposition,validation) VALUES('learned-test',$1,'ws-acme',1,'test','[]','reviewed','Explain the recommendation first.','active','{\"review\":\"passed\"}')", &[&binding.id]).await.unwrap();
             client.execute("UPDATE experience_policy SET active_revision_id='learned-test' WHERE binding_id=$1", &[&binding.id]).await.unwrap();
             client.execute("UPDATE experience_revision SET validation=validation || $1 WHERE id='learned-test'", &[&serde_json::json!({"team":{"config":{"order":"serial","members":[{"name":"reviewer","prompt":"Verify changed files."}]},"review":"passed"}})]).await.unwrap();
+            // The invalid model identity rejects before network inference even
+            // when the test runner has a provider key in its environment.
+            let trial = json!({"program_trial":{"status":"validated","resolved_model":"x".repeat(129),"program":{"name":"inspection","applicability":"Workspace inspection","questions":{"route":{"type":"choice","instructions":"Choose route","criteria":{"inspect":"Inspect","abstain":"Unknown"}}},"result_question":"route","outputs":{"inspect":"Inspect files"},"minimum_confidence":0.9}}});
+            client.execute("UPDATE experience_revision SET validation=validation || $1 WHERE id='learned-test'", &[&trial]).await.unwrap();
+            client.execute("UPDATE experience_policy SET decision_settings='{\"assist_turns\":true}',active_decision_revision_id='learned-test' WHERE binding_id=$1", &[&binding.id]).await.unwrap();
         }
 
         let script_path = tmp.path().join(format!("{}-fake-cli.sh", case.label));
@@ -1048,6 +1053,8 @@ async fn supported_cli_driver_bindings_execute_with_fake_binaries() {
             assert!(record.contains("Explain the recommendation first."));
             assert!(record.contains("[choruz-team revision=learned-test]"));
             assert!(record.contains("Inspect changes before reporting completion."));
+            assert!(record.contains("[choruz-decision revision=learned-test]"));
+            assert!(record.contains("provider_unavailable"));
         }
         let canonical_workspace = workspace.canonicalize().expect("canonical workspace path");
         assert!(

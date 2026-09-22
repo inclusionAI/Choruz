@@ -359,6 +359,7 @@ dependencies = [
  "choruz-auth",
  "choruz-common",
  "choruz-community",
+ "choruz-decision",
  "choruz-domain",
  "choruz-evaluation",
  "choruz-harness-login",
@@ -403,6 +404,7 @@ dependencies = [
  "choruz-auth",
  "choruz-common",
  "choruz-community",
+ "choruz-decision",
  "choruz-domain",
  "choruz-evaluation",
  "choruz-store",
@@ -499,6 +501,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "choruz-decision"
+version = "0.2.3"
+dependencies = [
+ "axum",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
 name = "choruz-domain"
 version = "0.2.3"
 dependencies = [
@@ -565,6 +579,7 @@ dependencies = [
  "choruz-agent-runtime",
  "choruz-common",
  "choruz-community",
+ "choruz-decision",
  "choruz-evaluation",
  "choruz-harness-login",
  "choruz-ids",
@@ -580,6 +595,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
+ "tracing-subscriber",
  "vt100",
 ]
 
@@ -606,6 +622,7 @@ version = "0.2.3"
 dependencies = [
  "choruz-common",
  "choruz-community",
+ "choruz-decision",
  "choruz-evaluation",
  "serde",
  "serde_json",

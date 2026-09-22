@@ -241,6 +241,8 @@ One official browser sign-in for a harness account. A runtime host's connector c
 
 Background learning belongs to one target binding, owner and workspace. `experience_policy` stores the selected analyst binding, opt-in state, active revision, sequential source cursors and cumulative summary. Its generation and expiring lease fence concurrent analysis and settings changes. Deleting the owner or either binding cascades the policy; deleting the policy cascades its revisions.
 
+`decision_settings` separately authorizes TypeSafe transmission and selects an optional program-building binding. `active_decision_revision_id` points to a validated program in the same binding and workspace. Program trials, task partitions and assessment results live in revision validation. Corrected source objectives invalidate dependent programs and clear their selection; changing decision settings also clears the selection. `experience_decision_trial` reserves one corpus per workspace and binding before external generation; a reservation is not evidence that generation completed and survives a worker crash to prevent blind duplicate paid calls. The [decision schema](../migrations/V059__decision_settings.sql) defines these fields.
+
 `experience_revision` stores source references, analysis, optional instruction text and review evidence. The `(binding_id, policy_generation, source_digest)` unique constraint prevents duplicate reports. Report insertion, cursor advancement and optional activation commit together under the live lease. Manual revision selection verifies the same owner and workspace and invalidates outstanding analysis. Review evidence establishes content acceptance, not future task improvement; see [background experience learning](subsystems/agent-runtime.md#background-experience-learning) for runtime behavior. The [schema](../migrations/V052__experience_learning.sql) defines the fields and constraints.
 
 `experience_problem` associates a scoped problem with the first reviewed prompt intervention addressing it. `experience_problem_observation` records distinct work episodes and evidence of revision use. Its episode key prevents repeated analysis of one task from increasing the occurrence count. Observations commit in the same transaction as their report and checkpoint; the [problem schema](../migrations/V053__experience_problems.sql) defines ownership and deletion constraints.
@@ -250,6 +252,16 @@ Background learning belongs to one target binding, owner and workspace. `experie
 `experience_behavior_event` extends the existing binding-scoped problem and revision owners with private source linkage, a typed local record, a separately reviewed public projection and leased publication state. `(binding_id, problem_key, source_key)` deduplicates analysis retries. `occurrence_id` in the payload groups outcome updates for one objective. Unpublished local problem identities can reconcile with a reviewed community match; public evidence identities remain immutable. See the [schema](../migrations/V058__behavior_community.sql) and [runtime behavior](subsystems/agent-runtime.md#behavior-community).
 
 `experience_policy.community_settings` owns search, automatic trial and contribution consent. `experience_community_record` is an installation-wide cache of accepted public records, keyed by repository and record ID, with source revision and blob identity. `experience_community_sync` retains the checked revision and synchronization error. Neither cache table owns private traces or mutable popularity counters.
+
+### browser_workflow_run
+
+Browser execution receipts are scoped by workspace, binding and run ID. Admission binds the actor and complete request through a server-keyed HMAC; raw input values and expected text are not stored here. Reusing an ID cannot dispatch again. Results only commit while the receipt is running and unexpired; cancellation fences late results. An expired running receipt is reported as `outcome_unconfirmed`, not replayed. See the [schema](../migrations/V060__browser_workflow_runs.sql).
+
+### browser_automation
+
+Standing permission is workspace- and binding-scoped and retains its human owner, exact pages, browser identity, task scope, binding fingerprint and generation. Admission locks this row and the learning policy to fence scope changes and disabled learning. Browser run receipts add the revision, permission and learning generations, originating conversation, single dispatch claim and durable notification flag; stable command IDs deduplicate completion wakeups. See the [schema](../migrations/V062__browser_automation.sql) and [execution contract](../crates/choruz-decision/README.md).
+
+The browser_workflow_grant table is retained historical data. No active route creates or consumes grants.
 
 ### experience_evaluation
 

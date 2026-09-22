@@ -64,6 +64,16 @@ impl<'a> LearningCheck<'a> {
             HostRequest::EvaluateExperience { input, .. } => {
                 json!({"input_digest":digest(input.as_bytes()),"input_bytes":input.len()})
             }
+            HostRequest::BuildDecisionProgram { training, .. } => {
+                let encoded =
+                    serde_json::to_vec(training).map_err(|e| AppError::Internal(e.to_string()))?;
+                json!({"input_digest":digest(&encoded),"input_bytes":encoded.len()})
+            }
+            HostRequest::Decision { request } => {
+                let encoded =
+                    serde_json::to_vec(request).map_err(|e| AppError::Internal(e.to_string()))?;
+                json!({"input_digest":digest(&encoded),"input_bytes":encoded.len(),"model":request.model,"kind":request.kind()})
+            }
             _ => json!({}),
         };
         let call_id = choruz_common::new_id();
@@ -73,7 +83,19 @@ impl<'a> LearningCheck<'a> {
         )
         .await?;
         let started = std::time::Instant::now();
-        let result: Result<T, AppError> = host.call(request).await;
+        let requires_decision_consent = matches!(
+            &request,
+            HostRequest::Decision { .. } | HostRequest::BuildDecisionProgram { .. }
+        );
+        let result: Result<T, AppError> = if requires_decision_consent
+            && !self.state.db.decision_claim_current(self.claim).await?
+        {
+            Err(AppError::Conflict(
+                "Decision learning was disabled or its claim expired before dispatch".into(),
+            ))
+        } else {
+            host.call(request).await
+        };
         let details = match &result {
             Ok(value) => {
                 let encoded = serde_json::to_vec(value)
