@@ -89,7 +89,7 @@ struct ClaimedCommand {
     #[serde(default)]
     metadata: serde_json::Value,
     #[serde(default)]
-    preflight: Option<choruz_host_runtime::harness::ExecutionTeam>,
+    preflight: Option<choruz_host_runtime::harness::Preparation>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -965,7 +965,7 @@ async fn execute(
                     })
                 })
                 .unwrap_or_else(|| serde_json::json!({}));
-            let plan = choruz_host_runtime::harness::prepare(
+            let plan = choruz_host_runtime::harness::prepare_turn(
                 choruz_host_runtime::TerminalSpec {
                     authentication: false,
                     terminal_id: command.binding_id.clone(),
@@ -1655,6 +1655,106 @@ async fn main() -> ExitCode {
 mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn claimed_advice_reaches_native_cli_without_provider_execution() {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(root) = env::var("CHORUZ_DECISION_TEST_ROOT") {
+            let config = ConnectorConfig {
+                api_url: env::var("CHORUZ_DECISION_TEST_API").unwrap(),
+                relay: None,
+                host_id: "fixture".into(),
+                host_name: "Fixture".into(),
+                host_token: "fixture".into(),
+                max_concurrency: 1,
+            };
+            let claimed: ClaimedCommand = serde_json::from_value(serde_json::json!({
+                "command_id":"command", "attempt_id":"attempt", "binding_id":"binding", "agent_id":"agent", "conversation_id":"conversation", "turn_id":"turn",
+                "prompt":"Inspect workspace", "driver_type":"codex_terminal", "workspace_path":root,
+                "model":null, "external_session_id":null, "harness_account":null,
+                "preflight":{"team":null,"decision":{"revision_id":"selected","status":"proposed","evidence":{"output":"Inspect the manifest"},"elapsed_ms":1}}
+            })).unwrap();
+            execute(Client::new(), Arc::new(config), claimed)
+                .await
+                .unwrap();
+            return;
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let binary = directory.path().join("codex");
+        fs::write(&binary, "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$CHORUZ_DECISION_TEST_ROOT/invocation\"\nprintf '%s\\n' '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"Native finished\"}}' '{\"type\":\"turn.completed\"}'\n").unwrap();
+        fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            loop {
+                let mut bytes = [0; 4096];
+                let count = stream.read(&mut bytes).await.unwrap();
+                assert!(count > 0);
+                request.extend_from_slice(&bytes[..count]);
+                if let Some(end) = request.windows(4).position(|w| w == b"\r\n\r\n") {
+                    let header = String::from_utf8_lossy(&request[..end]);
+                    let length: usize = header
+                        .lines()
+                        .find_map(|line| {
+                            line.to_lowercase()
+                                .strip_prefix("content-length:")
+                                .map(|value| value.trim().parse().unwrap())
+                        })
+                        .unwrap();
+                    if request.len() >= end + 4 + length {
+                        assert!(header.starts_with(
+                            "POST /v1/runtime-hosts/fixture/commands/command/complete"
+                        ));
+                        let body: serde_json::Value =
+                            serde_json::from_slice(&request[end + 4..end + 4 + length]).unwrap();
+                        assert_eq!(body["succeeded"], true, "{body}");
+                        assert_eq!(body["contents"][0], "Native finished");
+                        break;
+                    }
+                }
+            }
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\nconnection: close\r\n\r\n")
+                .await
+                .unwrap();
+        });
+        let mut child = Command::new(env::current_exe().unwrap());
+        child
+            .args([
+                "--exact",
+                "tests::claimed_advice_reaches_native_cli_without_provider_execution",
+                "--nocapture",
+            ])
+            .env("CHORUZ_DECISION_TEST_ROOT", directory.path())
+            .env("CHORUZ_DECISION_TEST_API", format!("http://{address}"))
+            .env(
+                "PATH",
+                format!(
+                    "{}:{}",
+                    directory.path().display(),
+                    env::var("PATH").unwrap_or_default()
+                ),
+            )
+            .env_remove("TYPESAFE_API_KEY")
+            .kill_on_drop(true);
+        let output = tokio::time::timeout(Duration::from_secs(15), child.output())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        server.await.unwrap();
+        let recorded = fs::read_to_string(directory.path().join("invocation")).unwrap();
+        assert!(recorded.contains("Inspect workspace"));
+        assert!(recorded.contains("Inspect the manifest"));
+        assert!(recorded.contains("not evidence that tools ran or the task is complete"));
+    }
 
     #[test]
     fn file_only_group_turn_completes_without_replaying_the_harness() {

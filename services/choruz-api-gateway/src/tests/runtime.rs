@@ -2073,6 +2073,9 @@ async fn runtime_host_pairing_is_single_use_and_host_token_is_revocable() {
     client.execute("INSERT INTO experience_revision(id,binding_id,workspace_id,policy_generation,source_digest,source_references,analysis,instruction,disposition,validation) VALUES('remote-learning-test',$1,$2,1,'test','[]','reviewed','Explain the recommendation first.','active','{\"review\":\"passed\"}')", &[&learned_binding,&operator.workspace_id]).await.unwrap();
     client.execute("UPDATE experience_policy SET active_revision_id='remote-learning-test' WHERE binding_id=$1", &[&learned_binding]).await.unwrap();
     client.execute("UPDATE experience_revision SET validation=validation || $1 WHERE id='remote-learning-test'", &[&serde_json::json!({"team":{"config":choruz_evaluation::team::Team::reviewer("Verify changed files.".into()),"review":"passed"}})]).await.unwrap();
+    let trial = json!({"program_trial":{"status":"validated","resolved_model":"fixture-version","program":{"name":"inspection","applicability":"Workspace inspection","questions":{"route":{"type":"choice","instructions":"Choose route","criteria":{"inspect":"Inspect","abstain":"Unknown"}}},"result_question":"route","outputs":{"inspect":"Inspect files"},"minimum_confidence":0.9}}});
+    client.execute("UPDATE experience_revision SET validation=validation || $1 WHERE id='remote-learning-test'", &[&trial]).await.unwrap();
+    client.execute("UPDATE experience_policy SET decision_settings='{\"assist_turns\":true}',active_decision_revision_id='remote-learning-test' WHERE binding_id=$1", &[&learned_binding]).await.unwrap();
 
     let sessions = PgSessionStore::new(&database.database_url);
     let session_key = format!("{}:{}", agent.id, conversation.id);
@@ -2143,10 +2146,23 @@ async fn runtime_host_pairing_is_single_use_and_host_token_is_revocable() {
         "Implement the runtime-host test\n\n[choruz-experience revision=remote-learning-test]"
     ));
     assert!(learned_prompt.contains("Explain the recommendation first."));
-    assert_eq!(claimed["preflight"]["revision_id"], "remote-learning-test");
     assert_eq!(
-        claimed["preflight"]["team"]["members"][0]["prompt"],
+        claimed["preflight"]["team"]["revision_id"],
+        "remote-learning-test"
+    );
+    assert_eq!(
+        claimed["preflight"]["team"]["team"]["members"][0]["prompt"],
         "Verify changed files."
+    );
+    let decision = &claimed["preflight"]["decision"];
+    assert_eq!(
+        decision["status"], "unavailable",
+        "an unlinked provider device must not block native command claiming"
+    );
+    assert!(decision.get("program").is_none());
+    assert!(
+        decision.get("request").is_none(),
+        "claimed commands carry evidence, never delayed provider instructions"
     );
     assert!(claimed["model"].is_null());
     assert!(claimed["external_session_id"].is_null());

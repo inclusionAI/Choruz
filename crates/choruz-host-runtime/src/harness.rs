@@ -14,6 +14,43 @@ pub struct ExecutionTeam {
     pub team: Team,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Preparation {
+    pub team: Option<ExecutionTeam>,
+    pub decision: Option<choruz_decision::programs::TurnDecision>,
+}
+
+impl Preparation {
+    pub fn new(
+        team: Option<ExecutionTeam>,
+        decision: Option<choruz_decision::programs::TurnDecision>,
+    ) -> Option<Self> {
+        (team.is_some() || decision.is_some()).then_some(Self { team, decision })
+    }
+}
+
+/// Decisions supply bounded proposals to the native executor. They do not
+/// authorize tools, replace its transcript, or turn abstention into success.
+pub async fn prepare_turn(
+    spec: TerminalSpec,
+    preparation: &Preparation,
+    request: &str,
+) -> Result<String, AppError> {
+    let mut findings = Vec::new();
+    if let Some(decision) = &preparation.decision {
+        findings.push(format!(
+            "[choruz-decision revision={}]\nA bounded decision proposal, not evidence that tools ran or the task is complete. Use only when applicable to the current task; otherwise continue normally. Retain responsibility for verification and the final reply.\n{}\n[/choruz-decision]",
+            decision.revision_id,
+            json!({"status":decision.status,"elapsed_ms":decision.elapsed_ms,"result":decision.evidence})
+        ));
+    }
+    if let Some(team) = &preparation.team {
+        findings.push(prepare(spec, team, request).await?);
+    }
+    Ok(findings.join("\n\n"))
+}
+
 /// Serial members see preceding results; parallel members see only the request.
 /// Results retain declaration order. Failure prevents foreground submission.
 /// Findings are proposals, never completed verification.

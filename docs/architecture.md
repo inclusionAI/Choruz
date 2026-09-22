@@ -10,6 +10,8 @@ The repository is a modular monolith: one Cargo workspace (`Cargo.toml`) with sh
 
 [`choruz-community`](../crates/choruz-community/README.md) supplies behavior evidence, deduplicated counts and revision-pinned dataset exchange. The platform owns consent, privacy review, publication state and solution application.
 
+[`choruz-decision`](../crates/choruz-decision/README.md) validates structured inference and finite-output programs. Device execution owns the provider key; background learning owns program construction and independent evaluation, while the human owner controls selection.
+
 [`choruz-learning`](../crates/choruz-learning/README.md) owns fixed analysis and assessment procedures with an injected asynchronous runner. [`choruz-host-runtime`](../crates/choruz-host-runtime/README.md) supplies native CLI execution and packaged instruction resources; background workers retain collection, scheduling, persistence and activation. [`choruz-relay-client`](../crates/choruz-relay-client/README.md) carries encrypted device traffic without platform storage.
 
 [`choruz-agent-runtime`](../crates/choruz-agent-runtime/README.md) provides CLI configuration and native session discovery without a PostgreSQL dependency. `choruz-application::runtime_store` owns binding and conversation-policy persistence; the gateway and pipeline compose the store with device execution.

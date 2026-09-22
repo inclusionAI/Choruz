@@ -6,10 +6,13 @@
 
 mod activity;
 mod audit;
+mod browser_automation;
+mod browser_workflows;
 pub use activity::{ActivityCursor, ActivityFilter, ActivitySource};
 mod behavior;
 mod companies;
 mod conversations;
+mod decision_programs;
 mod evaluation;
 mod events;
 mod experience;

@@ -11,6 +11,7 @@ export const STANDARD_EXTENSION_FILES = [
   "extensions/group-management.md",
   "extensions/scheduled-tasks.md",
   "extensions/collaboration-practices.md",
+  "extensions/browser-workflows.md",
 ] as const;
 
 export type AgentInstructionFragments = {

@@ -986,7 +986,7 @@ describe("buildInstructionsFromTemplate", () => {
   it("renders the claude template by default and substitutes user instructions", async () => {
     const rendered = await buildInstructionsFromTemplate("Helper", "Help with the task.");
     expect(rendered).toContain("Claude-compatible Choruz runtime");
-    expect(rendered).toMatch(/^<!-- choruz-bootstrap-version: 10 -->/);
+    expect(rendered).toMatch(/^<!-- choruz-bootstrap-version: 12 -->/);
     expect(rendered).toContain("<!-- choruz-role:start -->");
     expect(rendered).toContain("<!-- choruz-role:end -->");
     expect(rendered).not.toContain("{{AGENT_INSTRUCTIONS}}");
@@ -1004,7 +1004,7 @@ describe("buildInstructionsFromTemplate", () => {
       "codex_terminal",
     );
     expect(rendered).toContain("# Choruz Platform Agent");
-    expect(rendered).toMatch(/^<!-- choruz-bootstrap-version: 10 -->/);
+    expect(rendered).toMatch(/^<!-- choruz-bootstrap-version: 12 -->/);
     expect(rendered).toContain("<!-- choruz-role:start -->");
     expect(rendered).toContain("<!-- choruz-role:end -->");
     expect(rendered).toContain("AGENTS.md");

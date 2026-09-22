@@ -6,6 +6,7 @@ description = "Platform persistence through DbService and RuntimeStore, and the 
 license.workspace = true
 
 [dependencies]
+choruz-decision = { path = "../choruz-decision", version = "0.2.3" }
 choruz-community = { path = "../choruz-community", version = "0.2.3" }
 choruz-agent-runtime = { path = "../choruz-agent-runtime", version = "0.2.3" }
 tokio.workspace = true

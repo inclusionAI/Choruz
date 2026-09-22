@@ -639,7 +639,7 @@ export function MessageList({
         />
       ) : (
         <div style={{ position: "relative", display: "flex", flexDirection: "column", gap: "2px" }}>
-          {navigationTarget && <div className="messages-history-loading" role="status">
+          {navigationTarget && <div className="messages-history-loading messages-navigation-status" role="status">
             {!hasOlderMessages && !loadingOlderMessages ? "Message is not available in this conversation." : "Finding message…"}
             <button type="button" onClick={onNavigationComplete}>Cancel</button>
           </div>}

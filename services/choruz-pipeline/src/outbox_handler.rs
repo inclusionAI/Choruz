@@ -8,6 +8,9 @@ use std::time::{Duration, SystemTime};
 
 const PROCESSING_STALE_AFTER: Duration = Duration::from_secs(60);
 
+#[path = "outbox_handler/browser_workflows.rs"]
+mod browser_workflows;
+
 /// Logs in as the configured operator and returns a gateway-issued session
 /// token, or `None` on failure. Credentials come from `CHORUZ_OPERATOR_USER` /
 /// `CHORUZ_OPERATOR_PASSWORD` (matching gateway `local_auth::from_env`). Never
@@ -165,6 +168,44 @@ pub(crate) async fn process_outbox_command_files(
                 .get("type")
                 .and_then(|value| value.as_str())
                 .unwrap_or("");
+            if matches!(
+                cmd_type,
+                "browser_workflows" | "browser_workflow_run" | "browser_workflow_status"
+            ) {
+                let mut browser_command = cmd.clone();
+                browser_command["conversation_id"] = session_key
+                    .strip_prefix(&format!("{agent_id}:"))
+                    .map(serde_json::Value::from)
+                    .unwrap_or(serde_json::Value::Null);
+                let result =
+                    browser_workflows::process(agent_id, gateway_base_url, &browser_command).await;
+                persist_outbox_command_result(work_dir, &result).await;
+                // Run completion has a durable gateway owner. Discovery and
+                // immediate refusals need a next turn after this CLI exits.
+                if cmd_type == "browser_workflows" || result["ok"] == false {
+                    if let Some(store) = event_store {
+                        let key = claimed_path
+                            .file_name()
+                            .and_then(|name| name.to_str())
+                            .unwrap_or_default();
+                        if let Err(error) = browser_workflows::continue_with_receipt(
+                            store,
+                            session_key,
+                            agent_id,
+                            key,
+                            &result,
+                        )
+                        .await
+                        {
+                            tracing::warn!(%error,"browser receipt continuation could not be queued");
+                            continue;
+                        }
+                    }
+                }
+                command_results.push(result);
+                let _ = tokio::fs::remove_file(&claimed_path).await;
+                continue;
+            }
             if matches!(cmd_type, "task_create" | "task_update" | "task_transfer") {
                 let command_result = process_channel_task_command(
                     session_key,
@@ -1232,7 +1273,7 @@ async fn process_single_outbox_command(
                         }
                     };
                     let Some(conv_id) =
-                        resolve_cron_conversation_id(&client, session_key, agent_id).await
+                        resolve_session_conversation_id(&client, session_key, agent_id).await
                     else {
                         return Some(format!(
                             "Failed to create cron job '{}': could not resolve conversation.",
@@ -2095,7 +2136,7 @@ fn sanitize_command_result_message(message: &str) -> String {
     scrubbed
 }
 
-async fn resolve_cron_conversation_id(
+async fn resolve_session_conversation_id(
     client: &tokio_postgres::Client,
     session_key: &str,
     agent_id: &str,

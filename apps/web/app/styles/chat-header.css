@@ -156,3 +156,10 @@
   font-size: var(--fs-xs);
   text-align: center;
 }
+
+.messages-navigation-status {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--bg);
+}

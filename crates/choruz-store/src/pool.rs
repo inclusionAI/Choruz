@@ -37,6 +37,12 @@ impl EventStore {
         &self.database_url
     }
 
+    /// Share the existing pool with another persistence owner without opening
+    /// a second set of connections.
+    pub fn pool(&self) -> Pool {
+        self.pool.clone()
+    }
+
     /// Run a lightweight query to verify database connectivity.
     pub async fn health_check(&self) -> AppResult<()> {
         let client = self.connect().await?;

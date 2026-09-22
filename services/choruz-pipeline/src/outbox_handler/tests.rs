@@ -12,6 +12,104 @@ use tokio_postgres::NoTls;
 
 static CHANNEL_TASK_ENV_LOCK: Mutex<()> = Mutex::new(());
 
+#[tokio::test]
+async fn browser_commands_keep_agent_authority_and_receipts_without_chat() {
+    let tmp = tempdir().unwrap();
+    let tokens = tmp.path().join("tokens.json");
+    std::fs::write(&tokens, r#"{"browser-agent":"browser-agent-token"}"#).unwrap();
+    let _env = ChannelTaskEnvGuard::disabled().with_agent_tokens_file(&tokens);
+    let finished = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let posts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let posted = posts.clone();
+    let status = finished.clone();
+    let app=axum::Router::new().route("/v1/runtime/bindings/{binding}/browser-workflows/{run}",axum::routing::post(
+        move |headers:axum::http::HeaderMap,axum::Json(body):axum::Json<serde_json::Value>| {let posted=posted.clone(); async move {
+            assert_eq!(headers["authorization"],"Bearer browser-agent-token");
+            assert_eq!(body,serde_json::json!({"conversation_id":null,"revision_id":"revision","task":"Save a draft","url":"https://example.org/","values":{"title":"Current title"},"text_requests":{},"expected_text":["Saved"]}));
+            posted.fetch_add(1,std::sync::atomic::Ordering::SeqCst);
+            axum::Json(serde_json::json!({"id":"stable-run","status":"running"}))
+        }}).get(move |headers:axum::http::HeaderMap| {let status=status.clone(); async move {
+            assert_eq!(headers["authorization"],"Bearer browser-agent-token");
+            axum::Json(serde_json::json!({"id":"stable-run","status":if status.load(std::sync::atomic::Ordering::SeqCst) {"finished"} else {"running"}}))
+        }}));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    struct Stop(tokio::task::AbortHandle);
+    impl Drop for Stop {
+        fn drop(&mut self) {
+            self.0.abort();
+        }
+    }
+    let _stop = Stop(server.abort_handle());
+    let new = tmp.path().join(".choruz-outbox/new");
+    std::fs::create_dir_all(&new).unwrap();
+    for (name, binding) in [("valid", "bound-agent"), ("invalid", "../another-agent")] {
+        std::fs::write(new.join(format!("{name}.json")),serde_json::json!({"type":"browser_workflow_run","binding_id":binding,"run_id":"stable-run","task":"Save a draft","values":{"title":"Current title"},"revision_id":"revision","url":"https://example.org/","expected_text":["Saved"]}).to_string()).unwrap();
+    }
+    let poll = serde_json::json!({"type":"browser_workflow_status","binding_id":"bound-agent","run_id":"stable-run"});
+    std::fs::write(new.join("status.json"), poll.to_string()).unwrap();
+    let result = super::process_outbox_commands_with_stats(
+        "browser-test",
+        "browser-agent",
+        tmp.path(),
+        &url,
+        None,
+    )
+    .await;
+    assert_eq!(result.reply, "");
+    assert_eq!(result.processed_count, 3);
+    assert_eq!(
+        result
+            .command_results
+            .iter()
+            .filter(|r| r["ok"] == true)
+            .count(),
+        2
+    );
+    assert!(
+        result
+            .command_results
+            .iter()
+            .any(|r| r["command_type"] == "browser_workflow_status"
+                && r["result"]["status"] == "running")
+    );
+    assert!(
+        result
+            .command_results
+            .iter()
+            .any(|r| r["result"]["status"] == "running")
+    );
+    assert!(std::fs::read_dir(&new).unwrap().next().is_none());
+    let receipts = std::fs::read_dir(tmp.path().join(".choruz-outbox/results"))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(receipts.len(), 3);
+    for receipt in receipts {
+        let text = std::fs::read_to_string(receipt.path()).unwrap();
+        assert!(!text.contains("browser-agent-token"));
+        assert!(!text.contains("Current title"));
+    }
+    finished.store(true, std::sync::atomic::Ordering::SeqCst);
+    std::fs::write(new.join("later-status.json"), poll.to_string()).unwrap();
+    let later = super::process_outbox_commands_with_stats(
+        "browser-test",
+        "browser-agent",
+        tmp.path(),
+        &url,
+        None,
+    )
+    .await;
+    assert_eq!(later.command_results[0]["result"]["status"], "finished");
+    assert_eq!(later.reply, "");
+    assert_eq!(posts.load(std::sync::atomic::Ordering::SeqCst), 1);
+    server.abort();
+    assert!(server.await.unwrap_err().is_cancelled());
+}
+
 struct ChannelTaskEnvGuard {
     _guard: MutexGuard<'static, ()>,
     saved: Option<String>,
@@ -3069,7 +3167,7 @@ async fn send_to_group_rejects_ambiguous_same_workspace_name() {
 }
 
 #[tokio::test]
-async fn watcher_session_key_set_cron_uses_binding_conversation_id() {
+async fn watcher_helpers_use_binding_conversation_and_deduplicate_browser_continuation() {
     let db_url = std::env::var("CHORUZ_TEST_DATABASE_URL")
         .expect("source infra/host/setup_test_database.sh before database tests");
 
@@ -3140,6 +3238,29 @@ async fn watcher_session_key_set_cron_uses_binding_conversation_id() {
     let next: chrono::DateTime<chrono::Utc> = row.get("next_run_at");
     assert_eq!(next.weekday(), chrono::Weekday::Mon);
     assert_eq!((next.hour(), next.minute(), next.second()), (10, 0, 0));
+    for _ in 0..2 {
+        super::browser_workflows::continue_with_receipt(
+            &store,
+            &format!("watcher:{binding_id}"),
+            &agent_id,
+            "stable-discovery",
+            &serde_json::json!({"ok":true,"result":{"workflows":[]}}),
+        )
+        .await
+        .unwrap();
+    }
+    let commands=client.query("SELECT conversation_id,session_key,prompt FROM agent_commands WHERE agent_id=$1 AND metadata->>'source'='browser_helper'", &[&agent_id]).await.unwrap();
+    assert_eq!(commands.len(), 1);
+    assert_eq!(commands[0].get::<_, String>(0), conversation_id);
+    assert_eq!(
+        commands[0].get::<_, String>(1),
+        format!("{agent_id}:{conversation_id}")
+    );
+    assert!(
+        commands[0]
+            .get::<_, String>(2)
+            .contains("Empty discovery means use ordinary authorized tools")
+    );
 }
 
 /// 9.11: prove the documented non-chat feedback path produces well-formed

@@ -36,6 +36,22 @@ pub(crate) struct HostLinkHub {
 }
 
 impl HostLinkHub {
+    #[cfg(test)]
+    pub(crate) fn decision_fixture(
+        &self,
+        host_id: &str,
+    ) -> (Arc<HostLink>, mpsc::Receiver<String>) {
+        let (outbound, received) = mpsc::channel(64);
+        let link = Arc::new(HostLink {
+            host_id: host_id.into(),
+            host_name: "Decision fixture".into(),
+            outbound,
+            pending: StdMutex::new(HashMap::new()),
+            terminals: StdMutex::new(HashMap::new()),
+        });
+        self.register(link.clone());
+        (link, received)
+    }
     pub(crate) fn get(&self, host_id: &str) -> Option<Arc<HostLink>> {
         self.links
             .lock()
@@ -74,15 +90,16 @@ pub(crate) struct HostLink {
 impl HostLink {
     /// Send one request to the device and wait for its reply.
     pub(crate) async fn call(&self, request: LinkRequest) -> Result<Value, AppError> {
-        let timeout = if matches!(
-            &request,
+        let timeout = match &request {
             LinkRequest::Host {
-                request: choruz_host_runtime::HostRequest::ReplayExperience { .. }
-            }
-        ) {
-            Duration::from_secs(180)
-        } else {
-            CALL_TIMEOUT
+                request: choruz_host_runtime::HostRequest::ReplayExperience { .. },
+            } => Duration::from_secs(180),
+            // Let the device's 120-second execution budget and session cleanup
+            // finish before the controller declares the outcome unavailable.
+            LinkRequest::Host {
+                request: choruz_host_runtime::HostRequest::BrowserWorkflow { .. },
+            } => Duration::from_secs(150),
+            _ => CALL_TIMEOUT,
         };
         let id = choruz_common::new_id();
         let (reply_tx, reply_rx) = oneshot::channel();
@@ -132,7 +149,7 @@ impl HostLink {
             .remove(terminal_id);
     }
 
-    fn settle(&self, id: &str, outcome: Result<Value, AppError>) {
+    pub(super) fn settle(&self, id: &str, outcome: Result<Value, AppError>) {
         if let Some(reply) = self.pending.lock().expect("pending calls lock").remove(id) {
             let _ = reply.send(outcome);
         }
@@ -307,6 +324,36 @@ fn handle_device_frame(link: &Arc<HostLink>, text: &str) {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test(start_paused = true)]
+    async fn browser_call_waits_for_the_device_budget_and_cleanup() {
+        use super::*;
+        let hub = HostLinkHub::default();
+        let (link, mut requests) = hub.decision_fixture("browser-budget");
+        let request = serde_json::from_value(serde_json::json!({
+            "browser":"fixture", "url":"https://example.org/", "model":"fixture", "minimum_confidence":0.9,
+            "workflow":{"name":"Save","allowed_urls":["https://example.org/"],"steps":[{"goal":"Save","operation":"click","labels":["button \"Save\""],"value_key":null}]},
+            "values":{}, "expected_text":["Saved"]
+        })).unwrap();
+        let call = link.call(LinkRequest::Host {
+            request: choruz_host_runtime::HostRequest::BrowserWorkflow {
+                id: "budget".into(),
+                expires_at: 120,
+                request,
+                assistant: None,
+            },
+        });
+        let device = async {
+            let frame = requests.recv().await.unwrap();
+            let ControllerFrame::Call { id, .. } = serde_json::from_str(&frame).unwrap() else {
+                panic!("call");
+            };
+            tokio::time::sleep(Duration::from_secs(130)).await;
+            link.settle(&id, Ok(serde_json::json!({"cleaned_up":true})));
+        };
+        let (result, ()) = tokio::join!(call, device);
+        assert_eq!(result.unwrap()["cleaned_up"], true);
+    }
+
     /// The route table names the path as a literal so the OpenAPI coverage
     /// test can read it; the connector dials the crate constant.
     #[test]

@@ -32,7 +32,8 @@ pub(crate) fn spawn(mut state: ApiState) -> std::sync::Arc<WorkerGuard> {
         tokio::join!(
             crate::evaluation_worker::run(&state),
             run_analysis(&state),
-            crate::behavior_worker::run(&state)
+            crate::behavior_worker::run(&state),
+            crate::browser_completion_worker::run(&state)
         );
     });
     std::sync::Arc::new(WorkerGuard(task.abort_handle()))
@@ -752,6 +753,27 @@ async fn review(
         json!({"passed":false,"reason":if source["more"] == true {"source_incomplete"} else {"no_proposed_instruction"}})
     };
     let review = review_details["passed"] == true;
+    let decisions = crate::decision_worker::annotate(&source_host, claim, check, &source).await?;
+    let program_trial = if source["more"] == false {
+        let mut program_records = records.clone();
+        program_records.extend(
+            historical
+                .iter()
+                .map(|record| json!({"ref":record.reference,"record":record.record})),
+        );
+        crate::decision_worker::build(
+            state,
+            claim,
+            check,
+            &source_host,
+            &existing_cases,
+            &evaluation_cases,
+            &program_records,
+        )
+        .await?
+    } else {
+        Value::Null
+    };
     let revision = state
         .db
         .save_experience_candidate(
@@ -762,6 +784,8 @@ async fn review(
                 validation:&json!({"format":"checked", "review":if review {"passed"} else {"not_passed"},
                     "evaluation_cases":evaluation_cases,
                     "task_quality":task_quality,
+                    "decisions":decisions,
+                    "program_trial":program_trial,
                     "trace_id":check.id,"review_details":review_details,
                     "escalation_decisions":escalation_diagnostics(&known_problems, &problems),
                     "observed_revision_id":claim.active_revision_id, "observed_revision_outcome":analysis.previous_revision_outcome,
@@ -895,6 +919,7 @@ mod tests {
     #[test]
     fn daily_curation_resumes_paging_and_withdraws_unverifiable_evidence() {
         let mut claim = ExperienceClaim {
+            decision_settings: None,
             trace_cases: true,
             measured: true,
             binding_id: "b".into(),

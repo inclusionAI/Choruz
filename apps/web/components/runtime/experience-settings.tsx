@@ -6,9 +6,12 @@ import { Modal } from "../ui/modal";
 import { ExperienceDataset, ExperiencePerformance, type DatasetReport, type TaskPerformance } from "./experience-dataset";
 import { emptyOptimization, OptimizationFields, OptimizationHistory, type OptimizationSettings } from "./experience-optimization";
 import { ExperienceCommunity } from "./experience-community";
+import { ExperienceDecisions, DecisionHistory, DecisionExecution, type DecisionSettings, type DecisionEvidence } from "./experience-decisions";
+import { BrowserAutomation } from "./browser-automation";
+import { BrowserWorkflowDraft } from "./browser-workflow";
 
 type Revision = { id: string; analysis: string; instruction: string; disposition: string; created_at: string; validation: { dataset?: DatasetReport | null; evaluation_cases?: { episode_ref: string; input: string; check: unknown | null; reason: string; classification?: { task_type: string; capability: string; structure: string; outcome: string } }[]; review?: string; observed_revision_id?: string; observed_revision_outcome?: string; team?: { config: { order: "serial" | "parallel"; members: { name: string; prompt: string }[] }; review: string } | null } };
-type Learning = { policy: { enabled: boolean; analyst_binding_id: string; active_revision_id: string | null; last_error: string | null; checked_at: string | null; optimization_settings: OptimizationSettings | null; optimization_error: string | null } | null; revisions: Revision[]; task_performance?: TaskPerformance | null };
+type Learning = { policy: { enabled: boolean; analyst_binding_id: string; active_revision_id: string | null; last_error: string | null; checked_at: string | null; optimization_settings: OptimizationSettings | null; optimization_error: string | null; decision_settings: DecisionSettings | null; active_decision_revision_id: string | null } | null; revisions: (Revision & { validation: DecisionEvidence })[]; task_performance?: TaskPerformance | null };
 
 export function ExperienceSettings({ bindingId, sessionToken, onClose }: { bindingId: string; sessionToken: string; onClose: () => void }) {
   const [data, setData] = useState<Learning | null>(null);
@@ -79,6 +82,14 @@ export function ExperienceSettings({ bindingId, sessionToken, onClose }: { bindi
     }
   }
 
+  async function selectProgram(revisionId: string | null) {
+    setSaving(true); setError(null);
+    try {
+      setData(await apiFetch<Learning>(`${endpoint}/decisions`, sessionToken, { method: "PATCH", body: JSON.stringify({ revision_id: revisionId }) }));
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Unable to select program"); }
+    finally { setSaving(false); }
+  }
+
   async function save() {
     setSaving(true);
     setError(null);
@@ -113,6 +124,9 @@ export function ExperienceSettings({ bindingId, sessionToken, onClose }: { bindi
       {data.policy?.optimization_error && <p role="status">{data.policy.optimization_error}</p>}
       {data.policy?.checked_at && <p>Last checked: {new Date(data.policy.checked_at).toLocaleString()}</p>}
       <button className="btn-primary" type="button" onClick={() => void save()} disabled={saving || !analyst}>{saving ? "Saving…" : "Save settings"}</button>
+      {data.policy && <ExperienceDecisions key={`decisions:${endpoint}`} endpoint={endpoint} sessionToken={sessionToken} initial={data.policy.decision_settings} bindings={bindings} onSaved={() => void refreshHistory()} />}
+      {data.policy?.active_decision_revision_id && <DecisionExecution key={data.policy.active_decision_revision_id} endpoint={endpoint} sessionToken={sessionToken} onClear={() => void selectProgram(null)} />}
+      {data.policy && <BrowserAutomation bindingId={bindingId} sessionToken={sessionToken} />}
       <h3>Learning history</h3>
       <button className="btn-secondary" type="button" disabled={saving} onClick={() => void refreshHistory()}>Refresh history</button>
       {data.policy?.active_revision_id && <button className="btn-secondary" type="button" disabled={saving} onClick={() => void selectRevision(null)}>Clear active revision</button>}
@@ -121,6 +135,8 @@ export function ExperienceSettings({ bindingId, sessionToken, onClose }: { bindi
       {data.revisions.map((revision) => <details key={revision.id} data-revision-id={revision.id}>
         <summary>{new Date(revision.created_at).toLocaleString()} · {revision.disposition.replaceAll("_", " ")}</summary>
         <p>{revision.analysis}</p>
+        <DecisionHistory evidence={revision.validation} active={data.policy?.active_decision_revision_id === revision.id} disabled={saving} onSelect={() => void selectProgram(revision.id)} />
+        {revision.validation.program_trial?.workflow && revision.validation.program_trial.model && <BrowserWorkflowDraft key={revision.id} workflow={revision.validation.program_trial.workflow} />}
         {revision.validation.dataset && <ExperienceDataset report={revision.validation.dataset} />}
         {Boolean(revision.validation.evaluation_cases?.length) && <section aria-label="Extracted evaluation tasks"><h4>Extracted evaluation tasks</h4>{revision.validation.evaluation_cases!.map((task) => <p key={task.episode_ref}><strong>{task.check === null ? "Not evaluable" : "Reviewed task"}</strong>: {task.input || task.episode_ref} — {task.reason}</p>)}</section>}
         {revision.instruction && <pre style={{ whiteSpace: "pre-wrap" }}>{revision.instruction}</pre>}

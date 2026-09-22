@@ -354,6 +354,7 @@ test.describe("Search", () => {
           await page.locator(".detail-search-result", { hasText: replacement.content }).click();
           await expect(page.locator(`[data-msg-id="${replacement.id}"]`)).toBeInViewport();
           if (scenario === "cancel replacement") {
+            await expect(page.getByRole("status").getByRole("button", { name: "Cancel", exact: true })).toBeInViewport();
             await page.getByRole("status").getByRole("button", { name: "Cancel", exact: true }).click();
             await expect(page.getByText("Finding message…", { exact: true })).toHaveCount(0);
             const top = await page.locator(".messages-area").evaluate((element) => element.scrollTop);
