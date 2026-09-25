@@ -6,6 +6,8 @@ use crate::ApiState;
 mod agent_skills;
 mod kanban;
 mod mathcode;
+mod opencode;
+mod pi;
 mod pixel_world;
 mod remote_control;
 mod remote_ssh;
@@ -24,7 +26,7 @@ struct HostPluginRegistration {
     router: Option<fn() -> Router<ApiState>>,
 }
 
-fn registrations() -> [HostPluginRegistration; 7] {
+fn registrations() -> [HostPluginRegistration; 9] {
     [
         HostPluginRegistration {
             manifest: kanban::manifest,
@@ -52,6 +54,14 @@ fn registrations() -> [HostPluginRegistration; 7] {
         },
         HostPluginRegistration {
             manifest: mathcode::manifest,
+            router: None,
+        },
+        HostPluginRegistration {
+            manifest: pi::manifest,
+            router: None,
+        },
+        HostPluginRegistration {
+            manifest: opencode::manifest,
             router: None,
         },
     ]

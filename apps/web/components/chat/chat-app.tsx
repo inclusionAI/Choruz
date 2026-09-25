@@ -191,7 +191,6 @@ export function ChatApp({ initialSnapshot, sessionToken, runtimeBindings: initia
   const remoteSshEnabled = clientPluginIds.has("remote-ssh");
   const remoteControlEnabled = clientPluginIds.has("remote-control");
   const agentSkillsEnabled = clientPluginIds.has("agent-skills");
-  const mathcodeEnabled = clientPluginIds.has("mathcode");
   const [channelTasksByConv, setChannelTasksByConv] = useState<Record<string, ChannelTask[]>>({});
   const [channelTaskLoadErrors, setChannelTaskLoadErrors] = useState<Record<string, string | null>>({});
   const [channelTaskMutationErrors, setChannelTaskMutationErrors] = useState<Record<string, string | null>>({});
@@ -2316,7 +2315,7 @@ export function ChatApp({ initialSnapshot, sessionToken, runtimeBindings: initia
         runtimeHosts={runtimeHosts}
         workspaceGitEnabled={workspaceGitEnabled}
         agentSkillsEnabled={agentSkillsEnabled}
-        mathcodeEnabled={mathcodeEnabled}
+        driverPluginIds={clientPluginIds}
         multiHarnessAccounts={multiHarnessAccounts}
         onMultiHarnessAccountsChange={async (enabled) => {
           if (activeCompanyId) await setMultiHarnessAccounts(activeCompanyId, enabled);
@@ -2408,6 +2407,7 @@ export function ChatApp({ initialSnapshot, sessionToken, runtimeBindings: initia
       })()}
       {remoteControlEnabled && showWorkspaceSessionImport && (
         <ImportWorkspaceSessionsModal
+          driverPluginIds={clientPluginIds}
           sessionToken={sessionToken}
           activeCompanyId={activeCompanyId}
           onClose={closeWorkspaceSessionImport}

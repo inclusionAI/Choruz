@@ -35,8 +35,8 @@ export default function Page() {
           </tr>
           <tr>
             <td><code>CHORUZ_PLUGINS</code></td>
-            <td>(unset: all built-ins)</td>
-            <td>Comma-separated built-in plugin allowlist. Unset enables all built-ins; an empty value disables all plugins.</td>
+            <td>(unset: default plugins)</td>
+            <td>Comma-separated built-in plugin allowlist. Pi and OpenCode require explicit <code>pi</code> and <code>opencode</code> entries. An empty value disables all plugins. Apply the same value to the web and API processes.</td>
           </tr>
         </tbody>
       </table>

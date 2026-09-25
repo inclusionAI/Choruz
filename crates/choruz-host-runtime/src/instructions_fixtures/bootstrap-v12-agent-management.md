@@ -8,6 +8,4 @@ Create a workspace-scoped agent when the user asks for a durable new teammate:
 
 `name` is required. `driver_type` is optional and may be `claude_terminal`, `codex_terminal`, `pi_terminal`, `grok_terminal`, or `opencode_terminal`. `model` is optional; use an exact model ID accepted by that harness, or omit it to inherit the harness default. `instructions` defines the new agent's identity and responsibilities. Provisioning does not automatically add the agent to an existing group.
 
-Pi and OpenCode are optional: provisioning requires the corresponding `pi` or `opencode` plugin in `CHORUZ_PLUGINS` on the controlling Choruz. Do not request these drivers unless that plugin is enabled.
-
 The default is a visible teammate that can join groups, appear in `roster:`, and own channel tasks. Use `"channel_visibility":"internal"` only for a private helper that must not appear in shared collaboration; internal helpers cannot be group-task assignees.

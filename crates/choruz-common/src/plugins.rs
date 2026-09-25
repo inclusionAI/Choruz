@@ -5,10 +5,12 @@ pub const REMOTE_SSH_PLUGIN_ID: &str = "remote-ssh";
 pub const REMOTE_CONTROL_PLUGIN_ID: &str = "remote-control";
 pub const AGENT_SKILLS_PLUGIN_ID: &str = "agent-skills";
 pub const MATHCODE_PLUGIN_ID: &str = "mathcode";
+pub const PI_PLUGIN_ID: &str = "pi";
+pub const OPENCODE_PLUGIN_ID: &str = "opencode";
 pub const KANBAN_PLUGIN_DISABLED_DETAIL: &str =
     "plugin 'kanban' is disabled; include it in CHORUZ_PLUGINS";
 
-pub const BUILTIN_PLUGIN_IDS: [&str; 7] = [
+pub const DEFAULT_PLUGIN_IDS: [&str; 7] = [
     KANBAN_PLUGIN_ID,
     PIXEL_WORLD_PLUGIN_ID,
     WORKSPACE_GIT_PLUGIN_ID,
@@ -18,9 +20,21 @@ pub const BUILTIN_PLUGIN_IDS: [&str; 7] = [
     MATHCODE_PLUGIN_ID,
 ];
 
+pub const BUILTIN_PLUGIN_IDS: [&str; 9] = [
+    KANBAN_PLUGIN_ID,
+    PIXEL_WORLD_PLUGIN_ID,
+    WORKSPACE_GIT_PLUGIN_ID,
+    REMOTE_SSH_PLUGIN_ID,
+    REMOTE_CONTROL_PLUGIN_ID,
+    AGENT_SKILLS_PLUGIN_ID,
+    MATHCODE_PLUGIN_ID,
+    PI_PLUGIN_ID,
+    OPENCODE_PLUGIN_ID,
+];
+
 /// Returns the built-in plugins enabled for this host.
 ///
-/// All built-ins are enabled by default. Set `CHORUZ_PLUGINS` to a
+/// Pi and OpenCode require opt-in. Set `CHORUZ_PLUGINS` to a
 /// comma-separated allowlist (or an empty string to disable every plugin).
 pub fn enabled_plugin_ids() -> Vec<&'static str> {
     enabled_plugin_ids_from_env(std::env::var("CHORUZ_PLUGINS"))
@@ -29,7 +43,7 @@ pub fn enabled_plugin_ids() -> Vec<&'static str> {
 fn enabled_plugin_ids_from_env(value: Result<String, std::env::VarError>) -> Vec<&'static str> {
     match value {
         Ok(value) => enabled_plugin_ids_from(Some(&value)),
-        Err(std::env::VarError::NotPresent) => BUILTIN_PLUGIN_IDS.to_vec(),
+        Err(std::env::VarError::NotPresent) => enabled_plugin_ids_from(None),
         Err(std::env::VarError::NotUnicode(_)) => Vec::new(),
     }
 }
@@ -40,7 +54,7 @@ pub fn plugin_enabled(plugin_id: &str) -> bool {
 
 fn enabled_plugin_ids_from(value: Option<&str>) -> Vec<&'static str> {
     let Some(value) = value else {
-        return BUILTIN_PLUGIN_IDS.to_vec();
+        return DEFAULT_PLUGIN_IDS.to_vec();
     };
 
     BUILTIN_PLUGIN_IDS
@@ -63,7 +77,7 @@ mod tests {
     };
 
     #[test]
-    fn enables_all_builtins_when_configuration_is_absent() {
+    fn optional_harness_plugins_are_not_enabled_by_default() {
         assert_eq!(
             enabled_plugin_ids_from(None),
             vec![
@@ -80,6 +94,10 @@ mod tests {
 
     #[test]
     fn configuration_is_an_allowlist() {
+        assert_eq!(
+            enabled_plugin_ids_from(Some("pi,opencode")),
+            vec!["pi", "opencode"]
+        );
         assert_eq!(
             enabled_plugin_ids_from(Some(" pixel-world ")),
             vec![PIXEL_WORLD_PLUGIN_ID]

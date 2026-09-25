@@ -17,7 +17,7 @@ use sha2::{Digest, Sha256};
 
 /// Current modular agent-instruction bootstrap version.
 ///
-/// The runtime recognises the current managed layout plus the v6-v11
+/// The runtime recognises the current managed layout plus the v6-v12
 /// managed layouts so protocol refreshes preserve designed roles. Older
 /// bootstrap bodies are preserved with a warning and require explicit offline
 /// rebootstrap.
@@ -51,7 +51,8 @@ use sha2::{Digest, Sha256};
 /// - v11: discover and consume human-reviewed browser reuse grants without
 ///   confusing matching, admission or action acknowledgement with completion.
 /// - v12: standing browser permission and durable asynchronous continuation.
-pub const BOOTSTRAP_INSTRUCTION_VERSION: u32 = 12;
+/// - v13: require plugin opt-in before provisioning Pi or OpenCode.
+pub const BOOTSTRAP_INSTRUCTION_VERSION: u32 = 13;
 
 const BOOTSTRAP_VERSION_HEADER_PREFIX: &str = "<!-- choruz-bootstrap-version: ";
 const BOOTSTRAP_VERSION_HEADER_SUFFIX: &str = " -->";
@@ -76,6 +77,8 @@ const V8_MULTI_AGENT_COLLABORATION: &str =
 const V9_MULTI_AGENT_COLLABORATION: &str =
     include_str!("instructions_fixtures/bootstrap-v9-multi-agent-collaboration.md");
 const CORE_PROTOCOL: &str = include_str!("../assets/agent-templates/core-protocol.md");
+const V12_AGENT_MANAGEMENT: &str =
+    include_str!("instructions_fixtures/bootstrap-v12-agent-management.md");
 const STANDARD_EXTENSIONS: &[&str] = &[
     include_str!("../assets/agent-templates/extensions/multi-agent-collaboration.md"),
     include_str!("../assets/agent-templates/extensions/command-results.md"),
@@ -148,6 +151,7 @@ fn render_instructions_with_extensions(path: &Path, role: &str, extensions: &[&s
 
 fn render_v7_instructions(path: &Path, role: &str) -> String {
     let mut extensions = STANDARD_EXTENSIONS[..7].to_vec();
+    extensions[3] = V12_AGENT_MANAGEMENT;
     extensions[0] = V7_MULTI_AGENT_COLLABORATION;
     render_instructions_with_extensions(path, role, &extensions).replacen(
         &format!("choruz-bootstrap-version: {BOOTSTRAP_INSTRUCTION_VERSION}"),
@@ -158,6 +162,7 @@ fn render_v7_instructions(path: &Path, role: &str) -> String {
 
 fn render_v8_instructions(path: &Path, role: &str) -> String {
     let mut extensions = STANDARD_EXTENSIONS[..7].to_vec();
+    extensions[3] = V12_AGENT_MANAGEMENT;
     extensions[0] = V8_MULTI_AGENT_COLLABORATION;
     render_instructions_with_extensions(path, role, &extensions).replacen(
         &format!("choruz-bootstrap-version: {BOOTSTRAP_INSTRUCTION_VERSION}"),
@@ -168,6 +173,7 @@ fn render_v8_instructions(path: &Path, role: &str) -> String {
 
 fn render_v9_instructions(path: &Path, role: &str) -> String {
     let mut extensions = STANDARD_EXTENSIONS[..7].to_vec();
+    extensions[3] = V12_AGENT_MANAGEMENT;
     extensions[0] = V9_MULTI_AGENT_COLLABORATION;
     render_instructions_with_extensions(path, role, &extensions).replacen(
         &format!("choruz-bootstrap-version: {BOOTSTRAP_INSTRUCTION_VERSION}"),
@@ -177,7 +183,9 @@ fn render_v9_instructions(path: &Path, role: &str) -> String {
 }
 
 fn render_v10_instructions(path: &Path, role: &str) -> String {
-    render_instructions_with_extensions(path, role, &STANDARD_EXTENSIONS[..7]).replacen(
+    let mut extensions = STANDARD_EXTENSIONS[..7].to_vec();
+    extensions[3] = V12_AGENT_MANAGEMENT;
+    render_instructions_with_extensions(path, role, &extensions).replacen(
         &format!("choruz-bootstrap-version: {BOOTSTRAP_INSTRUCTION_VERSION}"),
         "choruz-bootstrap-version: 10",
         1,
@@ -223,9 +231,13 @@ fn extract_managed_role<'a>(path: &Path, content: &'a str) -> Option<&'a str> {
             &render_v10_instructions(path, ROLE_PLACEHOLDER),
         );
     }
-    if version == Some(11) {
+    if matches!(version, Some(11 | 12)) {
         let mut extensions = STANDARD_EXTENSIONS.to_vec();
-        extensions[7] = include_str!("instructions_fixtures/bootstrap-v11-browser-workflows.md");
+        extensions[3] = V12_AGENT_MANAGEMENT;
+        if version == Some(11) {
+            extensions[7] =
+                include_str!("instructions_fixtures/bootstrap-v11-browser-workflows.md");
+        }
         return extract_role_from_layout(
             content_body,
             &render_instructions_with_extensions(path, ROLE_PLACEHOLDER, &extensions),
@@ -1244,7 +1256,7 @@ mod tests {
 
     #[tokio::test]
     async fn bootstrap_refreshes_recent_managed_files_without_losing_roles() {
-        for version in [9, 10, 11] {
+        for version in [9, 10, 11, 12] {
             for filename in ["CLAUDE.md", "AGENTS.md"] {
                 let dir = TempDir::new().unwrap();
                 let path = dir.path().join(filename);
@@ -1255,16 +1267,23 @@ mod tests {
                     render_v10_instructions(Path::new(filename), &role)
                 } else {
                     let mut extensions = super::STANDARD_EXTENSIONS.to_vec();
-                    extensions[7] =
-                        include_str!("instructions_fixtures/bootstrap-v11-browser-workflows.md");
+                    extensions[3] = super::V12_AGENT_MANAGEMENT;
+                    if version == 11 {
+                        extensions[7] = include_str!(
+                            "instructions_fixtures/bootstrap-v11-browser-workflows.md"
+                        );
+                    }
                     super::render_instructions_with_extensions(
                         Path::new(filename),
                         &role,
                         &extensions,
                     )
                     .replacen(
-                        "choruz-bootstrap-version: 12",
-                        "choruz-bootstrap-version: 11",
+                        &format!(
+                            "choruz-bootstrap-version: {}",
+                            super::BOOTSTRAP_INSTRUCTION_VERSION
+                        ),
+                        &format!("choruz-bootstrap-version: {version}"),
                         1,
                     )
                 };
@@ -1278,6 +1297,11 @@ mod tests {
                     canonical_instructions(filename, &role)
                 );
                 assert!(read_string(&path).await.contains("browser_workflow_status"));
+                assert!(
+                    read_string(&path)
+                        .await
+                        .contains("Do not request these drivers unless that plugin is enabled")
+                );
                 assert!(
                     read_string(&path)
                         .await

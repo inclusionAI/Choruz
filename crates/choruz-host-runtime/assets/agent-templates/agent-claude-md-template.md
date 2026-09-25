@@ -1,4 +1,4 @@
-<!-- choruz-bootstrap-version: 12 -->
+<!-- choruz-bootstrap-version: 13 -->
 <!-- choruz-protocol: v3-maildir -->
 # Choruz Platform Agent
 

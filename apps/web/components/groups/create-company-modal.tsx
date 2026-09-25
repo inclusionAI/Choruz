@@ -6,20 +6,21 @@ import { FolderPickerModal } from "../workspace/folder-picker-modal";
 import { buildManagerInstructions } from "../../lib/agents/ai-manager-instructions";
 import type { Company } from "../../lib/api/choruz-types";
 import type { DriverId } from "../../lib/groups/team-templates";
-import { LOCAL_TERMINAL_DRIVER_IDS } from "../../lib/drivers/driver-registry";
+import { LOCAL_TERMINAL_DRIVER_IDS, enabledDriverIds } from "../../lib/drivers/driver-registry";
 import { DriverSelect } from "../agents/driver-select";
 import { Modal } from "../ui/modal";
 import { DriverModelPicker } from "../agents/driver-model-picker";
 import { transportFetch } from "../../lib/api/transport";
 
 type Props = {
+  driverPluginIds: ReadonlySet<string>;
   principalId: string;
   sessionToken: string;
   onClose: () => void;
   onCreated: (company: Company) => void;
 };
 
-export function CreateCompanyModal({ principalId, sessionToken, onClose, onCreated }: Props) {
+export function CreateCompanyModal({ principalId, sessionToken, onClose, onCreated, driverPluginIds }: Props) {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [folderPath, setFolderPath] = useState("");
@@ -200,7 +201,7 @@ export function CreateCompanyModal({ principalId, sessionToken, onClose, onCreat
                   setManagerDriver(driver);
                   setManagerModel("");
                 }}
-                drivers={LOCAL_TERMINAL_DRIVER_IDS}
+                drivers={enabledDriverIds(LOCAL_TERMINAL_DRIVER_IDS, driverPluginIds)}
               />
             </label>
           )}

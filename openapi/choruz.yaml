@@ -2671,6 +2671,8 @@ paths:
       responses:
         "200":
           description: Workspace sessions imported
+        "404":
+          description: The pi or opencode plugin is disabled on the controller
         "409":
           description: Session belongs to another active company or owner, has an in-flight turn, or its previous terminal has not stopped
   /v1/workspace-sessions/scan:
@@ -2680,6 +2682,8 @@ paths:
       responses:
         "200":
           description: Workspace session scan result
+        "404":
+          description: The pi or opencode plugin is disabled on the controller, or the workspace does not exist
 components:
   securitySchemes:
     RuntimeHostToken:

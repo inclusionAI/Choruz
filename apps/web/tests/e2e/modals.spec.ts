@@ -146,16 +146,17 @@ test.describe("Modals (Create Agent, Create Group, Create Company)", () => {
     await page.getByText("Create Agent").click();
     const driverSelect = page.getByLabel("Driver");
     await expect(driverSelect).toBeVisible();
-    await expect(driverSelect.locator("option")).toHaveCount(7);
     await expect(driverSelect.locator('option[value="codex_terminal"]')).toHaveText("Codex");
     await expect(driverSelect.locator('option[value="codex_exec"]')).toHaveCount(0);
     for (const driver of [
-      "pi_terminal",
       "grok_terminal",
-      "opencode_terminal",
       "mathcode_terminal",
     ]) {
       await expect(driverSelect.locator(`option[value="${driver}"]`)).toHaveCount(1);
+    }
+    for (const plugin of ["pi", "opencode"]) {
+      const enabled = process.env.CHORUZ_PLUGINS?.split(",").map((id) => id.trim()).includes(plugin) ?? false;
+      await expect(driverSelect.locator(`option[value="${plugin}_terminal"]`)).toHaveCount(enabled ? 1 : 0);
     }
   });
 

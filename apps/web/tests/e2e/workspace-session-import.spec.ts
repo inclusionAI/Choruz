@@ -10,6 +10,8 @@ import { runtimeTest } from "../fixtures/runtime-device";
 
 import { API_BASE, gotoDashboard, login } from "../fixtures/auth";
 
+const optionalPlugins = new Set(process.env.CHORUZ_PLUGINS?.split(",").map((id) => id.trim()) ?? []);
+
 runtimeTest("imports and resumes default and isolated account sessions on the selected device", async ({ page, device }) => {
   test.setTimeout(90_000);
   const { home, company, host, headers } = device;
@@ -144,7 +146,7 @@ test("hiding an inactive imported tab closes it and importing restores the same 
       await expect(folder).toHaveValue(homedir());
       await folder.fill(workspace);
       await expect(folder).toHaveValue(workspace);
-      for (const harness of ["Codex", "Pi", "Grok", "OpenCode"]) await modal.getByLabel(harness, { exact: true }).uncheck();
+      for (const harness of ["Codex", "Grok", ...(optionalPlugins.has("pi") ? ["Pi"] : []), ...(optionalPlugins.has("opencode") ? ["OpenCode"] : [])]) await modal.getByLabel(harness, { exact: true }).uncheck();
       await modal.getByRole("button", { name: "Scan", exact: true }).click();
       await expect(modal.getByText(title, { exact: true })).toBeVisible();
       await expect(modal.getByText(otherTitle, { exact: true })).toBeVisible();
@@ -204,6 +206,7 @@ const SESSIONS = [
   ["grok", "grok-1", "/projects/infra", "Grok Infra"],
   ["open_code", "opencode-1", "/projects/tools", "OpenCode Tools"],
 ] as const;
+const ENABLED_SESSIONS = SESSIONS.filter(([harness]) => harness === "pi" ? optionalPlugins.has("pi") : harness === "open_code" ? optionalPlugins.has("opencode") : true);
 
 test("imports nested sessions from every supported harness with their real workspaces", async ({
   page,
@@ -229,7 +232,7 @@ test("imports nested sessions from every supported harness with their real works
     const matchingSessions = request.workspace_path === ROOT
       ? SESSIONS.filter(([harness]) => request.harnesses.includes(harness))
       : [];
-    if (request.workspace_path === ROOT && request.harnesses.length === 4) {
+    if (request.workspace_path === ROOT && request.harnesses.length === ENABLED_SESSIONS.length - 1) {
       await new Promise((resolve) => setTimeout(resolve, 450));
     }
     await route.fulfill({
@@ -279,50 +282,39 @@ test("imports nested sessions from every supported harness with their real works
   expect(scanBodies).toHaveLength(0);
 
   await modal.getByRole("button", { name: "Scan", exact: true }).click();
-  await expect(modal.getByText("5 found · 0 selected · newest first")).toBeVisible();
+  await expect(modal.getByText(`${ENABLED_SESSIONS.length} found · 0 selected · newest first`)).toBeVisible();
   await expect.poll(() => scanBodies.some((body) => (
     body.workspace_path === ROOT
-      && body.harnesses.join(",") === "claude,codex,pi,grok,open_code"
+      && body.harnesses.join(",") === ENABLED_SESSIONS.map(([harness]) => harness).join(",")
   ))).toBe(true);
-  for (const [, , workspace, title] of SESSIONS) {
+  for (const [, , workspace, title] of ENABLED_SESSIONS) {
     await expect(modal.getByText(workspace.slice(ROOT.length + 1), { exact: true })).toBeVisible();
     await expect(modal.getByText(title, { exact: true })).toBeVisible();
   }
-  await expect(modal.locator(".workspace-session-row-title strong")).toHaveText([
-    "OpenCode Tools",
-    "Grok Infra",
-    "Pi Research",
-    "Codex Web",
-    "Claude API",
-  ]);
+  await expect(modal.locator(".workspace-session-row-title strong")).toHaveText([...ENABLED_SESSIONS].reverse().map(([, , , title]) => title));
 
   await modal.getByRole("button", { name: "Select all" }).click();
-  await expect(modal.getByText("5 found · 5 selected · newest first")).toBeVisible();
+  await expect(modal.getByText(`${ENABLED_SESSIONS.length} found · ${ENABLED_SESSIONS.length} selected · newest first`)).toBeVisible();
 
-  await modal.getByLabel("OpenCode", { exact: true }).uncheck();
+  await modal.getByLabel("Grok", { exact: true }).uncheck();
   await expect(modal.getByText("Ready to scan", { exact: true })).toBeVisible();
-  await expect(modal.getByRole("button", { name: "Import 5 sessions" })).toHaveCount(0);
+  await expect(modal.getByRole("button", { name: `Import ${ENABLED_SESSIONS.length} sessions` })).toHaveCount(0);
   await modal.getByRole("button", { name: "Scan", exact: true }).click();
-  await expect(modal.getByText("4 found · 0 selected · newest first")).toBeVisible();
-  await expect.poll(() => scanBodies.at(-1)?.harnesses).toEqual([
-    "claude",
-    "codex",
-    "pi",
-    "grok",
-  ]);
-  await modal.getByLabel("OpenCode", { exact: true }).check();
+  await expect(modal.getByText(`${ENABLED_SESSIONS.length - 1} found · 0 selected · newest first`)).toBeVisible();
+  await expect.poll(() => scanBodies.at(-1)?.harnesses).toEqual(ENABLED_SESSIONS.map(([harness]) => harness).filter((harness) => harness !== "grok"));
+  await modal.getByLabel("Grok", { exact: true }).check();
   await modal.getByRole("button", { name: "Scan", exact: true }).click();
-  await expect(modal.getByText("5 found · 0 selected · newest first")).toBeVisible();
+  await expect(modal.getByText(`${ENABLED_SESSIONS.length} found · 0 selected · newest first`)).toBeVisible();
   await expect(modal.getByRole("button", { name: "Import 0 sessions" })).toBeDisabled();
   await modal.getByRole("button", { name: "Select all" }).click();
-  await expect(modal.getByText("5 found · 5 selected · newest first")).toBeVisible();
+  await expect(modal.getByText(`${ENABLED_SESSIONS.length} found · ${ENABLED_SESSIONS.length} selected · newest first`)).toBeVisible();
 
-  await modal.getByRole("button", { name: "Import 5 sessions" }).click();
+  await modal.getByRole("button", { name: `Import ${ENABLED_SESSIONS.length} sessions` }).click();
   await expect.poll(() => importBody).not.toBeNull();
   expect(importBody).toMatchObject({
     company_id: expect.any(String),
     workspace_path: ROOT,
-    sessions: SESSIONS.map(([harness, native_session_id, workspace_path]) => ({
+    sessions: ENABLED_SESSIONS.map(([harness, native_session_id, workspace_path]) => ({
       harness,
       native_session_id,
       workspace_path,

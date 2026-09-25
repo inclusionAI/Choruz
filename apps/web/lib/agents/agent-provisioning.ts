@@ -11,6 +11,7 @@ import {
 import { persistAgentToken as defaultPersistAgentToken } from "./agent-tokens";
 import {
   createAgent,
+  ApiRequestError,
   apiBaseUrl,
   createDirectConversation,
   createRuntimeBinding,
@@ -29,6 +30,8 @@ import {
 import type { InstructionStatus, TemplateVersion } from "../groups/team-templates";
 import { validateModelId } from "../drivers/driver-model-validation";
 import { defaultHarnessAccountForLaunch, getHarnessAccount, type HarnessAccount } from "./harness-accounts";
+import { DRIVER_PLUGIN_IDS, type DriverId } from "../drivers/driver-registry";
+import { serverPluginEnabled } from "../../plugins/server-plugin";
 
 export type AgentProvisioningDriverType =
   | "claude_terminal"
@@ -446,6 +449,11 @@ export async function provisionAgent(
 ): Promise<ProvisionResponse> {
   const completedSteps: Partial<Record<AgentProvisioningStepName, JsonValue>> = {};
   const body = input.body;
+  // Group jobs and internal provisioning share this boundary with the HTTP route.
+  const plugin = DRIVER_PLUGIN_IDS[body.driver_type as DriverId];
+  if (plugin && !serverPluginEnabled(plugin)) {
+    throw new ApiRequestError(404, `plugin '${plugin}' is disabled`);
+  }
   const agentName = body.name.trim();
   const isWebhookDriver = body.driver_type === "webhook_agent";
   const harnessAccount = await resolveHarnessAccount(input.sessionToken, body, deps);

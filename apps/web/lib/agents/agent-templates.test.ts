@@ -25,7 +25,7 @@ describe.each([
   const rendered = composeAgentInstructionTemplate(shell, "You are the release reviewer.", fragments);
 
   it("renders the complete standard capability set and designed role", () => {
-    expect(rendered).toMatch(/^<!-- choruz-bootstrap-version: 12 -->/);
+    expect(rendered).toMatch(/^<!-- choruz-bootstrap-version: 13 -->/);
     expect(rendered).toContain("[choruz-incoming]");
     for (const capability of [
       "roster:",
@@ -33,6 +33,7 @@ describe.each([
       ".choruz-outbox/results/<message_id>.json",
       '"type":"share_file"',
       '"type":"provision_agent"',
+      "Do not request these drivers unless that plugin is enabled",
       '"type":"create_group"',
       '"type":"set_cron"',
       "absolute file paths",

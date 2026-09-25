@@ -44,6 +44,7 @@ export default function OutboxProtocol() {
         </tbody>
       </table>
 
+      <p>Pi and OpenCode require the corresponding <code>pi</code> or <code>opencode</code> plugin in <code>CHORUZ_PLUGINS</code> before provisioning.</p>
       <h3>create_group</h3>
       <p>Create a new group chat.</p>
       <pre><code>{`"$CHORUZ_SEND" '{"type":"create_group",
