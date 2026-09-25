@@ -61,17 +61,23 @@ export const LOCAL_TERMINAL_DRIVER_IDS: DriverId[] = [
   "opencode_terminal",
 ];
 
-/** Drivers a user can pick when creating a single agent. */
-export const CREATABLE_AGENT_DRIVER_IDS: readonly DriverId[] = [
-  ...LOCAL_TERMINAL_DRIVER_IDS,
-  "webhook_agent",
-];
+export const DRIVER_PLUGIN_IDS: Partial<Record<DriverId, string>> = {
+  pi_terminal: "pi",
+  opencode_terminal: "opencode",
+  mathcode_terminal: "mathcode",
+};
 
-/** MathCode is supplied by the opt-in mathcode plugin, not the core driver set. */
-export function creatableAgentDriverIds(mathcodeEnabled: boolean): readonly DriverId[] {
-  return mathcodeEnabled
-    ? [...LOCAL_TERMINAL_DRIVER_IDS, "mathcode_terminal", "webhook_agent"]
-    : CREATABLE_AGENT_DRIVER_IDS;
+export function enabledDriverIds(drivers: readonly DriverId[], pluginIds: ReadonlySet<string>): DriverId[] {
+  return drivers.filter((driver) => {
+    const plugin = DRIVER_PLUGIN_IDS[driver];
+    return !plugin || pluginIds.has(plugin);
+  });
+}
+
+/** Plugin gating affects new agents, not the identity of existing terminal sessions. */
+export function creatableAgentDriverIds(pluginIds: ReadonlySet<string>): readonly DriverId[] {
+  const drivers: DriverId[] = [...LOCAL_TERMINAL_DRIVER_IDS, "mathcode_terminal", "webhook_agent"];
+  return enabledDriverIds(drivers, pluginIds);
 }
 
 const LOCAL_TERMINAL_DRIVER_ID_SET = new Set<string>(LOCAL_TERMINAL_DRIVER_IDS);

@@ -44,7 +44,7 @@ import { DriverSelect } from "../agents/driver-select";
 import { PathPicker } from "../workspace/path-picker";
 import { SetupInputField } from "./setup-input-field";
 import { StepTabs } from "./step-tabs";
-import { driverDisplayName } from "../../lib/drivers/driver-registry";
+import { driverDisplayName, enabledDriverIds } from "../../lib/drivers/driver-registry";
 import { DriverModelPicker } from "../agents/driver-model-picker";
 import { HarnessAccountPicker } from "../agents/harness-account-picker";
 
@@ -78,6 +78,7 @@ export type CreateGroupModalProps = {
   onCreated: (conversationId: string) => void;
   refreshSnapshot: () => Promise<void>;
   agentSkillsEnabled: boolean;
+  driverPluginIds: ReadonlySet<string>;
   /** The company's switch: when off, each new role uses the login its device already has. */
   multiHarnessAccounts: boolean;
 };
@@ -102,8 +103,10 @@ export function CreateGroupModal({
   onCreated,
   refreshSnapshot,
   agentSkillsEnabled,
+  driverPluginIds,
   multiHarnessAccounts,
 }: CreateGroupModalProps) {
+  const creatableDrivers = enabledDriverIds(GROUP_TEMPLATE_DRIVER_IDS, driverPluginIds);
   const groupNameRef = useRef<HTMLInputElement>(null);
   const [step, setStep] = useState<"setup" | "review" | "progress">("setup");
   const [selectedGroupTemplateId, setSelectedGroupTemplateId] = useState("");
@@ -730,7 +733,7 @@ export function CreateGroupModal({
                     onChange={(driver) =>
                       updateGroupDraft((draft) => applyGroupDefaultDriver(draft, driver))
                     }
-                    drivers={GROUP_TEMPLATE_DRIVER_IDS}
+                    drivers={creatableDrivers}
                   />
                 </label>
 
@@ -793,7 +796,7 @@ export function CreateGroupModal({
                                   harnessAccountModels: [],
                                   model: "",
                                 })}
-                                drivers={GROUP_TEMPLATE_DRIVER_IDS}
+                                drivers={creatableDrivers}
                               />
                             </label>
                             {multiHarnessAccounts ? (

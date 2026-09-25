@@ -43,7 +43,13 @@ pub(crate) async fn create_operation(
     drop(client);
     require_company_access(&headers, &state, &company_id).await?;
     let mut request = host_request(&payload.kind, payload.request)?;
-    if let HostRequest::ScanSessions { accounts, .. } = &mut request {
+    if let HostRequest::ScanSessions {
+        accounts,
+        harnesses,
+        ..
+    } = &mut request
+    {
+        crate::handlers_workspace_sessions::require_session_plugins(harnesses.iter().copied())?;
         *accounts = crate::handlers_workspace_sessions::session_accounts(
             &state,
             Some(&company_id),

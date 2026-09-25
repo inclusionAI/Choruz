@@ -48,7 +48,7 @@ export type CreateAgentModalProps = {
   onCreated: (conversationId: string) => void;
   refreshSnapshot: () => Promise<void>;
   agentSkillsEnabled: boolean;
-  mathcodeEnabled: boolean;
+  driverPluginIds: ReadonlySet<string>;
   /** The company's switch: when off, the Agent uses the login its device already has. */
   multiHarnessAccounts: boolean;
 };
@@ -69,7 +69,7 @@ export function CreateAgentModal({
   onCreated,
   refreshSnapshot,
   agentSkillsEnabled,
-  mathcodeEnabled,
+  driverPluginIds,
   multiHarnessAccounts,
 }: CreateAgentModalProps) {
   const [step, setStep] = useState<"form" | "review">("form");
@@ -115,7 +115,7 @@ export function CreateAgentModal({
     [selectedRoleTemplateId],
   );
   const roleTemplateGroups = useMemo(() => groupedRoleTemplates(), []);
-  const creatableDrivers = useMemo(() => creatableAgentDriverIds(mathcodeEnabled), [mathcodeEnabled]);
+  const creatableDrivers = useMemo(() => creatableAgentDriverIds(driverPluginIds), [driverPluginIds]);
   const workspaceMode: CreateAgentWorkspaceMode = newAgentUseCustomPath
     ? "custom"
     : "generated";

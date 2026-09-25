@@ -58,7 +58,7 @@ Pi Agent for the reviewer."`}</code></pre>
         <li><strong>Grok Build</strong> (<code>grok_terminal</code>)</li>
         <li><strong>OpenCode</strong> (<code>opencode_terminal</code>)</li>
       </ul>
-      <p>The AI Manager can create agents with <em>any</em> driver, regardless of its own driver.</p>
+      <p>The AI Manager can create agents with any enabled driver, regardless of its own driver. Pi and OpenCode require the corresponding <code>pi</code> or <code>opencode</code> plugin in <code>CHORUZ_PLUGINS</code>.</p>
 
       <div className="docs-pager">
         <Link href="/docs/agents/sub-agents">

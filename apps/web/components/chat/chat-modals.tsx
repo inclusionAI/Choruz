@@ -34,7 +34,7 @@ export type ChatModalsProps = {
   runtimeHosts: RuntimeHost[];
   workspaceGitEnabled: boolean;
   agentSkillsEnabled: boolean;
-  mathcodeEnabled: boolean;
+  driverPluginIds: ReadonlySet<string>;
   multiHarnessAccounts: boolean;
   onMultiHarnessAccountsChange: (enabled: boolean) => Promise<void>;
   onCloseDetail: () => void;
@@ -88,7 +88,7 @@ export function ChatModals({
   runtimeHosts,
   workspaceGitEnabled,
   agentSkillsEnabled,
-  mathcodeEnabled,
+  driverPluginIds,
   multiHarnessAccounts,
   onMultiHarnessAccountsChange,
   onCloseDetail,
@@ -160,6 +160,7 @@ export function ChatModals({
       {/* ---- Create group modal ---- */}
       {showCreateGroup && (
         <CreateGroupModal
+          driverPluginIds={driverPluginIds}
           principalId={principal.id}
           sessionToken={sessionToken}
           agents={agents}
@@ -182,7 +183,7 @@ export function ChatModals({
           onCreated={onCreatedAgent}
           refreshSnapshot={refreshSnapshot}
           agentSkillsEnabled={agentSkillsEnabled}
-          mathcodeEnabled={mathcodeEnabled}
+          driverPluginIds={driverPluginIds}
           multiHarnessAccounts={multiHarnessAccounts}
         />
       )}
@@ -200,6 +201,7 @@ export function ChatModals({
       {/* ---- Create company modal ---- */}
       {showCreateCompany && (
         <CreateCompanyModal
+          driverPluginIds={driverPluginIds}
           principalId={principal.id}
           sessionToken={sessionToken}
           onClose={onCloseCreateCompany}

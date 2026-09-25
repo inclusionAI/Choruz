@@ -5,9 +5,9 @@ const drivers = [
   ["claude_print", "Claude Code (headless)", "claude --print", "CLAUDE.md"],
   ["codex_terminal", "OpenAI Codex", "codex", "AGENTS.md"],
   ["codex_exec", "OpenAI Codex (headless)", "codex exec", "AGENTS.md"],
-  ["pi_terminal", "Pi Agent", "pi", "AGENTS.md"],
+  ["pi_terminal", "Pi Agent (plugin)", "pi", "AGENTS.md"],
   ["grok_terminal", "Grok Build", "grok", "AGENTS.md"],
-  ["opencode_terminal", "OpenCode", "opencode", "AGENTS.md"],
+  ["opencode_terminal", "OpenCode (plugin)", "opencode", "AGENTS.md"],
   ["mathcode_terminal", "MathCode (plugin)", "mathcode", "AGENTS.md"],
 ] as const;
 
@@ -51,6 +51,7 @@ export default function Page() {
       </div>
 
       <h2>Harness Accounts</h2>
+      <p>Pi Agent and OpenCode are optional plugins. Install the corresponding CLI on the execution device, add <code>pi</code> or <code>opencode</code> to the controller&apos;s <code>CHORUZ_PLUGINS</code> allowlist, and restart Choruz to enable creation and session import. Existing Agents remain usable when a plugin is disabled.</p>
       <p>By default a Claude Code or Codex Agent uses the login its computer already has. Open <strong>Harness Accounts</strong> from the Actions menu to see that login&apos;s plan and exact usage, verify it again, or sign in when it has expired. Choruz stores the account label, health, model catalog, and exact quota snapshot; credentials remain in that computer&apos;s local profile directory.</p>
       <p>Turn on <strong>Allow multiple accounts in this company</strong> in the same dialog to sign in to more accounts on a device and choose one per Agent in Create Agent and Create Group. An Agent without a choice still uses the device&apos;s own login. Removing an account hides it in Choruz and leaves the login on the computer untouched.</p>
       <p>The Agent keeps its account selection in the runtime binding. Direct-chat headers and group messages show both the machine and account label. If login, identity, model discovery, or exact quota probing fails, the account remains unavailable instead of falling back to another login.</p>

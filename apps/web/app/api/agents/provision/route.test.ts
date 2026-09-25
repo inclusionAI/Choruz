@@ -228,7 +228,7 @@ describe("/api/agents/provision", () => {
     expect(provisionAgent).not.toHaveBeenCalled();
   });
 
-  it("rejects MathCode provisioning when the mathcode plugin is disabled", async () => {
+  it.each(["mathcode", "pi", "opencode"])("rejects %s provisioning when its plugin is disabled", async (plugin) => {
     vi.stubEnv("CHORUZ_PLUGINS", "workspace-git,agent-skills");
     vi.mocked(requireAuth).mockResolvedValue({
       token: "session-token",
@@ -244,14 +244,30 @@ describe("/api/agents/provision", () => {
       method: "POST",
       body: JSON.stringify({
         name: "Math Agent",
-        driver_type: "mathcode_terminal",
+        driver_type: `${plugin}_terminal`,
         instructions: "Formalize and prove the theorem.",
       }),
     }));
 
     expect(response.status).toBe(404);
-    await expect(response.json()).resolves.toEqual({ error: "plugin 'mathcode' is disabled" });
+    await expect(response.json()).resolves.toEqual({ error: `plugin '${plugin}' is disabled` });
     expect(provisionAgent).not.toHaveBeenCalled();
+  });
+
+  it.each(["pi", "opencode"])("enables %s provisioning only through explicit opt-in", async (plugin) => {
+    vi.mocked(requireAuth).mockResolvedValue({ token: "session-token", claims: {
+      principal_id: "human-1", workspace_id: "workspace-1", display_name: "Alice", expires_at_epoch_s: 1,
+    } });
+    vi.mocked(provisionAgent).mockResolvedValue({} as Awaited<ReturnType<typeof provisionAgent>>);
+    const request = () => new NextRequest("http://localhost/api/agents/provision", {
+      method: "POST", body: JSON.stringify({ name: "Optional helper", driver_type: `${plugin}_terminal`, instructions: "Help with tasks." }),
+    });
+    vi.stubEnv("CHORUZ_PLUGINS", undefined);
+    expect((await POST(request())).status).toBe(404);
+    expect(provisionAgent).not.toHaveBeenCalled();
+    vi.stubEnv("CHORUZ_PLUGINS", plugin);
+    expect((await POST(request())).status).toBe(201);
+    expect(provisionAgent).toHaveBeenCalledWith(expect.objectContaining({ body: expect.objectContaining({ driver_type: `${plugin}_terminal` }) }));
   });
 
   it("rejects channel visibility on the public provisioning route", async () => {

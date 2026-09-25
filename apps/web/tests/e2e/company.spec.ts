@@ -150,7 +150,8 @@ test.describe("Company management", () => {
       await expect(dialog.getByLabel("Include AI Manager")).toBeChecked();
       const managerDriver = dialog.getByLabel("Manager Driver");
       for (const driver of ["pi_terminal", "grok_terminal", "opencode_terminal"]) {
-        await expect(managerDriver.locator(`option[value="${driver}"]`)).toHaveCount(1);
+        const enabled = driver === "grok_terminal" || (process.env.CHORUZ_PLUGINS?.split(",").map((id) => id.trim()).includes(driver.replace("_terminal", "")) ?? false);
+        await expect(managerDriver.locator(`option[value="${driver}"]`)).toHaveCount(enabled ? 1 : 0);
       }
       await managerDriver.selectOption("codex_terminal");
       const companyResponsePromise = page.waitForResponse((response) =>

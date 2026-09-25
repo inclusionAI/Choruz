@@ -4,7 +4,7 @@ Choruz ships product features on top of a small communication/runtime core as bu
 
 ## Configuration
 
-`CHORUZ_PLUGINS` is a comma-separated allowlist of built-in plugin IDs. When it is unset, all built-ins are enabled. Set it to an empty string to start the core product without plugins.
+`CHORUZ_PLUGINS` is a comma-separated allowlist of built-in plugin IDs. When it is unset, the default plugins are enabled; `pi` and `opencode` require explicit opt-in. Set it to an empty string to start the core product without plugins. Use the same allowlist for the web and API processes.
 
 ```bash
 CHORUZ_PLUGINS=kanban,pixel-world,workspace-git,remote-ssh,agent-skills,mathcode pnpm dev:all
@@ -22,8 +22,12 @@ The current built-ins are:
 | `remote-ssh` | SSH host discovery, tunnel, and remote Choruz connection routes | Servers sidebar action and connection modal |
 | `agent-skills` | Advertises authorized agent-workspace access | Skills detail tab, local skill management, and provisioning controls |
 | `mathcode` | Advertises the MathCode terminal-agent driver | Enables MathCode in Create Agent; the existing availability guard requires a local `mathcode` CLI |
+| `pi` | Advertises the Pi Agent driver and allows session import | Enables Pi Agent in Create Agent and Pi in Import Sessions |
+| `opencode` | Advertises the OpenCode driver and allows session import | Enables OpenCode in Create Agent and Import Sessions |
 
 `mathcode` creates a new MathCode agent with the installed [`mathcode`](https://github.com/math-ai-org/mathcode) CLI. Install MathCode with its own setup procedure before selecting it. The plugin does not scan or import MathCode's historical sessions because MathCode does not publish a stable session-catalog contract for that purpose.
+
+To use Pi or OpenCode, install its CLI on the execution device and include `pi` or `opencode` in the controller's `CHORUZ_PLUGINS` allowlist alongside the other plugins you want to retain. Restart the web and API processes after changing the allowlist. Enabling the plugin does not install its CLI. Disabling it removes new-agent and import choices and rejects those provisioning and session-import requests; existing Agents, runtime bindings, transcripts, and account data remain intact and existing sessions can still run. MathCode's default remains unchanged.
 
 ## Contract And Registration
 

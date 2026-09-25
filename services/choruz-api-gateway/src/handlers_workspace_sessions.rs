@@ -118,12 +118,33 @@ pub(crate) struct ImportWorkspaceSessionsResponse {
     imported: Vec<ImportedWorkspaceSession>,
 }
 
+pub(crate) fn require_session_plugins(
+    harnesses: impl Iterator<Item = HarnessKind>,
+) -> Result<(), ApiError> {
+    for harness in harnesses {
+        let plugin = match harness {
+            HarnessKind::Pi => Some(choruz_common::plugins::PI_PLUGIN_ID),
+            HarnessKind::OpenCode => Some(choruz_common::plugins::OPENCODE_PLUGIN_ID),
+            _ => None,
+        };
+        if let Some(plugin) = plugin {
+            if !choruz_common::plugins::plugin_enabled(plugin) {
+                return Err(ApiError(AppError::NotFound(format!(
+                    "plugin '{plugin}' is disabled; include it in CHORUZ_PLUGINS"
+                ))));
+            }
+        }
+    }
+    Ok(())
+}
+
 pub(crate) async fn scan_workspace_sessions(
     headers: HeaderMap,
     State(state): State<ApiState>,
     Json(payload): Json<ScanWorkspaceSessionsRequest>,
 ) -> Result<Json<SessionScanResult>, ApiError> {
     require_human_operator(&headers, &state).await?;
+    require_session_plugins(payload.harnesses.iter().copied())?;
     if payload.harnesses.is_empty() {
         return Err(ApiError(AppError::Validation(
             "select at least one harness".into(),
@@ -174,6 +195,7 @@ pub(crate) async fn import_workspace_sessions(
     Json(payload): Json<ImportWorkspaceSessionsRequest>,
 ) -> Result<Json<ImportWorkspaceSessionsResponse>, ApiError> {
     let operator = require_human_operator(&headers, &state).await?;
+    require_session_plugins(payload.sessions.iter().map(|selection| selection.harness))?;
     if payload.sessions.is_empty() || payload.sessions.len() > 100 {
         return Err(ApiError(AppError::Validation(
             "select between 1 and 100 sessions".into(),

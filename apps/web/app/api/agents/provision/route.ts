@@ -15,6 +15,7 @@ import {
   withProvisioningIdempotency,
 } from "../../../../lib/agents/agent-provisioning-idempotency";
 import { serverPluginEnabled } from "../../../../plugins/server-plugin";
+import { DRIVER_PLUGIN_IDS, type DriverId } from "../../../../lib/drivers/driver-registry";
 
 export async function POST(request: NextRequest) {
   const auth = await requireAuth(request);
@@ -45,9 +46,10 @@ export async function POST(request: NextRequest) {
       { status: 404 },
     );
   }
-  if (body.driver_type === "mathcode_terminal" && !serverPluginEnabled("mathcode")) {
+  const driverPlugin = DRIVER_PLUGIN_IDS[body.driver_type as DriverId];
+  if (driverPlugin && !serverPluginEnabled(driverPlugin)) {
     return NextResponse.json(
-      { error: "plugin 'mathcode' is disabled" },
+      { error: `plugin '${driverPlugin}' is disabled` },
       { status: 404 },
     );
   }

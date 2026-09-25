@@ -15,15 +15,16 @@ import { Modal } from "../ui/modal";
 import { FolderPickerModal } from "../workspace/folder-picker-modal";
 import { PathPicker } from "../workspace/path-picker";
 
-const HARNESSES: Array<{ id: HarnessKind; label: string }> = [
+const HARNESSES: Array<{ id: HarnessKind; label: string; plugin?: string }> = [
   { id: "claude", label: "Claude Code" },
   { id: "codex", label: "Codex" },
-  { id: "pi", label: "Pi" },
+  { id: "pi", label: "Pi", plugin: "pi" },
   { id: "grok", label: "Grok" },
-  { id: "open_code", label: "OpenCode" },
+  { id: "open_code", label: "OpenCode", plugin: "opencode" },
 ];
 
 type Props = {
+  driverPluginIds: ReadonlySet<string>;
   sessionToken: string;
   activeCompanyId: string | null;
   onClose: () => void;
@@ -46,16 +47,18 @@ function workspaceName(path: string) {
 }
 
 export function ImportWorkspaceSessionsModal({
+  driverPluginIds,
   sessionToken,
   activeCompanyId,
   onClose,
   onImported,
 }: Props) {
+  const availableHarnesses = HARNESSES.filter((harness) => !harness.plugin || driverPluginIds.has(harness.plugin));
   const scanRequestRef = useRef<AbortController | null>(null);
   const [workspacePath, setWorkspacePath] = useState("");
   const [showFolderPicker, setShowFolderPicker] = useState(false);
   const [harnesses, setHarnesses] = useState<Set<HarnessKind>>(
-    () => new Set(HARNESSES.map((harness) => harness.id)),
+    () => new Set(availableHarnesses.map((harness) => harness.id)),
   );
   const [sessions, setSessions] = useState<NativeSessionSummary[] | null>(null);
   const [canonicalWorkspace, setCanonicalWorkspace] = useState<string | null>(null);
@@ -170,7 +173,7 @@ export function ImportWorkspaceSessionsModal({
     setSessions(null);
     setCanonicalWorkspace(null);
     setSelected(new Set());
-    void scan(workspacePath.trim(), [...harnesses]);
+    void scan(workspacePath.trim(), availableHarnesses.filter((harness) => harnesses.has(harness.id)).map((harness) => harness.id));
   };
 
   const importSelected = async () => {
@@ -258,7 +261,7 @@ export function ImportWorkspaceSessionsModal({
           </div>
           <fieldset className="workspace-session-harnesses">
             <legend>Harnesses</legend>
-            {HARNESSES.map((harness) => (
+            {availableHarnesses.map((harness) => (
               <label key={harness.id}>
                 <input
                   type="checkbox"

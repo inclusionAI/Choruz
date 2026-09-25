@@ -52,8 +52,10 @@ describe("buildManagerInstructions", () => {
     expect(md).toContain("claude_terminal");
     expect(md).toContain("codex_terminal");
     expect(md).toContain("pi_terminal");
+    expect(md).toContain("requires the pi plugin in CHORUZ_PLUGINS");
     expect(md).toContain("grok_terminal");
     expect(md).toContain("opencode_terminal");
+    expect(md).toContain("requires the opencode plugin in CHORUZ_PLUGINS");
     expect(md).not.toContain('"gemini_terminal"');
   });
 

@@ -59,7 +59,9 @@ test("remote creation reads B's harness and writes B's custom workspace through 
   const company = await createCompany(page, session.token, session.principal.id, uniqueName("device-owner"));
   const home = await realpath(await mkdtemp(path.join(tmpdir(), "choruz-device-b-")));
   const workspace = path.join(home, "project");
-  const binary = path.join(home, "opencode");
+  // The fixture tests device ownership under both default and optional-plugin configurations.
+  const harness = process.env.CHORUZ_PLUGINS?.split(",").map((id) => id.trim()).includes("opencode") ? "opencode" : "grok";
+  const binary = path.join(home, harness);
   const config = path.join(home, "connector.json");
   const connector = path.resolve("../../target/debug/choruz-connector");
   const headers = { Authorization: `Bearer ${session.token}` };
@@ -68,7 +70,7 @@ test("remote creation reads B's harness and writes B's custom workspace through 
     await mkdir(workspace);
     // Only the external CLI is a deterministic substitute. Pairing, Web/API
     // validation, host dispatch, workspace writes and binding storage are real.
-    await writeFile(binary, '#!/bin/sh\ncase "$1" in\n--version) echo device-b-cli;;\nmodels) echo fixture/device-b-model;;\n*) exit 0;;\nesac\n', { mode: 0o700 });
+    await writeFile(binary, '#!/bin/sh\ncase "$1" in\n--version) echo device-b-cli;;\nmodels) printf "fixture/device-b-model\\nAvailable models:\\n- fixture/device-b-model\\n";;\n*) exit 0;;\nesac\n', { mode: 0o700 });
     await mkdir(path.join(home, ".local/bin"), { recursive: true });
     await writeFile(path.join(home, ".local/bin/bsk"), '#!/bin/sh\ncase "$1" in\n--version) echo device-b-browser;;\ninstall-skill) mkdir -p "$HOME/.agents/skills/browser-skill"; echo device-b-skill > "$HOME/.agents/skills/browser-skill/SKILL.md";;\ndoctor) echo \'[{"name":"Browser extension on B","ok":false,"hint":"Connect B browser"}]\'; exit 1;;\nesac\n', { mode: 0o700 });
     const pairing = await page.request.post(`${API_BASE}/v1/companies/${company.id}/runtime-host-pairings`, { headers });
@@ -78,11 +80,25 @@ test("remote creation reads B's harness and writes B's custom workspace through 
     expect(redeemed.ok()).toBeTruthy();
     const { host, host_token } = await redeemed.json();
     await writeFile(config, JSON.stringify({ api_url: API_BASE, host_id: host.id, host_name: host.name, host_token, max_concurrency: 1 }), { mode: 0o600 });
-    processB = spawn(connector, ["run", "--config", config], { env: { ...process.env, PATH: "/usr/bin:/bin", HOME: home, CHORUZ_FS_BROWSE_ROOTS: home, CHORUZ_OPENCODE_BINARY: binary }, stdio: "ignore" });
+    processB = spawn(connector, ["run", "--config", config], { env: { ...process.env, PATH: "/usr/bin:/bin", HOME: home, CHORUZ_FS_BROWSE_ROOTS: home, [`CHORUZ_${harness.toUpperCase()}_BINARY`]: binary }, stdio: "ignore" });
     await expect.poll(async () => {
       const response = await page.request.post(`${API_BASE}/v1/runtime-hosts/${host.id}/operations`, { headers, data: { kind: "filesystem.home" } });
       return response.ok() ? (await response.json()).home : null;
     }).toBe(home);
+
+    for (const [plugin, scanHarness] of [["pi", "pi"], ["opencode", "open_code"]]) {
+      const scan = await page.request.post(`${API_BASE}/v1/runtime-hosts/${host.id}/operations`, {
+        headers,
+        data: { kind: "workspace_sessions.scan", request: { workspace_path: workspace, harnesses: [scanHarness] } },
+      });
+      const enabled = process.env.CHORUZ_PLUGINS?.split(",").map((id) => id.trim()).includes(plugin);
+      expect(scan.status()).toBe(enabled ? 200 : 404);
+      if (enabled) {
+        expect((await scan.json()).sessions).toEqual([]);
+      } else {
+        expect(await scan.text()).toContain(`plugin '${plugin}' is disabled`);
+      }
+    }
 
     await gotoDashboard(page);
     await page.getByRole("button", { name: "Select company" }).click();
@@ -104,7 +120,7 @@ test("remote creation reads B's harness and writes B's custom workspace through 
     const modal = page.getByRole("dialog", { name: "Create Agent" });
     await modal.getByLabel("Agent name", { exact: true }).fill(uniqueName("device-owned-agent"));
     await modal.getByLabel("Runtime server").selectOption(host.id);
-    await modal.getByLabel("Driver", { exact: true }).selectOption("opencode_terminal");
+    await modal.getByLabel("Driver", { exact: true }).selectOption(`${harness}_terminal`);
     await expect(modal.locator('datalist option[value="fixture/device-b-model"]')).toHaveCount(1);
     await modal.getByLabel("Model", { exact: true }).fill("fixture/device-b-model");
     await modal.getByLabel("Custom workspace path").check();

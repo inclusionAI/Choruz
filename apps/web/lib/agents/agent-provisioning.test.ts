@@ -43,6 +43,7 @@ describe("provisionAgent", () => {
   const runtimeDirs: string[] = [];
 
   beforeEach(async () => {
+    vi.stubEnv("CHORUZ_PLUGINS", "agent-skills,mathcode,pi,opencode");
     const runtimeDir = await mkdtemp(path.join(tmpdir(), "choruz-agent-provisioning-"));
     runtimeDirs.push(runtimeDir);
     vi.stubEnv("CHORUZ_RUNTIME_DIR", runtimeDir);
@@ -59,6 +60,16 @@ describe("provisionAgent", () => {
     if (originalClaudeBinary === undefined) delete process.env.CHORUZ_CLAUDE_BINARY;
     else process.env.CHORUZ_CLAUDE_BINARY = originalClaudeBinary;
     await Promise.all(runtimeDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+  });
+
+  it.each(["pi_terminal", "opencode_terminal"] as const)("blocks internal %s creation before side effects without its plugin", async (driver) => {
+    vi.stubEnv("CHORUZ_PLUGINS", undefined);
+    const deps = fakeDeps({});
+    await expect(provisionAgent({ sessionToken: "session-token", actorId: "human-1", body: {
+      name: "Optional helper", driver_type: driver, instructions: "Help.",
+    } }, deps)).rejects.toMatchObject({ status: 404 });
+    expect(deps.createAgent).not.toHaveBeenCalled();
+    expect(deps.createRuntimeBinding).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -986,7 +997,7 @@ describe("buildInstructionsFromTemplate", () => {
   it("renders the claude template by default and substitutes user instructions", async () => {
     const rendered = await buildInstructionsFromTemplate("Helper", "Help with the task.");
     expect(rendered).toContain("Claude-compatible Choruz runtime");
-    expect(rendered).toMatch(/^<!-- choruz-bootstrap-version: 12 -->/);
+    expect(rendered).toMatch(/^<!-- choruz-bootstrap-version: 13 -->/);
     expect(rendered).toContain("<!-- choruz-role:start -->");
     expect(rendered).toContain("<!-- choruz-role:end -->");
     expect(rendered).not.toContain("{{AGENT_INSTRUCTIONS}}");
@@ -1004,7 +1015,7 @@ describe("buildInstructionsFromTemplate", () => {
       "codex_terminal",
     );
     expect(rendered).toContain("# Choruz Platform Agent");
-    expect(rendered).toMatch(/^<!-- choruz-bootstrap-version: 12 -->/);
+    expect(rendered).toMatch(/^<!-- choruz-bootstrap-version: 13 -->/);
     expect(rendered).toContain("<!-- choruz-role:start -->");
     expect(rendered).toContain("<!-- choruz-role:end -->");
     expect(rendered).toContain("AGENTS.md");

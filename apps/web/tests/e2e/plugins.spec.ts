@@ -15,7 +15,7 @@ test("Host manifests and Client contributions agree", async ({ page }) => {
   expect(response.ok()).toBeTruthy();
   const snapshot = await response.json() as { plugins: Array<{ id: string; version: string }> };
   expect(snapshot.plugins.map((plugin) => plugin.id)).toEqual(
-    ["kanban", "pixel-world", "workspace-git", "remote-ssh", "remote-control", "agent-skills", "mathcode"].filter((id) => configuredPluginIds.has(id)),
+    ["kanban", "pixel-world", "workspace-git", "remote-ssh", "remote-control", "agent-skills", "mathcode", "pi", "opencode"].filter((id) => configuredPluginIds.has(id)),
   );
   expect(snapshot.plugins.every((plugin) => plugin.version === "1")).toBeTruthy();
 
@@ -75,11 +75,58 @@ test("Host manifests and Client contributions agree", async ({ page }) => {
     await page.getByRole("button", { name: "Actions menu" }).click();
   }
   await createAgentAction.click();
+  const driverSelect = page.getByLabel("Driver", { exact: true });
+  for (const plugin of ["pi", "opencode"]) {
+    const enabled = configuredPluginIds.has(plugin);
+    await expect(driverSelect.locator(`option[value="${plugin}_terminal"]`)).toHaveCount(enabled ? 1 : 0);
+    const name = `${plugin}-plugin-${Date.now()}`;
+    const provision = await page.request.post(`${WEB_BASE}/api/agents/provision`, {
+      data: { name, driver_type: `${plugin}_terminal`, instructions: "Help with tasks." },
+    });
+    expect(provision.status(), await provision.text()).toBe(enabled ? 201 : 404);
+    const provisioned = await provision.json();
+    const consoleResponse = await page.request.get(`${API_BASE}/v1/console`, { headers: { Authorization: `Bearer ${token}` } });
+    const consoleSnapshot = await consoleResponse.json();
+    expect(consoleSnapshot.agents.some((agent: { name: string }) => agent.name === name)).toBe(enabled);
+
+    const scan = await page.request.post(`${API_BASE}/v1/workspace-sessions/scan`, {
+      headers: { Authorization: `Bearer ${token}` },
+      data: { workspace_path: enabled ? provisioned.workspace_path : "/does-not-exist-optional-plugin", harnesses: [plugin === "pi" ? "pi" : "open_code"] },
+    });
+    expect(scan.status(), await scan.text()).toBe(enabled ? 200 : 404);
+    if (enabled) expect(await scan.json()).toMatchObject({ workspace_path: provisioned.workspace_path, sessions: [] });
+    if (!enabled) expect(await scan.text()).toContain(`plugin '${plugin}' is disabled`);
+    if (!enabled) {
+      const imported = await page.request.post(`${API_BASE}/v1/workspace-sessions/import`, {
+        headers: { Authorization: `Bearer ${token}` },
+        data: { company_id: "unused", workspace_path: "/unused", sessions: [{ harness: plugin === "pi" ? "pi" : "open_code", native_session_id: "unused" }] },
+      });
+      expect(imported.status()).toBe(404);
+      expect(await imported.text()).toContain(`plugin '${plugin}' is disabled`);
+    }
+  }
   const provisioningSkills = page.locator(".create-agent-section-label").filter({ hasText: "Skills (optional)" });
   if (configuredPluginIds.has("agent-skills")) {
     await expect(provisioningSkills).toBeVisible();
   } else {
     await expect(provisioningSkills).toHaveCount(0);
+  }
+
+  await page.getByRole("button", { name: "Close", exact: true }).click();
+  await page.getByRole("button", { name: "Actions menu" }).click();
+  await page.getByRole("button", { name: "New Group", exact: true }).click();
+  await page.getByRole("combobox", { name: "Start with", exact: true }).selectOption({ label: "Software Development Team" });
+  for (const plugin of ["pi", "opencode"]) {
+    await expect(page.getByRole("combobox", { name: "Group default driver", exact: true }).locator(`option[value="${plugin}_terminal"]`)).toHaveCount(configuredPluginIds.has(plugin) ? 1 : 0);
+  }
+  await page.getByRole("button", { name: "Close", exact: true }).click();
+  if (configuredPluginIds.has("remote-control")) {
+    await page.getByRole("button", { name: "Actions menu" }).click();
+    await page.getByRole("button", { name: "Import Sessions", exact: true }).click();
+    for (const [plugin, label] of [["pi", "Pi"], ["opencode", "OpenCode"]]) {
+      await expect(page.getByRole("checkbox", { name: label, exact: true })).toHaveCount(configuredPluginIds.has(plugin) ? 1 : 0);
+    }
+    await page.getByRole("button", { name: "Close", exact: true }).click();
   }
 
   const gitApi = await page.request.get(`${WEB_BASE}/api/git-graph`);

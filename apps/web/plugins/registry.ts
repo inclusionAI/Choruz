@@ -7,6 +7,8 @@ import { remoteSshPlugin } from "./remote-ssh/client";
 import { remoteControlPlugin } from "./remote-control/client";
 import { agentSkillsPlugin } from "./agent-skills/client";
 import { mathcodePlugin } from "./mathcode/client";
+import { piPlugin } from "./pi/client";
+import { opencodePlugin } from "./opencode/client";
 
 const CLIENT_PLUGINS = [
   kanbanPlugin,
@@ -16,6 +18,8 @@ const CLIENT_PLUGINS = [
   remoteControlPlugin,
   agentSkillsPlugin,
   mathcodePlugin,
+  piPlugin,
+  opencodePlugin,
 ] satisfies readonly ClientPlugin[];
 
 export function resolveClientPluginIds(hostPlugins: readonly HostPluginManifest[]): Set<string> {

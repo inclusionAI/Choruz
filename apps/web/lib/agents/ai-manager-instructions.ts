@@ -52,9 +52,9 @@ Workspace root: ${folderPath}`
 Supported drivers for provision_agent:
 - "claude_terminal" — Claude Code (default)
 - "codex_terminal" — OpenAI Codex CLI
-- "pi_terminal" — Pi Agent
+- "pi_terminal" — Pi Agent (requires the pi plugin in CHORUZ_PLUGINS)
 - "grok_terminal" — Grok Build
-- "opencode_terminal" — OpenCode
+- "opencode_terminal" — OpenCode (requires the opencode plugin in CHORUZ_PLUGINS)
 
 Agents created for a user-facing team are visible teammates by default, so they can join groups, appear in the runtime roster, and own channel tasks. Use \`channel_visibility: "internal"\` only for a private helper that must stay outside shared group and task coordination.
 
