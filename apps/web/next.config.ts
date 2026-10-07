@@ -8,6 +8,7 @@ const nextPublicApiPort =
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
+  devIndicators: false,
   output: "standalone",
   env: {
     NEXT_PUBLIC_CHORUZ_API_PORT: nextPublicApiPort,

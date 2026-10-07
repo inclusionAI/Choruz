@@ -37,5 +37,4 @@ racing after comparison; it is not a filesystem-wide atomic compare-and-swap.
 Reload adopts a snapshot, not a live disk subscription.
 
 [Retryable saves](2026-09-05-editor-save-recovery.md) retain their independent
-keymap, cancelled-load and failed-save guarantees. This decision does not
-preserve drafts after their editor is unmounted.
+keymap, cancelled-load and failed-save guarantees. [Workbench state recovery](2026-10-05-workbench-state-recovery.md) retains the original precondition across editor unmounts.

@@ -15,34 +15,6 @@ export type DashboardSnapshotProps = {
   initialBootstrapHasMore: boolean;
 };
 
-export const EMPTY_SNAPSHOT: ConsoleSnapshot = {
-  principal: {
-    id: "",
-    workspace_id: "",
-    principal_type: "human",
-    name: "",
-    avatar_url: null,
-    scopes: [],
-    disabled: false,
-    created_at: "",
-    updated_at: "",
-  },
-  conversations: [],
-  messages_by_conversation: {},
-  agents: [],
-  audit_logs: [],
-};
-
-/** The shell renders from this when the bootstrap fails. */
-export const EMPTY_DASHBOARD_PROPS: DashboardSnapshotProps = {
-  initialSnapshot: EMPTY_SNAPSHOT,
-  initialCompanies: [],
-  runtimeBindings: [],
-  initialSyncCursor: 0,
-  initialBootstrapNextCursor: null,
-  initialBootstrapHasMore: false,
-};
-
 export function dashboardSnapshotFromBootstrap(bootstrap: DashboardBootstrap): DashboardSnapshotProps {
   const items = bootstrap.conversations.items;
   return {

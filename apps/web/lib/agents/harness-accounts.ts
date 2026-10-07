@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 
 import { apiBaseUrl } from "../api/choruz-api";
-import { postgresQueryClient, withPostgresTransaction } from "../groups/group-provisioning-db";
+import { postgresQueryClient } from "../groups/group-provisioning-db";
 import type { DriverModel } from "../drivers/driver-models";
 
 export type AccountDriver = "claude_terminal" | "codex_terminal";
@@ -35,6 +35,7 @@ export type HarnessAccount = {
   probedAt: string | null;
   createdAt: string;
   updatedAt: string;
+  removalPending?: boolean;
 };
 
 type AccountRow = {
@@ -53,11 +54,13 @@ type AccountRow = {
   probed_at: Date | string | null;
   created_at: Date | string;
   updated_at: Date | string;
+  removal_pending: boolean;
 };
 
 const ACCOUNT_COLUMNS = `id, company_id, runtime_host_id, driver_type, name, profile_kind,
             account_fingerprint, subscription_type, status, models_json, usage_json,
-            last_error, probed_at, created_at, updated_at`;
+            last_error, probed_at, created_at, updated_at,
+            (removal_requested_at IS NOT NULL AND removal_completed_at IS NULL) AS removal_pending`;
 
 export function harnessAccountRoot(env: NodeJS.ProcessEnv = process.env): string {
   return path.resolve(env.CHORUZ_HARNESS_ACCOUNT_ROOT?.trim() || path.join(homedir(), ".choruz", "accounts"));
@@ -83,7 +86,7 @@ export async function listHarnessAccounts(companyId: string, runtimeHostId: stri
     `SELECT ${ACCOUNT_COLUMNS}
        FROM harness_account
       WHERE company_id = $1 AND runtime_host_id IS NOT DISTINCT FROM $2
-        AND disabled_at IS NULL
+        AND (disabled_at IS NULL OR (removal_requested_at IS NOT NULL AND removal_completed_at IS NULL))
       ORDER BY lower(name), id`,
     [companyId, runtimeHostId],
   );
@@ -95,7 +98,7 @@ export async function getHarnessAccount(id: string, companyId: string): Promise<
   const result = await client.query<AccountRow>(
     `SELECT ${ACCOUNT_COLUMNS}
        FROM harness_account
-      WHERE id = $1 AND company_id = $2 AND disabled_at IS NULL`,
+      WHERE id = $1 AND company_id = $2 AND (disabled_at IS NULL OR (removal_requested_at IS NOT NULL AND removal_completed_at IS NULL))`,
     [id, companyId],
   );
   return result.rows[0] ? mapAccount(result.rows[0]) : null;
@@ -109,35 +112,6 @@ export async function runtimeHostBelongsToCompany(runtimeHostId: string, company
     [runtimeHostId, companyId],
   );
   return result.rowCount === 1;
-}
-
-export async function disableHarnessAccount(id: string, companyId: string): Promise<number> {
-  return withPostgresTransaction(async (client) => {
-    const account = await client.query<{ id: string }>(
-      `SELECT id FROM harness_account
-        WHERE id = $1 AND company_id = $2 AND disabled_at IS NULL
-        FOR UPDATE`,
-      [id, companyId],
-    );
-    if (!account.rows[0]) throw new Error("Harness account not found");
-    const disabled = await client.query(
-      `UPDATE agent_runtime_bindings AS binding
-          SET state = 'disabled', in_flight_turn_id = NULL, updated_at = NOW()
-         FROM principal
-        WHERE principal.id = binding.agent_principal_id
-          AND principal.workspace_id = $2
-          AND binding.state <> 'disabled'
-          AND binding.config_json->>'harness_account_id' = $1`,
-      [id, companyId],
-    );
-    await client.query(
-      `UPDATE harness_account
-          SET status = 'disabled', disabled_at = NOW(), updated_at = NOW()
-        WHERE id = $1 AND company_id = $2 AND disabled_at IS NULL`,
-      [id, companyId],
-    );
-    return disabled.rowCount ?? 0;
-  });
 }
 
 export async function createHarnessAccount(input: {
@@ -301,6 +275,6 @@ function mapAccount(row: AccountRow): HarnessAccount {
     probedAt: date(row.probed_at),
     createdAt: date(row.created_at)!,
     updatedAt: date(row.updated_at)!,
+    ...(row.removal_pending ? { removalPending: true } : {}),
   };
 }
-

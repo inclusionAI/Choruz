@@ -3,6 +3,7 @@ use axum::{
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
+use choruz_activity::redact_sensitive_text;
 use choruz_common::AppError;
 use choruz_domain::{Principal, PrincipalType};
 use serde_json::json;
@@ -121,46 +122,6 @@ pub(crate) fn bearer_token_value(headers: &HeaderMap) -> Option<&str> {
         .to_str()
         .ok()?
         .strip_prefix("Bearer ")
-}
-
-// ── Redaction helpers ─────────────────────────────────────────────────
-
-pub(crate) fn redact_sensitive_text(input: &str) -> String {
-    let mut redacted = input.to_owned();
-    for marker in [
-        "Bearer ",
-        "bearer ",
-        "secret=",
-        "secret:",
-        "token=",
-        "token:",
-        "password=",
-        "password:",
-    ] {
-        redacted = redact_after_marker(&redacted, marker);
-    }
-    redacted
-}
-
-fn redact_after_marker(input: &str, marker: &str) -> String {
-    let mut output = String::with_capacity(input.len());
-    let mut cursor = 0;
-    while let Some(offset) = input[cursor..].find(marker) {
-        let start = cursor + offset;
-        let value_start = start + marker.len();
-        output.push_str(&input[cursor..value_start]);
-        let rest = &input[value_start..];
-        let skip_ws = rest.len() - rest.trim_start().len();
-        let rest = &input[value_start + skip_ws..];
-        let end = rest
-            .find(|ch: char| ch.is_whitespace() || matches!(ch, '"' | '\'' | ',' | ')' | '}' | ']'))
-            .map(|index| value_start + skip_ws + index)
-            .unwrap_or(input.len());
-        output.push_str("[REDACTED]");
-        cursor = end;
-    }
-    output.push_str(&input[cursor..]);
-    output
 }
 
 fn sanitize_app_error(error: AppError) -> AppError {

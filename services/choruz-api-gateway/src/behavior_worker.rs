@@ -7,11 +7,9 @@ use crate::{
 use choruz_application::db_service::BehaviorClaim;
 use choruz_common::AppError;
 use choruz_community::behavior::{BehaviorRecord, ModelAttribution, ProblemCard, SCHEMA_VERSION};
-use choruz_host_runtime::{
-    HostRequest,
-    experience_source::{Cursor, HistoricalRecord},
-};
+use choruz_host_runtime::HostRequest;
 use choruz_learning::BehaviorDraft;
+use choruz_learning::source::{Cursor, HistoricalRecord};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::time::Duration;
@@ -117,7 +115,7 @@ async fn prepare_public(
     let public =
         public.ok_or_else(|| AppError::Validation("Public projection abstained".into()))?;
     let encoded = json!(public);
-    if crate::handlers_events::sanitize_telemetry_value(encoded.clone()) != encoded {
+    if choruz_activity::sanitize_value(encoded.clone()) != encoded {
         return Err(AppError::Validation(
             "Public projection retains a recognized credential".into(),
         ));

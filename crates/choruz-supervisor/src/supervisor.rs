@@ -25,6 +25,23 @@ const PROBE_INTERVAL: Duration = Duration::from_millis(100);
 const PROBE_IO_TIMEOUT: Duration = Duration::from_secs(2);
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(3);
 
+/// Services owned by this host. API-only hosts retain the gateway's background
+/// learning worker but do not execute queued group-chat commands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Services {
+    Api,
+    Full,
+}
+
+impl Services {
+    fn binaries(self) -> &'static [&'static str] {
+        match self {
+            Self::Api => &["choruz-api-gateway"],
+            Self::Full => &["choruz-api-gateway", "choruz-pipeline"],
+        }
+    }
+}
+
 /// Everything spawned by this process gets stashed here. `Drop` kills them
 /// all so the host exiting cleans up.
 pub struct Supervisor {
@@ -69,9 +86,13 @@ impl Supervisor {
         None
     }
 
-    fn host_working_dir() -> Option<PathBuf> {
+    fn host_working_dir(services: Services) -> Option<PathBuf> {
+        if let Some(directory) = std::env::var_os("CHORUZ_HOST_WORKING_DIR") {
+            let directory = PathBuf::from(directory);
+            return (directory.is_absolute() && directory.is_dir()).then_some(directory);
+        }
         let executable = std::env::current_exe().ok()?;
-        Self::host_working_dir_from(&executable)
+        Self::host_working_dir_from(&executable, services)
     }
 
     /// Walk up from the current exe until we find a `Cargo.toml` + `apps/`
@@ -101,10 +122,10 @@ impl Supervisor {
     /// Resolve the directory from which backend children should run. A source
     /// checkout uses its workspace root; a complete bundle uses the binary
     /// directory, which contains every child binary and `migrations/`.
-    fn host_working_dir_from(executable: &Path) -> Option<PathBuf> {
+    fn host_working_dir_from(executable: &Path, services: Services) -> Option<PathBuf> {
         Self::workspace_root_from(executable).or_else(|| {
             let binary_dir = executable.parent()?;
-            let required = ["choruz-api-gateway", "choruz-pipeline"];
+            let required = services.binaries();
             if binary_dir.join("migrations").is_dir()
                 && required.iter().all(|name| binary_dir.join(name).is_file())
             {
@@ -279,12 +300,17 @@ impl Supervisor {
         self.wait_until_ready(name, port, service)
     }
 
-    /// Spawn the Choruz backend stack against the supplied DATABASE_URL.
-    /// The URL is whatever `pg::EmbeddedPg` allocated for our private
-    /// cluster (port 5433, user `postgres`, db `choruz`) — the gateway +
-    /// pipeline just see "a postgres" the same way as in dev.
-    pub fn start_backend(&self, database_url: &str) -> Result<(), String> {
-        let cwd = Self::host_working_dir().ok_or_else(|| {
+    /// Start the selected services against an already migrated database.
+    /// Reused compatible listeners are not owned or stopped by this supervisor.
+    /// On failure the caller must call `shutdown` to reap any started children.
+    pub fn start_backend(
+        &self,
+        database_url: &str,
+        services: Services,
+        gateway_port: u16,
+        pipeline_port: u16,
+    ) -> Result<(), String> {
+        let cwd = Self::host_working_dir(services).ok_or_else(|| {
             "could not resolve a Choruz source workspace or complete bundled host directory"
                 .to_string()
         })?;
@@ -299,7 +325,7 @@ impl Supervisor {
                 ".choruz-runtime/attachments".to_string(),
             ),
             ("CHORUZ_API_HOST", "127.0.0.1".to_string()),
-            ("CHORUZ_API_PORT", "3000".to_string()),
+            ("CHORUZ_API_PORT", gateway_port.to_string()),
             (
                 "RUST_LOG",
                 std::env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string()),
@@ -309,15 +335,19 @@ impl Supervisor {
             self.spawn_backend(
                 "choruz-api-gateway",
                 "choruz-api-gateway",
-                3000,
+                gateway_port,
                 "choruz-api-gateway",
                 &gateway_env,
                 &cwd,
             )?;
 
+            if services == Services::Api {
+                return Ok(());
+            }
+
             let pipeline_env = vec![
                 ("CHORUZ_DATABASE_URL", db_url),
-                ("CHORUZ_PIPELINE_METRICS_PORT", "3020".to_string()),
+                ("CHORUZ_PIPELINE_METRICS_PORT", pipeline_port.to_string()),
                 ("CHORUZ_PIPELINE_METRICS_HOST", "127.0.0.1".to_string()),
                 (
                     "RUST_LOG",
@@ -327,7 +357,7 @@ impl Supervisor {
             self.spawn_backend(
                 "choruz-pipeline",
                 "choruz-pipeline",
-                3020,
+                pipeline_port,
                 "choruz-pipeline",
                 &pipeline_env,
                 &cwd,
@@ -483,7 +513,7 @@ mod tests {
         }
 
         assert_eq!(
-            Supervisor::host_working_dir_from(&bin.join("choruz-server")),
+            Supervisor::host_working_dir_from(&bin.join("choruz-server"), Services::Full),
             Some(bin.clone())
         );
 
@@ -501,11 +531,70 @@ mod tests {
         fs::write(bin.join("choruz-server"), []).expect("create server binary");
 
         assert_eq!(
-            Supervisor::host_working_dir_from(&bin.join("choruz-server")),
+            Supervisor::host_working_dir_from(&bin.join("choruz-server"), Services::Full),
             None
         );
 
         fs::remove_dir_all(root).expect("remove incomplete test bundle");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn api_only_bundle_starts_and_reaps_gateway_without_pipeline_binary() {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(port) = std::env::var("CHORUZ_TEST_API_ONLY_PORT") {
+            let port = port.parse().unwrap();
+            let supervisor = Supervisor::new();
+            assert!(
+                supervisor
+                    .start_backend("fixture-database", Services::Full, port, 1)
+                    .is_err()
+            );
+            let supervisor = Supervisor::new();
+            supervisor
+                .start_backend("fixture-database", Services::Api, port, 1)
+                .unwrap();
+            assert_eq!(supervisor.children.lock().unwrap().len(), 1);
+            Supervisor::probe_service(port, "choruz-api-gateway").unwrap();
+            supervisor.shutdown();
+            assert!(supervisor.children.lock().unwrap().is_empty());
+            assert!(!Supervisor::port_in_use(port));
+            return;
+        }
+        // Relocate the real test executable to exercise production sibling
+        // discovery. Only the database-using service executable is a fixture.
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir(root.path().join("migrations")).unwrap();
+        let executable = root.path().join("host-test");
+        fs::copy(std::env::current_exe().unwrap(), &executable).unwrap();
+        let gateway = root.path().join("choruz-api-gateway");
+        fs::write(&gateway, format!(r#"#!/usr/bin/env python3
+import http.server, json, os
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = json.dumps({{"service":"choruz-api-gateway","status":"ready","protocol_version":{}}}).encode()
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+    def log_message(self, *args): pass
+http.server.HTTPServer(("127.0.0.1", int(os.environ["CHORUZ_API_PORT"])), Handler).serve_forever()
+"#, choruz_common::HOST_SERVICE_PROTOCOL_VERSION)).unwrap();
+        fs::set_permissions(gateway, fs::Permissions::from_mode(0o755)).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let output = Command::new(executable)
+            .args(["--exact", "supervisor::tests::api_only_bundle_starts_and_reaps_gateway_without_pipeline_binary", "--nocapture"])
+            .env("CHORUZ_TEST_API_ONLY_PORT", port.to_string())
+            .output().unwrap();
+        assert!(
+            output.status.success(),
+            "{} {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
     }
 
     #[cfg(unix)]

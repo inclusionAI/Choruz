@@ -15,7 +15,7 @@
     "grammy": "^1.30.0",
     "js-yaml": "^4.1.0",
     "pg": "^8.13.0",
-    "fastify": "^5.8.5"
+    "fastify": "^5.12.2"
   },
   "devDependencies": {
     "@types/js-yaml": "^4.0.9",

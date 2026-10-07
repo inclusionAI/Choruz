@@ -1,24 +1,45 @@
-//! `choruz-server` — headless host used as the remote side of an
-//! SSH-tunneled connection, à la `vscode-server`.
-//!
-//! Lifecycle:
-//!   1. Resolve migrations dir (next to the binary if deployed by the
-//!      local client, else the workspace's).
-//!   2. Start embedded Postgres (data dir under `~/Library/Application
-//!      Support/choruz/` on macOS / `~/.local/share/choruz/` on Linux).
-//!   3. Spawn choruz-api-gateway (binds :3000) + choruz-pipeline (binds :3020).
-//!      Next.js is intentionally NOT started — the CLIENT renders the UI
-//!      and proxies its `/api/v1/*` calls across the SSH tunnel.
-//!   4. Wait for both services' versioned `/readyz` contracts, then emit
-//!      `CHORUZ_LISTENING=<gateway_port>\n` so the local client can establish
-//!      the tunnel.
-//!   5. Block until SIGINT / SIGTERM, then stop children gracefully + stop pg.
+//! Headless composition of the shared API, optional pipeline and database.
+//! Readiness is advertised only after selected children are ready. Shutdown
+//! stops owned children and embedded PostgreSQL, never an external database.
 
 use std::sync::Arc;
 
 use choruz_supervisor::{pg, supervisor};
 
+fn port(name: &str, default: u16) -> u16 {
+    match std::env::var(name) {
+        Ok(value) => match value.parse::<u16>() {
+            Ok(port) if port > 0 => port,
+            _ => {
+                eprintln!("{name} must be a port between 1 and 65535");
+                std::process::exit(2);
+            }
+        },
+        Err(std::env::VarError::NotPresent) => default,
+        Err(_) => {
+            eprintln!("{name} must be valid text");
+            std::process::exit(2);
+        }
+    }
+}
+
 fn main() {
+    let services = match std::env::args().skip(1).collect::<Vec<_>>().as_slice() {
+        [] => supervisor::Services::Full,
+        [flag] if flag == "--api-only" => supervisor::Services::Api,
+        [flag] if flag == "--help" => {
+            println!(
+                "choruz-server [--api-only]\nStart the API; include the group-chat pipeline unless --api-only is supplied. CHORUZ_DATABASE_URL selects a migrated external database; otherwise start embedded PostgreSQL."
+            );
+            return;
+        }
+        _ => {
+            eprintln!("usage: choruz-server [--api-only]");
+            std::process::exit(2);
+        }
+    };
+    let gateway_port = port("CHORUZ_API_PORT", 3000);
+    let pipeline_port = port("CHORUZ_PIPELINE_METRICS_PORT", 3020);
     if let Err(error) = choruz_infrastructure::init_tracing("choruz-server") {
         eprintln!("invalid logging configuration: {error}");
         std::process::exit(2);
@@ -28,6 +49,15 @@ fn main() {
         .enable_all()
         .build()
         .expect("tokio runtime");
+
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let s = Arc::clone(&stop);
+    if let Err(e) = ctrlc::set_handler(move || {
+        s.store(true, std::sync::atomic::Ordering::SeqCst);
+    }) {
+        tracing::error!(error = %e, "signal handler registration failed");
+        std::process::exit(1);
+    }
 
     // Migrations: prefer the bundle path (binary sits next to them after
     // `choruz deploy`), fall back to workspace for dev runs.
@@ -49,48 +79,53 @@ fn main() {
     });
     tracing::info!(migrations_dir = %migrations_dir.display(), "migrations dir");
 
-    let pg_handle = match rt.block_on(pg::EmbeddedPg::setup_and_start(&migrations_dir)) {
-        Ok(pg) => Arc::new(pg),
-        Err(e) => {
-            tracing::error!(error = %e, "embedded postgres failed to start");
-            std::process::exit(1);
+    let (database_url, pg_handle) = match std::env::var("CHORUZ_DATABASE_URL") {
+        Ok(url) if !url.trim().is_empty() => (url, None),
+        Err(std::env::VarError::NotPresent) => {
+            match rt.block_on(pg::EmbeddedPg::setup_and_start(&migrations_dir)) {
+                Ok(pg) => (pg.database_url.clone(), Some(pg)),
+                Err(e) => {
+                    tracing::error!(error = %e, "embedded postgres failed to start");
+                    std::process::exit(1);
+                }
+            }
+        }
+        _ => {
+            eprintln!("CHORUZ_DATABASE_URL must be nonempty valid text");
+            std::process::exit(2);
         }
     };
 
+    if stop.load(std::sync::atomic::Ordering::SeqCst) {
+        if let Some(pg) = &pg_handle {
+            rt.block_on(pg.stop());
+        }
+        return;
+    }
     let sup = Arc::new(supervisor::Supervisor::new());
-    if let Err(e) = sup.start_backend(&pg_handle.database_url) {
+    if let Err(e) = sup.start_backend(&database_url, services, gateway_port, pipeline_port) {
         tracing::error!(error = %e, "backend spawn failed");
+        sup.shutdown();
+        if let Some(pg) = &pg_handle {
+            rt.block_on(pg.stop());
+        }
         std::process::exit(1);
     }
     sup.start_child_monitor();
-
-    // The actual port choruz-api-gateway listens on. For now it's fixed to 3000
-    // in `Supervisor::start_backend`. If/when we make that random, we'll surface it from
-    // the supervisor and print the real value here. The handshake line
-    // is what the SSH client greps for.
-    const GATEWAY_PORT: u16 = 3000;
-    println!("CHORUZ_LISTENING={GATEWAY_PORT}");
-    // Flush explicitly — SSH clients read line-by-line and we don't want
-    // them blocked behind libc's line-buffering heuristics.
-    use std::io::Write;
-    let _ = std::io::stdout().flush();
-    tracing::info!(
-        port = GATEWAY_PORT,
-        "choruz-server ready; blocking on signal"
-    );
 
     // Block until the process is asked to exit. Converging cleanup paths:
     //   - SIGINT / SIGTERM handled by ctrlc
     //   - Drop on Supervisor kills children if we unwind normally
     //   - `pg.stop()` called explicitly so the pg_ctl stop doesn't race
     //     against the tokio runtime tearing down.
-    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let s = Arc::clone(&stop);
-    if let Err(e) = ctrlc::set_handler(move || {
-        s.store(true, std::sync::atomic::Ordering::SeqCst);
-    }) {
-        tracing::warn!(error = %e, "signal handler registration failed; SIGINT won't be caught cleanly");
-    }
+    // Install shutdown handling before advertising readiness to the parent.
+    println!("CHORUZ_LISTENING={gateway_port}");
+    use std::io::Write;
+    let _ = std::io::stdout().flush();
+    tracing::info!(
+        port = gateway_port,
+        "choruz-server ready; blocking on signal"
+    );
 
     while !stop.load(std::sync::atomic::Ordering::SeqCst) && !sup.backend_failed() {
         std::thread::sleep(std::time::Duration::from_millis(250));
@@ -103,7 +138,9 @@ fn main() {
         tracing::info!("shutting down");
     }
     sup.shutdown();
-    rt.block_on(pg_handle.stop());
+    if let Some(pg) = &pg_handle {
+        rt.block_on(pg.stop());
+    }
     if backend_failed {
         std::process::exit(1);
     }

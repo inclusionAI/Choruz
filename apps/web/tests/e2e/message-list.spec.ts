@@ -25,6 +25,13 @@ test("reading history stays anchored until a local send, which reveals the lates
   await expect.poll(() => area.evaluate(el => el.scrollHeight - el.clientHeight)).toBeGreaterThan(500);
   const distance = () => area.evaluate(el => el.scrollHeight - el.scrollTop - el.clientHeight);
   await expect.poll(distance).toBeLessThan(100);
+  // Even a short upward reading gesture must defeat later measurement scrolls.
+  await area.hover();
+  await page.mouse.wheel(0, -80);
+  await expect.poll(distance).toBeGreaterThan(50);
+  await sendMessage(page, token, principal.id, group.id, "Incoming while reading near the bottom");
+  await expect(page.locator(`[data-conversation-id="${group.id}"]`)).toContainText("Incoming while reading near the bottom");
+  await expect.poll(distance).toBeGreaterThan(50);
   await area.hover();
   await page.mouse.wheel(0, -10000);
   const oldest = area.locator(".msg-markdown").filter({ hasText: /^Owned message 0\b/ });

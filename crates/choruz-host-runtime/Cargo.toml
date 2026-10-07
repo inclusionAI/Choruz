@@ -6,8 +6,9 @@ description = "Device-local runtime operations (terminals, Codex homes, session 
 license.workspace = true
 
 [dependencies]
+choruz-computer-use = { path = "../choruz-computer-use", version = "0.2.3" }
 choruz-decision = { path = "../choruz-decision", version = "0.2.3" }
-choruz-learning = { path = "../choruz-learning", version = "0.2.3" }
+choruz-learning = { path = "../choruz-learning", version = "0.2.3", features = ["native-cli", "native-source"] }
 choruz-community = { path = "../choruz-community", version = "0.2.3" }
 choruz-evaluation = { path = "../choruz-evaluation", version = "0.2.3" }
 choruz-agent-runtime = { path = "../choruz-agent-runtime", version = "0.2.3" }

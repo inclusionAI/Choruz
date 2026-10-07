@@ -8,7 +8,7 @@ The `Release packaging` job in [ci.yml](../../.github/workflows/ci.yml) builds t
 
 [cd.yml](../../.github/workflows/cd.yml) accepts only a successful same-repository `push` to `main`, with successful required CI and packaging jobs. It verifies the archive checksum, file manifest and source revision, then publishes a `build-<commit>` prerelease. Existing assets must match byte-for-byte; delivery never replaces them. A manual dispatch takes the successful CI run ID and enforces the same checks. PR and fork artifacts are not deployable.
 
-The hosted build targets Linux x86_64 on Ubuntu 24.04. It requires Node 24 and an operator-managed PostgreSQL installation. It is not a portable glibc 2.32 or NAS bundle and does not include PostgreSQL executables. The included `choruz-server` uses its own embedded-PostgreSQL bootstrap; use the managed API/pipeline services for an external database.
+The hosted build targets Linux x86_64 on Ubuntu 24.04. It requires Node 24 and an operator-managed PostgreSQL installation. It is not a portable glibc 2.32 or NAS bundle and does not include PostgreSQL executables. The included `choruz-server` can use an explicit `CHORUZ_DATABASE_URL` or its embedded-PostgreSQL bootstrap; see [host composition](../subsystems/host-and-remote.md#entry-points).
 
 ## Cloud Gateway delivery
 
@@ -50,4 +50,17 @@ Use your actual ports and release directory, including `/Users/Shared/choruz/rel
 
 Back up and check schema compatibility before activation. Binary rollback does not undo migrations, and the helper does not promise recovery from power loss, a killed deployment process or an incompatible database change. Preserve the failed run's service logs and use [the incident runbook](runbook.md) when automatic restoration fails.
 
-For local packaging, `pnpm release:package` requires a clean tracked checkout, Rust and pnpm. It writes a commit-addressed release, manifest, archive and checksum without changing `current` or `previous`. Build without production secrets; environment files are excluded and rejected by verification.
+## Selective packages
+
+Use the same release helper to build only the components a consumer needs. Packaging requires a clean tracked checkout, Rust and Python 3.12 or newer; only `full` needs Node and pnpm. It writes a commit-addressed release, manifest, archive and checksum without changing `current` or `previous`. Build without production secrets; environment files are excluded and rejected by verification.
+
+| Composition | Consumer | Included runtime |
+|---|---|---|
+| `cli` | Local library commands or a client of an existing host | `choruz`, no database or web assets |
+| `local` | Background learning through `choruz start local` | CLI, server, API and migrations |
+| `headless` | Collaboration or remote host through `choruz start` | Local composition plus pipeline and connector |
+| `full` (default) | Managed application deployment | Headless composition plus standalone web |
+
+For example, `python3 infra/ops/release.py package --composition local` builds a local host archive. Extract it and use its `bin/choruz`; the host still needs PostgreSQL through [the shared host startup](../subsystems/host-and-remote.md#entry-points), and the Agent CLI is installed separately. `cli` and `local` do not start group-chat processing. The [CLI contract](../../apps/choruz-cli/README.md) describes the available adapters; [architecture](../architecture.md) links the reusable Rust libraries for consumers that do not need an executable.
+
+The manifest fixes the composition for verification. Only `full` can be activated or rolled back through the managed-service helper; selective packages never replace a full installation's `current` link. Compositions have distinct archive names, and a missing selected binary is rejected even when the file hashes otherwise match. These packages use the build machine's platform and C-library baseline, not a cross-platform runtime.

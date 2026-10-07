@@ -238,6 +238,7 @@ pub async fn commit_result<S: ResultStore>(
             // so the round-trip FE click → agent reply is searchable by the
             // same correlator in both log streams and row metadata.
             "trace_id": result.trace_id,
+            "execution": result.execution_metadata,
         }),
         client_msg_id: None,
         turn_id: Some(result.turn_id.clone()),
@@ -410,6 +411,7 @@ mod tests {
             secondary_command_attempts: Vec::new(),
             command_results: Vec::new(),
             trace_id: None,
+            execution_metadata: None,
         }
     }
 
@@ -430,6 +432,7 @@ mod tests {
             secondary_command_attempts: Vec::new(),
             command_results: Vec::new(),
             trace_id: None,
+            execution_metadata: None,
         }
     }
 

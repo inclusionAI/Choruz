@@ -1,0 +1,45 @@
+{
+  "name": "@choruz/desktop",
+  "version": "0.2.3",
+  "private": true,
+  "license": "Apache-2.0",
+  "description": "Choruz personal agent workspace",
+  "author": "Choruz contributors",
+  "main": "main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test tests/*.test.cjs",
+    "test:bundle": "node scripts/smoke.cjs",
+    "prepare:bundle": "node scripts/prepare-bundle.cjs",
+    "package": "electron-builder --mac dmg --arm64"
+  },
+  "devDependencies": {
+    "electron": "44.4.5",
+    "electron-builder": "26.15.3",
+    "sharp": "0.35.4"
+  },
+  "build": {
+    "appId": "org.choruz.desktop",
+    "productName": "Choruz",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "*.cjs",
+      "loading.html"
+    ],
+    "extraResources": [
+      {
+        "from": "bundle",
+        "to": "runtime"
+      }
+    ],
+    "mac": {
+      "icon": "bundle/icon.png",
+      "category": "public.app-category.developer-tools",
+      "target": [
+        "dmg"
+      ]
+    }
+  }
+}

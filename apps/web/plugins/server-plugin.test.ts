@@ -7,6 +7,8 @@ describe("serverPluginEnabled", () => {
     expect(serverPluginEnabled("mathcode", undefined)).toBe(true);
     expect(serverPluginEnabled("pi", undefined)).toBe(false);
     expect(serverPluginEnabled("opencode", undefined)).toBe(false);
+    expect(serverPluginEnabled("grok", undefined)).toBe(false);
+    expect(serverPluginEnabled("grok", "grok")).toBe(true);
   });
 
   it("uses an exact comma-separated allowlist", () => {

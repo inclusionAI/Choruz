@@ -12,7 +12,7 @@ export default function Page() {
         <thead><tr><th>Driver</th><th>Instruction File</th></tr></thead>
         <tbody>
           <tr><td><code>claude_terminal</code> / <code>claude_print</code></td><td><code>CLAUDE.md</code></td></tr>
-          <tr><td><code>codex_terminal</code> / <code>codex_exec</code> / <code>pi_terminal</code> / <code>grok_terminal</code> / <code>opencode_terminal</code></td><td><code>AGENTS.md</code></td></tr>
+          <tr><td><code>codex_terminal</code> / <code>codex_exec</code> / <code>muse_terminal</code> / <code>pi_terminal</code> / <code>grok_terminal</code> / <code>opencode_terminal</code></td><td><code>AGENTS.md</code></td></tr>
         </tbody>
       </table>
 

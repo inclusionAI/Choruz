@@ -1,5 +1,6 @@
 [workspace]
 members = [
+  "crates/choruz-activity",
   "services/choruz-connector",
   "apps/choruz-cli",
   "services/choruz-pipeline",
@@ -9,6 +10,7 @@ members = [
   "crates/choruz-application",
   "crates/choruz-auth",
   "crates/choruz-common",
+  "crates/choruz-computer-use",
   "crates/choruz-community",
   "crates/choruz-domain",
   "crates/choruz-decision",

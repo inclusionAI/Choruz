@@ -150,10 +150,11 @@ test.describe("Company management", () => {
       await expect(dialog.getByLabel("Include AI Manager")).toBeChecked();
       const managerDriver = dialog.getByLabel("Manager Driver");
       for (const driver of ["pi_terminal", "grok_terminal", "opencode_terminal"]) {
-        const enabled = driver === "grok_terminal" || (process.env.CHORUZ_PLUGINS?.split(",").map((id) => id.trim()).includes(driver.replace("_terminal", "")) ?? false);
+        const enabled = process.env.CHORUZ_PLUGINS?.split(",").map((id) => id.trim()).includes(driver.replace("_terminal", "")) ?? false;
         await expect(managerDriver.locator(`option[value="${driver}"]`)).toHaveCount(enabled ? 1 : 0);
       }
       await managerDriver.selectOption("codex_terminal");
+      await expect(managerDriver.locator('option[value="muse_terminal"]')).toHaveText("Muse Code");
       const companyResponsePromise = page.waitForResponse((response) =>
         response.request().method() === "POST" &&
         new URL(response.url()).pathname === "/api/companies"
@@ -285,10 +286,10 @@ test.describe("Company management", () => {
       });
       await expect(page.locator(".terminal-container:visible, .xterm:visible")).toHaveCount(0);
       await expect(page.getByRole("region", { name: "Agent session" })).toHaveCount(0);
-      await expect(page.getByRole("heading", { name: "Welcome to Choruz" })).toBeVisible();
+      await expect(page.getByRole("heading", { name: "What would you like to work on?" })).toBeVisible();
       await page.reload();
       await expect(page.locator(".company-selector-name")).toHaveText(secondCompany.name);
-      await expect(page.getByRole("heading", { name: "Welcome to Choruz" })).toBeVisible();
+      await expect(page.getByRole("heading", { name: "What would you like to work on?" })).toBeVisible();
     } finally {
       if (firstCompany) await deleteCompany(page, token, firstCompany.id);
       if (secondCompany) await deleteCompany(page, token, secondCompany.id);

@@ -146,7 +146,7 @@ test("hiding an inactive imported tab closes it and importing restores the same 
       await expect(folder).toHaveValue(homedir());
       await folder.fill(workspace);
       await expect(folder).toHaveValue(workspace);
-      for (const harness of ["Codex", "Grok", ...(optionalPlugins.has("pi") ? ["Pi"] : []), ...(optionalPlugins.has("opencode") ? ["OpenCode"] : [])]) await modal.getByLabel(harness, { exact: true }).uncheck();
+      for (const harness of ["Codex", ...(optionalPlugins.has("grok") ? ["Grok"] : []), ...(optionalPlugins.has("pi") ? ["Pi"] : []), ...(optionalPlugins.has("opencode") ? ["OpenCode"] : [])]) await modal.getByLabel(harness, { exact: true }).uncheck();
       await modal.getByRole("button", { name: "Scan", exact: true }).click();
       await expect(modal.getByText(title, { exact: true })).toBeVisible();
       await expect(modal.getByText(otherTitle, { exact: true })).toBeVisible();
@@ -206,7 +206,7 @@ const SESSIONS = [
   ["grok", "grok-1", "/projects/infra", "Grok Infra"],
   ["open_code", "opencode-1", "/projects/tools", "OpenCode Tools"],
 ] as const;
-const ENABLED_SESSIONS = SESSIONS.filter(([harness]) => harness === "pi" ? optionalPlugins.has("pi") : harness === "open_code" ? optionalPlugins.has("opencode") : true);
+const ENABLED_SESSIONS = SESSIONS.filter(([harness]) => harness === "pi" || harness === "grok" ? optionalPlugins.has(harness) : harness === "open_code" ? optionalPlugins.has("opencode") : true);
 
 test("imports nested sessions from every supported harness with their real workspaces", async ({
   page,
@@ -296,13 +296,13 @@ test("imports nested sessions from every supported harness with their real works
   await modal.getByRole("button", { name: "Select all" }).click();
   await expect(modal.getByText(`${ENABLED_SESSIONS.length} found · ${ENABLED_SESSIONS.length} selected · newest first`)).toBeVisible();
 
-  await modal.getByLabel("Grok", { exact: true }).uncheck();
+  await modal.getByLabel("Codex", { exact: true }).uncheck();
   await expect(modal.getByText("Ready to scan", { exact: true })).toBeVisible();
   await expect(modal.getByRole("button", { name: `Import ${ENABLED_SESSIONS.length} sessions` })).toHaveCount(0);
   await modal.getByRole("button", { name: "Scan", exact: true }).click();
   await expect(modal.getByText(`${ENABLED_SESSIONS.length - 1} found · 0 selected · newest first`)).toBeVisible();
-  await expect.poll(() => scanBodies.at(-1)?.harnesses).toEqual(ENABLED_SESSIONS.map(([harness]) => harness).filter((harness) => harness !== "grok"));
-  await modal.getByLabel("Grok", { exact: true }).check();
+  await expect.poll(() => scanBodies.at(-1)?.harnesses).toEqual(ENABLED_SESSIONS.map(([harness]) => harness).filter((harness) => harness !== "codex"));
+  await modal.getByLabel("Codex", { exact: true }).check();
   await modal.getByRole("button", { name: "Scan", exact: true }).click();
   await expect(modal.getByText(`${ENABLED_SESSIONS.length} found · 0 selected · newest first`)).toBeVisible();
   await expect(modal.getByRole("button", { name: "Import 0 sessions" })).toBeDisabled();

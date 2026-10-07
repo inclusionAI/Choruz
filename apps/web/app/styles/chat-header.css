@@ -138,6 +138,8 @@
 .messages-area {
   flex: 1;
   overflow-y: auto;
+  /* The virtual list owns prepend positioning; browser anchoring moves its spacers twice. */
+  overflow-anchor: none;
   padding: clamp(12px, 1.5vw, 20px) clamp(12px, 2vw, 24px);
   display: flex;
   flex-direction: column;

@@ -87,6 +87,7 @@ mod tests {
             secondary_command_attempts: Vec::new(),
             command_results: Vec::new(),
             trace_id: None,
+            execution_metadata: None,
         };
 
         // 5. Write: commit the result
@@ -124,6 +125,7 @@ mod tests {
             secondary_command_attempts: Vec::new(),
             command_results: Vec::new(),
             trace_id: None,
+            execution_metadata: None,
         };
 
         let o1 = commit_result(&result, &store).await.unwrap();
@@ -163,6 +165,7 @@ mod tests {
             secondary_command_attempts: Vec::new(),
             command_results: Vec::new(),
             trace_id: None,
+            execution_metadata: None,
         };
 
         assert!(matches!(
@@ -335,6 +338,7 @@ mod tests {
             secondary_command_attempts: Vec::new(),
             command_results: Vec::new(),
             trace_id: None,
+            execution_metadata: None,
         };
 
         let outcome = commit_result(&result, &store).await.unwrap();

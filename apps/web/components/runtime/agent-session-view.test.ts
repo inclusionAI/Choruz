@@ -1,10 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { mergeSessionPage, splitLearnedContext } from "./agent-session-view";
+import { mergeSessionPage, splitLearnedContext, SessionMessage } from "./agent-session-view";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 
 const item = (id: string, position: number, revision: number, text: string) => ({ id, position, revision, text, kind: "assistant", status: "completed", detail: {} });
 const page = (revision: number, items: ReturnType<typeof item>[], instance = "process-one") => ({ instance, revision, cursor: revision, more: false, session_id: "native", status: "ready", items, requests: [], error: null });
 
 describe("structured session replay", () => {
+  it("attributes a finite answer without labelling native answers as cheap completions", () => {
+    const finite = { ...item("finite",0,1,"billing_queue"), detail: {source:"decision_program",model:"evaluated-model"} };
+    expect(renderToStaticMarkup(createElement(SessionMessage,{item:finite}))).toContain("evaluated-model · finite program · native inference skipped");
+    expect(renderToStaticMarkup(createElement(SessionMessage,{item:item("native",1,2,"Native answer")}))).not.toContain("native inference skipped");
+  });
   it("separates supplied guidance from the human message without hiding malformed text", () => {
     const message = "Compare the approaches";
     const text = `${message}\n\n[choruz-experience revision=rev-1]\nChoruz context\n${JSON.stringify("Lead with the recommendation.\nThen explain.")}\n[/choruz-experience]`;

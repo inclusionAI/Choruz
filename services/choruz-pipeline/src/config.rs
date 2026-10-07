@@ -64,6 +64,7 @@ pub struct PipelineConfig {
 
     /// Path to the `grok` CLI binary (default `grok`).
     pub grok_cli_path: String,
+    pub muse_cli_path: String,
 
     /// Path to the `opencode` CLI binary (default `opencode`).
     pub opencode_cli_path: String,
@@ -104,6 +105,10 @@ impl PipelineConfig {
             codex_cli_path: env_or("CHORUZ_CODEX_CLI_PATH", "codex"),
             pi_cli_path: env_or("CHORUZ_PI_CLI_PATH", "pi"),
             grok_cli_path: env_or("CHORUZ_GROK_CLI_PATH", "grok"),
+            muse_cli_path: env_or(
+                "CHORUZ_MUSE_BINARY",
+                &env_or("CHORUZ_MUSE_CLI_PATH", "muse"),
+            ),
             opencode_cli_path: env_or("CHORUZ_OPENCODE_CLI_PATH", "opencode"),
             mathcode_cli_path: env_or("CHORUZ_MATHCODE_BINARY", "mathcode"),
         }

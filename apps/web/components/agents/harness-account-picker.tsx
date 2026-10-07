@@ -128,6 +128,25 @@ export function HarnessAccountPicker({
   }, [allowMultiple, companyId, contextKey, driver, mode, runtimeHostId, supported, upsert]);
 
   useEffect(() => { void load(); }, [load]);
+  const removalPending = accounts.some((account) => account.removalPending);
+  useEffect(() => {
+    if (!removalPending || !companyId) return;
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout>;
+    async function poll() {
+      try {
+        const query = new URLSearchParams({ company_id: companyId! });
+        if (runtimeHostId) query.set("runtime_host_id", runtimeHostId);
+        const response = await transportFetch(`/api/harness-accounts?${query}`, { signal: controller.signal });
+        if (!response.ok) throw new Error("Unable to refresh account removal");
+        const body = await response.json() as { accounts: HarnessAccount[] };
+        if (!controller.signal.aborted) setAccounts(body.accounts.filter((account) => account.driverType === driver));
+      } catch { /* The durable removal continues; preserve its last visible state. */ }
+      finally { if (!controller.signal.aborted) timer = setTimeout(() => void poll(), 2000); }
+    }
+    timer = setTimeout(() => void poll(), 2000);
+    return () => { controller.abort(); clearTimeout(timer); };
+  }, [removalPending, companyId, runtimeHostId, driver]);
 
   const selected = useMemo(() => accounts.find((account) => account.id === value) ?? null, [accounts, value]);
   const sorted = useMemo(
@@ -191,9 +210,11 @@ export function HarnessAccountPicker({
     setError(null);
     try {
       const response = await transportFetch(`/api/harness-accounts/${encodeURIComponent(account.id)}?company_id=${encodeURIComponent(companyId)}`, { method: "DELETE" });
-      const body = await response.json() as { error?: string };
+      const body = await response.json() as { error?: string; removal_pending?: boolean };
       if (!response.ok) throw new Error(body?.error || "Unable to remove account");
-      setAccounts((current) => current.filter((item) => item.id !== account.id));
+      setAccounts((current) => body.removal_pending
+        ? current.map((item) => item.id === account.id ? { ...item, status: "disabled", removalPending: true, lastError: "Waiting for the device to stop account processes." } : item)
+        : current.filter((item) => item.id !== account.id));
       if (value === account.id) onChange(null);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Unable to remove account");
@@ -203,6 +224,7 @@ export function HarnessAccountPicker({
   };
 
   const statusLabel = (account: HarnessAccount) => {
+    if (account.removalPending) return " · removal pending";
     if (account.status === "active") return "";
     if (isDefaultAccount(account) && verifyingDefault) return " · verifying";
     return ` · ${account.status}`;
@@ -242,7 +264,7 @@ export function HarnessAccountPicker({
               {account.status === "active" ? (
                 <AccountUsage account={account} loading={loading} onRefresh={() => void probe(account)} />
               ) : null}
-              {account.status !== "active" && !(isDefaultAccount(account) && verifyingDefault) ? (
+              {account.status !== "active" && !account.removalPending && !(isDefaultAccount(account) && verifyingDefault) ? (
                 <div className="harness-account-repair">
                   {account.lastError ? <p className="field-hint">{account.lastError}</p> : null}
                   <button type="button" className="btn-secondary" disabled={loading} onClick={() => setLoginAccount(account)}>Sign in</button>
@@ -252,7 +274,7 @@ export function HarnessAccountPicker({
                 </div>
               ) : null}
               {allowMultiple ? (
-                <button type="button" className="btn-secondary harness-account-remove-button" disabled={loading} onClick={() => void removeAccount(account)}>Remove account</button>
+                <button type="button" className="btn-secondary harness-account-remove-button" disabled={loading} onClick={() => void removeAccount(account)}>{account.removalPending ? "Retry removal" : "Remove account"}</button>
               ) : null}
             </div>
           ))}

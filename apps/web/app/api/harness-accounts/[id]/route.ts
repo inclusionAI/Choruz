@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 
 import { requireAuth } from "../../../../lib/api/api-auth";
 import { canAccessHarnessAccountCompany } from "../../../../lib/agents/harness-account-access";
-import { disableHarnessAccount, getHarnessAccount } from "../../../../lib/agents/harness-accounts";
+import { getHarnessAccount } from "../../../../lib/agents/harness-accounts";
+import { apiFetch, ApiRequestError } from "../../../../lib/api/choruz-api";
 
 export async function GET(request: NextRequest, context: { params: Promise<{ id: string }> }) {
   const resolved = await resolveAccountRequest(request, context);
@@ -14,11 +15,15 @@ export async function DELETE(request: NextRequest, context: { params: Promise<{ 
   const resolved = await resolveAccountRequest(request, context);
   if (resolved instanceof NextResponse) return resolved;
   try {
-    const disabledBindings = await disableHarnessAccount(resolved.account.id, resolved.companyId);
-    return NextResponse.json({ disabled_bindings: disabledBindings });
+    const result = await apiFetch<{ disabled_bindings: number | null; removal_pending: boolean }>(
+      `/v1/companies/${encodeURIComponent(resolved.companyId)}/harness-accounts/${encodeURIComponent(resolved.account.id)}`,
+      resolved.token,
+      { method: "DELETE" },
+    );
+    return NextResponse.json(result, { status: result.removal_pending ? 202 : 200 });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unable to remove harness account";
-    const status = /not found/i.test(message) ? 404 : 500;
+    const status = error instanceof ApiRequestError ? error.status : 500;
     return NextResponse.json({ error: message }, { status });
   }
 }
@@ -32,5 +37,5 @@ async function resolveAccountRequest(request: NextRequest, context: { params: Pr
   if (!(await canAccessHarnessAccountCompany(auth.token, companyId))) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   const account = await getHarnessAccount(id, companyId);
   if (!account) return NextResponse.json({ error: "Harness account not found" }, { status: 404 });
-  return { account, companyId };
+  return { account, companyId, token: auth.token };
 }

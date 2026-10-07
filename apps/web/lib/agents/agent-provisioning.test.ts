@@ -43,7 +43,7 @@ describe("provisionAgent", () => {
   const runtimeDirs: string[] = [];
 
   beforeEach(async () => {
-    vi.stubEnv("CHORUZ_PLUGINS", "agent-skills,mathcode,pi,opencode");
+    vi.stubEnv("CHORUZ_PLUGINS", "agent-skills,mathcode,pi,opencode,grok");
     const runtimeDir = await mkdtemp(path.join(tmpdir(), "choruz-agent-provisioning-"));
     runtimeDirs.push(runtimeDir);
     vi.stubEnv("CHORUZ_RUNTIME_DIR", runtimeDir);
@@ -62,7 +62,7 @@ describe("provisionAgent", () => {
     await Promise.all(runtimeDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
   });
 
-  it.each(["pi_terminal", "opencode_terminal"] as const)("blocks internal %s creation before side effects without its plugin", async (driver) => {
+  it.each(["pi_terminal", "opencode_terminal", "grok_terminal"] as const)("blocks internal %s creation before side effects without its plugin", async (driver) => {
     vi.stubEnv("CHORUZ_PLUGINS", undefined);
     const deps = fakeDeps({});
     await expect(provisionAgent({ sessionToken: "session-token", actorId: "human-1", body: {
@@ -75,6 +75,7 @@ describe("provisionAgent", () => {
   it.each([
     ["claude_terminal", "CLAUDE"],
     ["codex_terminal", "CODEX"],
+    ["muse_terminal", "MUSE"],
     ["codex_exec", "CODEX"],
     ["codex_app_server", "CODEX"],
     ["pi_terminal", "PI"],
@@ -100,6 +101,18 @@ describe("provisionAgent", () => {
       expect.objectContaining({ configJson: expect.objectContaining({ original_driver: driverType }) }),
     );
     expect(vi.mocked(deps.createRuntimeBinding).mock.calls[0][6]?.configJson).not.toHaveProperty("binary_path");
+  });
+
+  it.each(["claude_terminal", "codex_terminal"] as const)("preserves existing project instructions for %s", async (driver) => {
+    const workspace = path.join(process.env.CHORUZ_RUNTIME_DIR!, "existing-project");
+    await fs.mkdir(workspace);
+    const instructionsPath = path.join(workspace, instructionFileForDriver(driver));
+    const original = "# Project rules\nKeep the user's instructions.\n";
+    await fs.writeFile(instructionsPath, original);
+    await provisionAgent({ sessionToken: "session-token", actorId: "human-1", body: {
+      name: "Project task", driver_type: driver, instructions: "Complete the task.", workspace_path: workspace,
+    } }, fakeDeps({}));
+    expect(await fs.readFile(instructionsPath, "utf8")).toBe(original);
   });
 
   it("reuses recorded step outputs when retrying after a mid-provisioning failure", async () => {
@@ -973,7 +986,7 @@ describe("templateFileForDriver", () => {
 });
 
 describe("instructionFileForDriver", () => {
-  it.each(["codex_terminal", "codex_exec", "pi_terminal", "grok_terminal", "opencode_terminal", "mathcode_terminal"])(
+  it.each(["codex_terminal", "codex_exec", "muse_terminal", "pi_terminal", "grok_terminal", "opencode_terminal", "mathcode_terminal"])(
     "uses AGENTS.md for %s",
     (driverType) => {
       expect(instructionFileForDriver(driverType)).toBe("AGENTS.md");
@@ -997,7 +1010,7 @@ describe("buildInstructionsFromTemplate", () => {
   it("renders the claude template by default and substitutes user instructions", async () => {
     const rendered = await buildInstructionsFromTemplate("Helper", "Help with the task.");
     expect(rendered).toContain("Claude-compatible Choruz runtime");
-    expect(rendered).toMatch(/^<!-- choruz-bootstrap-version: 13 -->/);
+    expect(rendered).toMatch(/^<!-- choruz-bootstrap-version: 14 -->/);
     expect(rendered).toContain("<!-- choruz-role:start -->");
     expect(rendered).toContain("<!-- choruz-role:end -->");
     expect(rendered).not.toContain("{{AGENT_INSTRUCTIONS}}");
@@ -1015,7 +1028,7 @@ describe("buildInstructionsFromTemplate", () => {
       "codex_terminal",
     );
     expect(rendered).toContain("# Choruz Platform Agent");
-    expect(rendered).toMatch(/^<!-- choruz-bootstrap-version: 13 -->/);
+    expect(rendered).toMatch(/^<!-- choruz-bootstrap-version: 14 -->/);
     expect(rendered).toContain("<!-- choruz-role:start -->");
     expect(rendered).toContain("<!-- choruz-role:end -->");
     expect(rendered).toContain("AGENTS.md");
@@ -1053,7 +1066,7 @@ describe("buildInstructionsFromTemplate", () => {
     expect(webhook).not.toContain("terminal output");
   });
 
-  it.each(["pi_terminal", "grok_terminal", "opencode_terminal"])(
+  it.each(["pi_terminal", "grok_terminal", "opencode_terminal", "muse_terminal"])(
     "renders the shared AGENTS.md template for %s",
     async (driverType) => {
       const rendered = await buildInstructionsFromTemplate(

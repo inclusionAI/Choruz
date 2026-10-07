@@ -92,7 +92,7 @@ describe("ChatApp channel task tabs", () => {
 
     expect(html).toContain("Message Launch Room");
     expect(html).not.toContain("Conversation views");
-    expect(html).not.toContain(">Tasks<");
+    expect(html).not.toContain('id="conversation-tasks-tab"');
   });
 
   it("renders the conversation Tasks tab when the host and client plugins match", () => {
@@ -117,7 +117,7 @@ describe("ChatApp channel task tabs", () => {
     );
 
     expect(html).toContain("Conversation views");
-    expect(html).toContain(">Tasks<");
+    expect(html).toContain('id="conversation-tasks-tab"');
   });
 
   it("hides the terminal chat surface while the task view is selected", () => {
@@ -153,7 +153,7 @@ describe("ChatApp channel task tabs", () => {
       }),
     );
 
-    expect(html).toContain(">Tasks<");
+    expect(html).toContain('id="conversation-tasks-tab"');
     expect(html).toContain("No tasks yet.");
     expect(html).toContain('class="terminal-pane is-hidden"');
   });
@@ -218,7 +218,7 @@ describe("ChatApp channel task tabs", () => {
       }),
     );
 
-    expect(html).not.toContain(">Tasks<");
+    expect(html).not.toContain('id="conversation-tasks-tab"');
   });
 
   it("renders create-from-message actions through the composed ChatApp path only for eligible conversations", () => {

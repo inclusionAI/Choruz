@@ -31,7 +31,7 @@ def fixture(path):
     (path / "bin/migrations/schema.sql").write_text("SELECT 1;\n")
     (path / "web/apps/web/.next/static").mkdir(parents=True)
     (path / "web/apps/web/server.js").write_text("// fixture\n")
-    manifest = {"format": 1, "revision": SHA, "platform": platform.system(),
+    manifest = {"format": 1, "composition": "full", "revision": SHA, "platform": platform.system(),
                 "architecture": platform.machine(), "files": release.inventory(path)}
     (path / "manifest.json").write_text(json.dumps(manifest))
     return path
@@ -86,6 +86,33 @@ class ReleaseTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "baseline"):
                 release.activate(self.root, self.new, [], 1)
         self.assertEqual(self.current.resolve(), self.old)
+
+    def test_selective_manifest_rejects_unknown_composition_and_managed_activation(self):
+        manifest = json.loads((self.new / "manifest.json").read_text())
+        del manifest["composition"]
+        (self.new / "manifest.json").write_text(json.dumps(manifest))
+        with self.assertRaisesRegex(ValueError, "unknown release composition"):
+            release.verify(self.new)
+        for composition in ("unknown", ["cli"], None):
+            manifest["composition"] = composition
+            (self.new / "manifest.json").write_text(json.dumps(manifest))
+            with self.assertRaisesRegex(ValueError, "unknown release composition"):
+                release.verify(self.new)
+        manifest["composition"] = "local"
+        (self.new / "manifest.json").write_text(json.dumps(manifest))
+        with patch.object(release, "control_services") as controls:
+            with self.assertRaisesRegex(ValueError, "requires a full release"):
+                release.activate(self.root, self.new, [], 1)
+            controls.assert_not_called()
+        self.assertEqual(self.current.resolve(), self.old)
+        self.assertFalse((self.root / "previous").exists())
+        self.current.unlink()
+        self.current.symlink_to(self.new)
+        with patch.object(release, "control_services") as controls:
+            with self.assertRaisesRegex(ValueError, "current managed release"):
+                release.activate(self.root, self.old, [], 1)
+            controls.assert_not_called()
+        self.assertEqual(self.current.resolve(), self.new)
 
     def test_exact_service_controls_and_atomic_links(self):
         for system, expected in (
@@ -187,18 +214,35 @@ class ReleaseTests(unittest.TestCase):
         def output(args, **kwargs):
             return SHA if args[0] == "git" else json.dumps({"target_directory": str(source / "target")}).encode()
 
-        with patch.object(release, "ROOT", source), patch.object(release, "run"), patch.object(release.subprocess, "check_output", side_effect=output):
-            target = release.package(self.root)
-        self.assertEqual(self.current.resolve(), self.old)
-        self.assertFalse((self.root / "previous").exists())
-        self.assertTrue((target / "web/apps/web/public/logo.svg").is_file())
-        self.assertTrue((target / "bin/migrations/schema.sql").is_file())
-        for notice in ("LICENSE", "NOTICE"):
-            self.assertEqual((target / notice).read_text(), f"retained {notice}")
-        self.assertFalse((target / "web/apps/web/.env.production").exists())
-        self.assertEqual(release.verify(target)["revision"], SHA)
-        bundle = self.root / "dist" / f"{target.name}.tar.gz"
-        self.assertEqual(archive.verify_archive(bundle, SHA)["revision"], SHA)
+        for composition, binaries in (
+            ("full", release.BINARIES),
+            ("cli", ("choruz",)),
+            ("local", ("choruz", "choruz-server", "choruz-api-gateway")),
+            ("headless", release.BINARIES),
+        ):
+            with self.subTest(composition=composition):
+                with patch.object(release, "ROOT", source), patch.object(release, "run") as commands, patch.object(release.subprocess, "check_output", side_effect=output):
+                    target = release.package(self.root) if composition == "full" else release.package(self.root, composition)
+                expected_packages = [arg for binary in binaries for arg in ("-p", "choruz-cli" if binary == "choruz" else binary)]
+                self.assertIn(unittest.mock.call("cargo", "build", "--locked", "--release", *expected_packages, cwd=source), commands.call_args_list)
+                self.assertEqual(any(call.args[0] == "pnpm" for call in commands.call_args_list), composition == "full")
+                self.assertEqual(sorted(p.name for p in (target / "bin").iterdir() if p.is_file()), sorted(binaries))
+                self.assertEqual(self.current.resolve(), self.old)
+                self.assertFalse((self.root / "previous").exists())
+                self.assertEqual((target / "web/apps/web/public/logo.svg").is_file(), composition == "full")
+                self.assertEqual((target / "bin/migrations/schema.sql").is_file(), composition != "cli")
+                for notice in ("LICENSE", "NOTICE"):
+                    self.assertEqual((target / notice).read_text(), f"retained {notice}")
+                self.assertFalse((target / "web/apps/web/.env.production").exists())
+                self.assertEqual(release.verify(target)["composition"], composition)
+                bundle = self.root / "dist" / f"{target.name}.tar.gz"
+                self.assertEqual(archive.verify_archive(bundle, SHA)["revision"], SHA)
+                (target / "bin" / binaries[-1]).unlink()
+                manifest = json.loads((target / "manifest.json").read_text())
+                manifest["files"] = release.inventory(target)
+                (target / "manifest.json").write_text(json.dumps(manifest))
+                with self.assertRaisesRegex(ValueError, "binary is missing"):
+                    release.verify(target)
 
 
 if __name__ == "__main__":

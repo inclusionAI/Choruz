@@ -1,0 +1,759 @@
+//! Read native transcripts in resumable windows; never start a Harness to inspect history.
+use choruz_agent_runtime::session_files::{collect_codex_session_files, read_codex_session_meta};
+use choruz_common::AppError;
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use std::{
+    fs::File,
+    io::{BufRead, BufReader, Read, Seek, SeekFrom},
+    path::{Path, PathBuf},
+};
+
+const MAX_WINDOW_BYTES: usize = 160 * 1024;
+
+use crate::source::{Cursor, HistoricalRecord};
+
+/// A caller-authorized, inactive native session. Paths select one account and
+/// workspace; this reader never resolves ambient accounts or starts a process.
+pub struct Source {
+    pub harness: Harness,
+    pub account_home: PathBuf,
+    pub workspace_path: PathBuf,
+    pub session_id: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Harness {
+    Claude,
+    Codex,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Window {
+    pub records: Vec<Value>,
+    pub cursor: Cursor,
+    pub more: bool,
+    pub reset: bool,
+    pub project_guidance: Vec<Value>,
+}
+
+/// Read a bounded window and workspace guidance. The caller must authorize the
+/// source and ensure its turn is finished. Identity/provenance failures are
+/// errors; oversized records are rejected, not truncated. No cursor is persisted.
+pub fn read(spec: &Source, previous: Cursor) -> Result<Window, AppError> {
+    let id = spec.session_id.as_str();
+    if id.is_empty() || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
+        return Err(AppError::Validation(
+            "Invalid native session identifier".into(),
+        ));
+    }
+    let path = source_path(spec, id)?;
+    let mut window = read_window(&path, id, previous, spec.harness == Harness::Claude)?;
+    let root = Path::new(&spec.workspace_path)
+        .canonicalize()
+        .map_err(io_error)?;
+    for name in ["CLAUDE.md", "AGENTS.md"] {
+        let path = root.join(name);
+        if !path.exists() {
+            continue;
+        }
+        let path = path.canonicalize().map_err(io_error)?;
+        if !path.starts_with(&root) {
+            return Err(AppError::Forbidden(
+                "Project guidance points outside this workspace".into(),
+            ));
+        }
+        let mut text = String::new();
+        File::open(path)
+            .map_err(io_error)?
+            .take(32 * 1024 + 1)
+            .read_to_string(&mut text)
+            .map_err(io_error)?;
+        if text.len() > 32 * 1024 {
+            return Err(AppError::Validation(
+                "Project guidance exceeds the analysis context limit".into(),
+            ));
+        }
+        window
+            .project_guidance
+            .push(json!({"path":name,"content":text}));
+    }
+    Ok(window)
+}
+
+fn source_path(spec: &Source, id: &str) -> Result<PathBuf, AppError> {
+    let workspace = std::fs::canonicalize(&spec.workspace_path).map_err(io_error)?;
+    if spec.harness == Harness::Claude {
+        let root = spec.account_home.join("projects");
+        let root = root.canonicalize().map_err(io_error)?;
+        let mut matches = Vec::new();
+        for entry in std::fs::read_dir(&root).map_err(io_error)? {
+            let path = entry.map_err(io_error)?.path().join(format!("{id}.jsonl"));
+            if let Ok(path) = path.canonicalize()
+                && path.starts_with(&root)
+                && path.is_file()
+            {
+                matches.push(path);
+            }
+        }
+        if matches.len() != 1 {
+            return Err(AppError::NotFound(
+                "Selected native session is missing or ambiguous".into(),
+            ));
+        }
+        let path = matches.remove(0);
+        let mut reader = BufReader::new(File::open(&path).map_err(io_error)?);
+        while let Some((entry, _)) = entry(&mut reader)? {
+            if let Some(cwd) = entry["cwd"].as_str() {
+                if Path::new(cwd).canonicalize().ok().as_ref() != Some(&workspace) {
+                    return Err(AppError::Forbidden(
+                        "Native session belongs to another workspace".into(),
+                    ));
+                }
+                return Ok(path);
+            }
+        }
+        return Err(AppError::Validation(
+            "Native session has no workspace provenance".into(),
+        ));
+    }
+    let files = collect_codex_session_files(&spec.account_home.join("sessions"))?;
+    let mut matches = Vec::new();
+    for path in files {
+        // The metadata, not the filename, owns the identity and workspace.
+        if let Some(meta) = read_codex_session_meta(Path::new(&path))?
+            && meta.session_id == id
+            && Path::new(&meta.cwd).canonicalize().ok().as_ref() == Some(&workspace)
+        {
+            matches.push(PathBuf::from(path));
+        }
+    }
+    if matches.len() != 1 {
+        return Err(AppError::NotFound(
+            "Selected Codex session is missing or ambiguous in this account".into(),
+        ));
+    }
+    Ok(matches.remove(0))
+}
+
+fn io_error(error: std::io::Error) -> AppError {
+    AppError::Internal(format!("read native experience source: {}", error.kind()))
+}
+
+/// Revalidate cited records before a committed cursor in the selected native
+/// session. Returns projected records; excluded reasoning and unread records are
+/// never evidence. Requires the reader's append-only source assumption; missing
+/// or truncated source fails the review. An envelope or complete serialized
+/// response exceeding 160 KiB fails validation without returning partial evidence.
+pub fn references(
+    spec: &Source,
+    cursor: &Cursor,
+    references: &[String],
+) -> Result<Vec<HistoricalRecord>, AppError> {
+    if spec.session_id != cursor.session
+        || cursor.session.is_empty()
+        || !cursor
+            .session
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    {
+        return Err(AppError::Validation(
+            "Historical evidence requires the selected native session".into(),
+        ));
+    }
+    references_before(
+        &source_path(spec, &cursor.session)?,
+        cursor,
+        references,
+        spec.harness == Harness::Claude,
+    )
+}
+
+fn references_before(
+    path: &Path,
+    cursor: &Cursor,
+    references: &[String],
+    claude: bool,
+) -> Result<Vec<HistoricalRecord>, AppError> {
+    let file = File::open(path).map_err(io_error)?;
+    if cursor.offset > file.metadata().map_err(io_error)?.len() {
+        return Err(AppError::Validation(
+            "Historical learning source was truncated; evidence cannot be recovered".into(),
+        ));
+    }
+    let mut reader = BufReader::new(file);
+    let mut verified = Vec::new();
+    let mut response_bytes = 2; // Serialized array brackets, including the empty response.
+    for reference in references {
+        let Some(offset) = reference
+            .strip_prefix(&format!("{}:", cursor.session))
+            .and_then(|offset| offset.parse::<u64>().ok())
+            .filter(|offset| {
+                *reference == format!("{}:{offset}", cursor.session) && *offset < cursor.offset
+            })
+        else {
+            continue;
+        };
+        // A byte inside a JSON string or nested value is not a source record.
+        if offset > 0 {
+            reader.seek(SeekFrom::Start(offset - 1)).map_err(io_error)?;
+            let mut preceding = [0];
+            reader.read_exact(&mut preceding).map_err(io_error)?;
+            if preceding != [b'\n'] {
+                continue;
+            }
+        } else {
+            reader.seek(SeekFrom::Start(0)).map_err(io_error)?;
+        }
+        if let Some((raw, size)) = entry(&mut reader)?
+            && size <= cursor.offset - offset
+            && let Some(record) = project(raw, claude)
+        {
+            let envelope = HistoricalRecord {
+                reference: reference.clone(),
+                session: cursor.session.clone(),
+                offset,
+                record,
+            };
+            let count = serde_json::to_vec(&envelope)
+                .map_err(|_| AppError::Internal("Encode historical learning record".into()))?
+                .len();
+            if count > MAX_WINDOW_BYTES {
+                return Err(AppError::Validation(
+                    "Historical record exceeds the recovery response limit".into(),
+                ));
+            }
+            response_bytes += count + usize::from(!verified.is_empty());
+            if response_bytes > MAX_WINDOW_BYTES {
+                return Err(AppError::Validation(
+                    "Historical records exceed the recovery response limit".into(),
+                ));
+            }
+            verified.push(envelope);
+        }
+    }
+    Ok(verified)
+}
+
+/// Recover verified references with native model/version attribution. This does
+/// not infer a configured model when source metadata is absent.
+pub fn behavior_references(
+    spec: &Source,
+    cursor: &Cursor,
+    requested: &[String],
+) -> Result<Vec<HistoricalRecord>, AppError> {
+    let mut records = references(spec, cursor, requested)?;
+    let metadata = execution_metadata(
+        &source_path(spec, &cursor.session)?,
+        cursor,
+        requested,
+        spec.harness == Harness::Claude,
+    )?;
+    for record in &mut records {
+        if let Some(context) = metadata.get(&record.offset) {
+            record.record["_execution"] = context.clone();
+        }
+    }
+    if serde_json::to_vec(&records)
+        .map_err(|_| AppError::Internal("Encode attributed evidence".into()))?
+        .len()
+        > MAX_WINDOW_BYTES
+    {
+        return Err(AppError::Validation(
+            "Attributed evidence exceeds its source limit".into(),
+        ));
+    }
+    Ok(records)
+}
+
+fn execution_metadata(
+    path: &Path,
+    cursor: &Cursor,
+    references: &[String],
+    claude: bool,
+) -> Result<std::collections::BTreeMap<u64, Value>, AppError> {
+    let wanted: std::collections::BTreeSet<u64> = references
+        .iter()
+        .filter_map(|reference| {
+            reference
+                .strip_prefix(&format!("{}:", cursor.session))?
+                .parse()
+                .ok()
+        })
+        .filter(|offset| *offset < cursor.offset)
+        .collect();
+    let Some(last) = wanted.last() else {
+        return Ok(Default::default());
+    };
+    let mut reader = BufReader::new(File::open(path).map_err(io_error)?);
+    let mut offset = 0;
+    let mut model = Value::Null;
+    let mut version = Value::Null;
+    let mut result = std::collections::BTreeMap::new();
+    while offset <= *last {
+        let Some((raw, size)) = entry(&mut reader)? else {
+            break;
+        };
+        if claude {
+            if raw["version"].is_string() {
+                version = raw["version"].clone();
+            }
+            if raw["type"] == "assistant" {
+                model = raw["message"]["model"].clone();
+            }
+        } else {
+            if raw["type"] == "session_meta" {
+                version = raw["payload"]["cli_version"].clone();
+            }
+            if raw["type"] == "turn_context" {
+                model = raw["payload"]["model"].clone();
+            }
+        }
+        if wanted.contains(&offset)
+            && (raw["type"] == "assistant"
+                || (raw["type"] == "response_item" && raw["payload"]["role"] == "assistant"))
+        {
+            result.insert(offset, json!({"model":model,"harness_version":version}));
+        }
+        offset += size;
+    }
+    Ok(result)
+}
+
+fn entry(reader: &mut BufReader<File>) -> Result<Option<(Value, u64)>, AppError> {
+    let mut bytes = Vec::new();
+    reader
+        .take(8 * 1024 * 1024 + 1)
+        .read_until(b'\n', &mut bytes)
+        .map_err(io_error)?;
+    if bytes.is_empty() || bytes.last() != Some(&b'\n') {
+        // A writer may still be completing this record. Do not commit its cursor.
+        return Ok(None);
+    }
+    if bytes.len() > 8 * 1024 * 1024 {
+        return Err(AppError::Validation(
+            "Native record exceeds the analysis reader limit; no source cursor was advanced".into(),
+        ));
+    }
+    let value = serde_json::from_slice(&bytes)
+        .map_err(|_| AppError::Validation("Native transcript contains an invalid record".into()))?;
+    Ok(Some((value, bytes.len() as u64)))
+}
+
+fn read_window(path: &Path, id: &str, previous: Cursor, claude: bool) -> Result<Window, AppError> {
+    let file = File::open(path).map_err(io_error)?;
+    let length = file.metadata().map_err(io_error)?.len();
+    let reset = previous.session != id || previous.offset > length;
+    let mut offset = if reset { 0 } else { previous.offset };
+    let mut reader = BufReader::new(file);
+    reader.seek(SeekFrom::Start(offset)).map_err(io_error)?;
+    let mut records = Vec::new();
+    let mut bytes = 0;
+    let mut more = false;
+    while let Some((raw, size)) = entry(&mut reader)? {
+        if let Some(record) = project(raw, claude) {
+            let record = json!({"ref":format!("{id}:{offset}"),"record":record});
+            let count = record.to_string().len();
+            if count > MAX_WINDOW_BYTES {
+                return Err(AppError::Validation(
+                    "A native record exceeds the model window; no partial record was analyzed"
+                        .into(),
+                ));
+            }
+            if bytes + count > MAX_WINDOW_BYTES {
+                more = true;
+                break;
+            }
+            bytes += count;
+            records.push(record);
+        }
+        offset += size;
+    }
+    Ok(Window {
+        records,
+        cursor: Cursor {
+            session: id.into(),
+            offset,
+        },
+        more,
+        reset,
+        project_guidance: Vec::new(),
+    })
+}
+
+fn project(mut raw: Value, claude: bool) -> Option<Value> {
+    if claude {
+        if !matches!(raw["type"].as_str(), Some("user" | "assistant" | "result")) {
+            return None;
+        }
+        if let Some(content) = raw["message"]["content"].as_array_mut() {
+            content.retain(|block| {
+                !matches!(
+                    block["type"].as_str(),
+                    Some("thinking" | "redacted_thinking")
+                )
+            });
+        }
+        Some(
+            json!({"type":raw["type"],"uuid":raw["uuid"],"parentUuid":raw["parentUuid"],
+            "isSidechain":raw["isSidechain"],"timestamp":raw["timestamp"],"message":raw["message"],"result":raw["result"]}),
+        )
+    } else {
+        if raw["type"] != "response_item" || raw["payload"]["type"] == "reasoning" {
+            return None;
+        }
+        Some(json!({"timestamp":raw["timestamp"],"payload":raw["payload"]}))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn selected_accounts_preserve_private_evidence_and_reject_wrong_provenance() {
+        for harness in [Harness::Claude, Harness::Codex] {
+            let dir = tempfile::tempdir().unwrap();
+            let workspace = dir.path().join("workspace");
+            std::fs::create_dir(&workspace).unwrap();
+            let mut source = Source {
+                harness,
+                account_home: dir.path().join("account-a"),
+                workspace_path: workspace.clone(),
+                session_id: "owned".into(),
+            };
+            for account in ["account-a", "account-b"] {
+                let path = dir
+                    .path()
+                    .join(account)
+                    .join(if harness == Harness::Claude {
+                        "projects/project/owned.jsonl"
+                    } else {
+                        "sessions/rollout.jsonl"
+                    });
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                let entries = if harness == Harness::Claude {
+                    vec![
+                        json!({"type":"user","cwd":workspace,"message":{"content":account}}),
+                        json!({"type":"assistant","version":"fixture","message":{"model":"observed-model","content":[{"type":"text","text":"result"},{"type":"thinking","thinking":"private-reasoning"}]}}),
+                    ]
+                } else {
+                    vec![
+                        json!({"type":"session_meta","payload":{"id":"owned","cwd":workspace,"cli_version":"fixture"}}),
+                        json!({"type":"turn_context","payload":{"model":"observed-model"}}),
+                        json!({"type":"response_item","payload":{"type":"message","role":"user","content":account}}),
+                        json!({"type":"response_item","payload":{"type":"message","role":"assistant","content":"result"}}),
+                    ]
+                };
+                std::fs::write(
+                    path,
+                    entries
+                        .into_iter()
+                        .map(|entry| format!("{entry}\n"))
+                        .collect::<String>(),
+                )
+                .unwrap();
+            }
+            let window = read(&source, Cursor::default()).unwrap();
+            assert_eq!(window.records.len(), 2);
+            assert!(window.records[0].to_string().contains("account-a"));
+            assert!(
+                !serde_json::to_string(&window)
+                    .unwrap()
+                    .contains("private-reasoning")
+            );
+            let refs = vec![window.records[1]["ref"].as_str().unwrap().into()];
+            let recovered = behavior_references(&source, &window.cursor, &refs).unwrap();
+            assert_eq!(recovered[0].record["_execution"]["model"], "observed-model");
+            source.account_home = dir.path().join("account-b");
+            assert!(
+                read(&source, Cursor::default()).unwrap().records[0]
+                    .to_string()
+                    .contains("account-b")
+            );
+            source.session_id = "another".into();
+            assert!(matches!(
+                references(&source, &window.cursor, &refs),
+                Err(AppError::Validation(_))
+            ));
+            source.session_id = "owned".into();
+            source.workspace_path = dir.path().into();
+            assert!(read(&source, Cursor::default()).is_err());
+        }
+    }
+
+    #[test]
+    fn behavior_attribution_tracks_native_model_changes_not_configured_aliases() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.jsonl");
+        for (claude, entries) in [
+            (
+                true,
+                vec![
+                    json!({"type":"assistant","version":"2.1","message":{"model":"actual-a"}}),
+                    json!({"type":"assistant","version":"2.2","message":{"model":"actual-b"}}),
+                    json!({"type":"assistant","message":{}}),
+                ],
+            ),
+            (
+                false,
+                vec![
+                    json!({"type":"session_meta","payload":{"cli_version":"0.1"}}),
+                    json!({"type":"turn_context","payload":{"model":"actual-a"}}),
+                    json!({"type":"response_item","payload":{"role":"assistant"}}),
+                    json!({"type":"turn_context","payload":{"model":"actual-b"}}),
+                    json!({"type":"response_item","payload":{"role":"assistant"}}),
+                    json!({"type":"turn_context","payload":{}}),
+                    json!({"type":"response_item","payload":{"role":"assistant"}}),
+                ],
+            ),
+        ] {
+            let mut text = String::new();
+            let mut offsets = Vec::new();
+            for entry in entries {
+                if entry["type"] == "assistant" || entry["type"] == "response_item" {
+                    offsets.push(text.len() as u64);
+                }
+                text.push_str(&format!("{entry}\n"));
+            }
+            std::fs::write(&path, &text).unwrap();
+            let cursor = Cursor {
+                session: "owned".into(),
+                offset: text.len() as u64,
+            };
+            let mut refs: Vec<_> = offsets
+                .iter()
+                .map(|offset| format!("owned:{offset}"))
+                .collect();
+            refs.push(format!("other:{}", text.len()));
+            let result = execution_metadata(&path, &cursor, &refs, claude).unwrap();
+            assert_eq!(result.len(), 3);
+            assert_eq!(result[&offsets[0]]["model"], "actual-a");
+            assert_eq!(result[&offsets[1]]["model"], "actual-b");
+            assert!(
+                result[&offsets[2]]["model"].is_null(),
+                "missing metadata must not inherit a previous model"
+            );
+            assert_eq!(
+                result[&offsets[1]]["harness_version"],
+                if claude { "2.2" } else { "0.1" }
+            );
+        }
+    }
+
+    #[test]
+    fn historical_response_rejects_oversized_serialized_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.jsonl");
+        let content = "x".repeat(160 * 1024 - 1);
+        let raw = format!(
+            "{}\n",
+            json!({"type":"response_item","payload":{
+                "type":"message","role":"user","content":content
+            }})
+        );
+        std::fs::write(&path, &raw).unwrap();
+        let cursor = Cursor {
+            session: "owned".into(),
+            offset: raw.len() as u64,
+        };
+        let result = references_before(&path, &cursor, &["owned:0".into()], false);
+        assert!(matches!(result, Err(AppError::Validation(message))
+            if message == "Historical record exceeds the recovery response limit"));
+    }
+
+    #[test]
+    fn historical_response_bounds_serialized_array_including_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.jsonl");
+        let raw = |content: String| {
+            format!(
+                "{}\n",
+                json!({"type":"response_item","payload":{
+                    "type":"message","role":"user","content":content
+                }})
+            )
+        };
+        let baseline = raw(String::new());
+        let projected = project(serde_json::from_str(&baseline).unwrap(), false).unwrap();
+        let envelope = HistoricalRecord {
+            reference: "owned:0".into(),
+            session: "owned".into(),
+            offset: 0,
+            record: projected,
+        };
+        let overhead = serde_json::to_vec(&vec![envelope]).unwrap().len();
+        let boundary = raw("x".repeat(160 * 1024 - overhead));
+        std::fs::write(&path, &boundary).unwrap();
+        let cursor = Cursor {
+            session: "owned".into(),
+            offset: boundary.len() as u64,
+        };
+        let recovered = references_before(&path, &cursor, &["owned:0".into()], false).unwrap();
+        assert_eq!(serde_json::to_vec(&recovered).unwrap().len(), 160 * 1024);
+        let oversized = raw("x".repeat(160 * 1024 - overhead + 1));
+        std::fs::write(&path, &oversized).unwrap();
+        let cursor = Cursor {
+            offset: oversized.len() as u64,
+            ..cursor
+        };
+        assert!(
+            matches!(references_before(&path, &cursor, &["owned:0".into()], false),
+            Err(AppError::Validation(message)) if message == "Historical records exceed the recovery response limit")
+        );
+    }
+
+    #[test]
+    fn historical_response_rejects_aggregate_of_individually_small_records() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.jsonl");
+        let small = format!(
+            "{}\n",
+            json!({"type":"response_item","payload":{
+                "type":"message","role":"user","content":"x".repeat(80 * 1024)
+            }})
+        );
+        std::fs::write(&path, format!("{small}{small}")).unwrap();
+        let cursor = Cursor {
+            session: "owned".into(),
+            offset: (small.len() * 2) as u64,
+        };
+        let refs = vec!["owned:0".into(), format!("owned:{}", small.len())];
+        for reference in &refs {
+            let one =
+                references_before(&path, &cursor, std::slice::from_ref(reference), false).unwrap();
+            assert!(serde_json::to_vec(&one).unwrap().len() < 160 * 1024);
+        }
+        assert!(matches!(references_before(&path, &cursor, &refs, false),
+            Err(AppError::Validation(message)) if message == "Historical records exceed the recovery response limit"));
+    }
+
+    #[test]
+    fn historical_records_return_only_projected_visible_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.jsonl");
+        let raw = format!(
+            "{}\n",
+            json!({"type":"user","message":{"content":[
+                {"type":"text","text":"[choruz-experience revision=p1]"},
+                {"type":"thinking","thinking":"excluded fixture"},
+                {"type":"redacted_thinking","data":"excluded fixture"}
+            ]}})
+        );
+        std::fs::write(&path, &raw).unwrap();
+        let cursor = Cursor {
+            session: "owned".into(),
+            offset: raw.len() as u64,
+        };
+        let records = references_before(&path, &cursor, &["owned:0".into()], true).unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(
+            records[0].record["message"]["content"],
+            json!([
+                {"type":"text","text":"[choruz-experience revision=p1]"}
+            ])
+        );
+    }
+
+    #[test]
+    fn historical_references_require_complete_projected_records_before_the_cursor() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.jsonl");
+        let opening = format!(
+            "{}\n",
+            json!({"type":"response_item","payload":{"type":"message","role":"user","content":"Check the result"}})
+        );
+        let reasoning = format!(
+            "{}\n",
+            json!({"type":"response_item","payload":{"type":"reasoning"}})
+        );
+        let unread = format!(
+            "{}\n",
+            json!({"type":"response_item","payload":{"type":"message","role":"assistant","content":"Later result"}})
+        );
+        std::fs::write(&path, format!("{opening}{reasoning}{unread}")).unwrap();
+        let cursor = Cursor {
+            session: "owned".into(),
+            offset: (opening.len() + reasoning.len()) as u64,
+        };
+        let refs = vec![
+            "owned:0".into(),
+            "other:0".into(),
+            "owned:1".into(),
+            "owned:00".into(),
+            format!("owned:{}", opening.len()),
+            format!("owned:{}", cursor.offset),
+        ];
+        let recovered = references_before(&path, &cursor, &refs, false).unwrap();
+        assert_eq!(recovered.len(), 1);
+        assert_eq!(recovered[0].reference, "owned:0");
+        assert_eq!(recovered[0].session, "owned");
+        assert_eq!(recovered[0].offset, 0);
+        assert_eq!(recovered[0].record["payload"]["role"], "user");
+        assert_eq!(
+            recovered[0].record["payload"]["content"],
+            "Check the result"
+        );
+        let partial = Cursor {
+            offset: opening.len() as u64 - 1,
+            ..cursor.clone()
+        };
+        assert!(
+            references_before(&path, &partial, &refs, false)
+                .unwrap()
+                .is_empty()
+        );
+        std::fs::write(&path, &opening).unwrap();
+        assert!(references_before(&path, &cursor, &refs, false).is_err());
+    }
+
+    #[test]
+    fn windows_resume_without_dropping_attempts_or_partial_records() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.jsonl");
+        let mut file = File::create(&path).unwrap();
+        let first = json!({"type":"user","message":{"content":"Please explain the result"}});
+        writeln!(file, "{first}").unwrap();
+        for index in 0..4 {
+            writeln!(file,"{}",json!({"type":"assistant","uuid":format!("attempt-{index}"),"message":{"content":[{"type":"text","text":"x".repeat(50000)},{"type":"thinking","thinking":"private reasoning"}]}})).unwrap();
+        }
+        let correction = json!({"type":"user","message":{"content":"The result is wrong; you skipped the failed check"}}).to_string();
+        write!(file, "{}", &correction[..20]).unwrap();
+        file.flush().unwrap();
+        let first = read_window(&path, "owned-session", Cursor::default(), true).unwrap();
+        assert!(first.more);
+        assert_eq!(first.records.len(), 4);
+        assert!(
+            first.records[0]["record"]["message"]["content"]
+                .as_str()
+                .unwrap()
+                .contains("explain")
+        );
+        assert!(
+            !serde_json::to_string(&first)
+                .unwrap()
+                .contains("private reasoning")
+        );
+        let second = read_window(&path, "owned-session", first.cursor.clone(), true).unwrap();
+        assert_eq!(second.records.len(), 1);
+        assert_eq!(second.records[0]["record"]["uuid"], "attempt-3");
+        assert!(!second.more);
+        writeln!(file, "{}", &correction[20..]).unwrap();
+        file.flush().unwrap();
+        let third = read_window(&path, "owned-session", second.cursor, true).unwrap();
+        assert_eq!(third.records.len(), 1);
+        assert!(
+            third.records[0]["record"]["message"]["content"]
+                .as_str()
+                .unwrap()
+                .contains("wrong")
+        );
+        assert!(
+            read_window(&path, "owned-session", third.cursor, true)
+                .unwrap()
+                .records
+                .is_empty()
+        );
+    }
+}

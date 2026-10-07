@@ -8,7 +8,7 @@ test("group header identifies the selected conversation and opens its details", 
   await page.goto(`${WEB_BASE}/dashboard?conversationId=${group.id}`);
   const header = page.locator(".chat-header");
   await expect(header.getByRole("heading", { name: group.name, exact: true })).toBeVisible();
-  await expect(header.locator(".avatar")).toBeVisible();
+  await expect(header.locator(".avatar")).not.toBeVisible();
   await expect(header.locator(".chat-subtitle")).toContainText("1 member");
   await header.getByTitle("Toggle details").click();
   await expect(page.locator(".detail-identity-title")).toHaveText(group.name);

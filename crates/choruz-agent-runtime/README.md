@@ -8,6 +8,13 @@ Prepare CLI arguments and account environments, interpret headless output, and d
 
 ## Validate standalone use
 
+`executable::terminal_binary` resolves explicit executable paths and device-level overrides for terminal drivers. Background learning uses the same resolver; callers do not need the PTY host to select an executable.
+
+`process::ProcessContainer` owns child-process containment and cleanup for
+device operations, including terminals and computer-tool setup.
+
+`process_scope` fences caller-scoped job admission and signals cancellation. Retiring a scope prevents later admissions in that process and yields a drain that waits for admitted jobs to release. Callers retain authorization, terminate their owned processes and release each job after cleanup; a drain does not itself kill a process. Unscoped standalone calls are independent of account retirement.
+
 The crate's tests need no platform database:
 
 ```sh

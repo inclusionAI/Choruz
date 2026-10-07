@@ -16,7 +16,8 @@ use choruz_agent_runtime::{
 use choruz_common::AppError;
 use serde::{Deserialize, Serialize};
 
-use crate::process::ProcessContainer;
+use choruz_agent_runtime::executable::terminal_binary;
+use choruz_agent_runtime::process::ProcessContainer;
 
 /// Everything a device needs to spawn one interactive Harness. The gateway
 /// builds it from the binding; the connector receives it over the host link.
@@ -46,8 +47,21 @@ pub struct TerminalSpec {
     pub harness_account: serde_json::Value,
 }
 
+impl From<TerminalSpec> for choruz_learning::native_cli::CliConfig {
+    fn from(spec: TerminalSpec) -> Self {
+        Self {
+            driver_type: spec.driver_type,
+            binary_path: spec.binary_path,
+            model: spec.model,
+            harness_account: spec.harness_account,
+        }
+    }
+}
+
 pub struct TerminalSession {
     pub authentication: bool,
+    account_id: Option<String>,
+    scope_job: StdMutex<Option<choruz_agent_runtime::process_scope::Job>>,
     /// The workspace the Harness runs in; a remote device ships this
     /// workspace's outbox while the terminal lives.
     pub workspace_path: PathBuf,
@@ -74,6 +88,17 @@ impl TerminalSession {
     }
 
     pub fn write_all(&self, data: &[u8]) -> Result<(), AppError> {
+        if self
+            .scope_job
+            .lock()
+            .expect("terminal process scope")
+            .as_ref()
+            .is_none_or(|job| job.is_cancelled())
+        {
+            return Err(AppError::Conflict(
+                "Harness account is being removed".into(),
+            ));
+        }
         let mut writer = self.writer.lock().expect("writer lock");
         writer
             .write_all(data)
@@ -233,6 +258,13 @@ pub fn close_terminal(pool: &TerminalPool, terminal_id: &str) -> Result<(), AppE
             }
         }
     }
+    if let Some(session) = sessions.get(terminal_id) {
+        session
+            .scope_job
+            .lock()
+            .expect("terminal process scope")
+            .take();
+    }
     sessions.remove(terminal_id);
     Ok(())
 }
@@ -242,62 +274,12 @@ pub fn is_terminal_driver(driver_type: &DriverType) -> bool {
         driver_type,
         DriverType::ClaudeTerminal
             | DriverType::CodexTerminal
+            | DriverType::MuseTerminal
             | DriverType::PiTerminal
             | DriverType::GrokTerminal
             | DriverType::OpenCodeTerminal
             | DriverType::MathCodeTerminal
     )
-}
-
-pub fn default_terminal_binary(driver_type: &DriverType) -> &'static str {
-    match driver_type {
-        DriverType::ClaudeTerminal => "claude",
-        DriverType::CodexTerminal => "codex",
-        DriverType::PiTerminal => "pi",
-        DriverType::GrokTerminal => "grok",
-        DriverType::OpenCodeTerminal => "opencode",
-        DriverType::MathCodeTerminal => "mathcode",
-        _ => "claude",
-    }
-}
-
-/// The executable for a terminal. `binary_path: "codex"` is the portable
-/// default persisted by older bindings; an explicitly configured Harness
-/// executable (`CHORUZ_<HARNESS>_BINARY`, then supported `*_CLI_PATH`, on this device) beats that bare
-/// default because PATH can otherwise select a stale CLI. Absolute or custom
-/// per-agent paths remain authoritative.
-pub fn terminal_binary(driver_type: &DriverType, configured: Option<&str>) -> String {
-    terminal_binary_with_env(driver_type, configured, |key| std::env::var(key).ok())
-}
-
-fn terminal_binary_with_env(
-    driver_type: &DriverType,
-    configured: Option<&str>,
-    env: impl Fn(&str) -> Option<String>,
-) -> String {
-    let configured = configured
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| default_terminal_binary(driver_type));
-    let environment_keys: &[&str] = match driver_type {
-        DriverType::ClaudeTerminal => &["CHORUZ_CLAUDE_BINARY", "CHORUZ_CLAUDE_CLI_PATH"],
-        DriverType::CodexTerminal => &["CHORUZ_CODEX_BINARY", "CHORUZ_CODEX_CLI_PATH"],
-        DriverType::PiTerminal => &["CHORUZ_PI_BINARY", "CHORUZ_PI_CLI_PATH"],
-        DriverType::GrokTerminal => &["CHORUZ_GROK_BINARY", "CHORUZ_GROK_CLI_PATH"],
-        DriverType::OpenCodeTerminal => &["CHORUZ_OPENCODE_BINARY", "CHORUZ_OPENCODE_CLI_PATH"],
-        DriverType::MathCodeTerminal => &["CHORUZ_MATHCODE_BINARY"],
-        _ => &[],
-    };
-    if configured == default_terminal_binary(driver_type)
-        && let Some(path) = environment_keys.iter().find_map(|key| {
-            env(key)
-                .map(|value| value.trim().to_owned())
-                .filter(|value| !value.is_empty())
-        })
-    {
-        return path;
-    }
-    configured.to_string()
 }
 
 pub fn codex_terminal_args(resume_session_id: Option<&str>, model: Option<&str>) -> Vec<String> {
@@ -345,6 +327,16 @@ pub fn terminal_cli_args(
             args
         }
         DriverType::CodexTerminal => codex_terminal_args(resume_session_id, model),
+        DriverType::MuseTerminal => {
+            let mut args = vec!["--trust-workspace".into()];
+            if let Some(model) = model {
+                args.extend(["--model".into(), model.into()]);
+            }
+            if let Some(session_id) = resume_session_id {
+                args.extend(["resume".into(), session_id.into()]);
+            }
+            args
+        }
         DriverType::PiTerminal => {
             let mut args = vec!["--approve".into()];
             if let Some(session_id) = resume_session_id {
@@ -548,6 +540,10 @@ pub fn ensure_terminal(
         cmd.arg(arg);
     }
 
+    let scope_job = choruz_agent_runtime::process_scope::Job::begin(
+        spec.harness_account["harness_account_id"].as_str(),
+    )
+    .map_err(|message| AppError::Conflict(message.into()))?;
     let child = pair
         .slave
         .spawn_command(cmd)
@@ -600,6 +596,10 @@ pub fn ensure_terminal(
 
     let session = Arc::new(TerminalSession {
         authentication: spec.authentication,
+        account_id: spec.harness_account["harness_account_id"]
+            .as_str()
+            .map(str::to_owned),
+        scope_job: StdMutex::new(Some(scope_job)),
         workspace_path: workspace.to_path_buf(),
         writer: Arc::new(StdMutex::new(writer)),
         output_tx,
@@ -611,11 +611,57 @@ pub fn ensure_terminal(
         _login_directory: login_directory,
     });
 
+    let cancelled = session
+        .scope_job
+        .lock()
+        .expect("terminal process scope")
+        .as_ref()
+        .is_some_and(|job| job.is_cancelled());
+    if cancelled {
+        session._container.kill_all();
+        session
+            .child
+            .lock()
+            .expect("terminal child")
+            .wait()
+            .map_err(|e| AppError::Internal(format!("reap cancelled terminal: {e}")))?;
+        return Err(AppError::Conflict(
+            "Harness account is being removed".into(),
+        ));
+    }
     sessions.insert(terminal_id.to_string(), Arc::clone(&session));
     Ok(EnsureOutcome {
         session,
         newly_created: true,
     })
+}
+
+/// Fence account admissions before enumerating sessions, then await all
+/// device-local native work. A timeout leaves removal pending for a retry.
+pub async fn close_account(
+    pool: &TerminalPool,
+    account_id: &str,
+    bindings: &[String],
+) -> Result<(), AppError> {
+    let drain = choruz_agent_runtime::process_scope::retire(account_id);
+    crate::session::close_account(account_id)?;
+    for id in bindings {
+        close_terminal(pool, id)?;
+    }
+    let ids: Vec<_> = pool
+        .lock()
+        .expect("terminal pool")
+        .iter()
+        .filter(|(_, session)| session.account_id.as_deref() == Some(account_id))
+        .map(|(id, _)| id.clone())
+        .collect();
+    for id in ids {
+        close_terminal(pool, &id)?;
+    }
+    tokio::time::timeout(std::time::Duration::from_secs(10), drain.wait())
+        .await
+        .map_err(|_| AppError::Conflict("Waiting for account processes to stop".into()))?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -754,6 +800,13 @@ mod tests {
                 "pi-session",
                 None,
                 "ARGS:--approve --session pi-session",
+            ),
+            (
+                "muse",
+                DriverType::MuseTerminal,
+                "muse-session",
+                None,
+                "ARGS:--trust-workspace resume muse-session",
             ),
             (
                 "grok",
@@ -911,6 +964,10 @@ mod tests {
     #[test]
     fn additional_terminal_drivers_use_documented_flags_and_exact_resume_ids() {
         assert_eq!(
+            terminal_cli_args(&DriverType::MuseTerminal, Some("muse-1"), Some("chosen")),
+            vec!["--trust-workspace", "--model", "chosen", "resume", "muse-1"]
+        );
+        assert_eq!(
             terminal_cli_args(&DriverType::PiTerminal, Some("pi-1"), None),
             vec!["--approve", "--session", "pi-1"]
         );
@@ -944,75 +1001,6 @@ mod tests {
                 .position(|arg| arg == "--model")
                 .unwrap_or_else(|| panic!("{} must accept --model", driver.as_str()));
             assert_eq!(args[position + 1], "model-x");
-        }
-    }
-
-    #[test]
-    fn terminal_driver_defaults_do_not_fall_back_to_claude() {
-        assert_eq!(default_terminal_binary(&DriverType::CodexTerminal), "codex");
-        assert_eq!(default_terminal_binary(&DriverType::PiTerminal), "pi");
-        assert_eq!(default_terminal_binary(&DriverType::GrokTerminal), "grok");
-        assert_eq!(
-            default_terminal_binary(&DriverType::OpenCodeTerminal),
-            "opencode"
-        );
-        assert_eq!(
-            default_terminal_binary(&DriverType::MathCodeTerminal),
-            "mathcode"
-        );
-        assert_eq!(
-            terminal_binary(&DriverType::CodexTerminal, Some("/opt/codex/bin/codex")),
-            "/opt/codex/bin/codex"
-        );
-    }
-
-    #[test]
-    fn target_executable_configuration_preserves_alias_precedence() {
-        for driver in [
-            DriverType::ClaudeTerminal,
-            DriverType::CodexTerminal,
-            DriverType::PiTerminal,
-            DriverType::GrokTerminal,
-            DriverType::OpenCodeTerminal,
-            DriverType::MathCodeTerminal,
-        ] {
-            assert_eq!(
-                terminal_binary_with_env(&driver, None, |key| Some(
-                    if key.ends_with("_BINARY") {
-                        "  /target/primary  "
-                    } else {
-                        "/target/alias"
-                    }
-                    .into()
-                )),
-                "/target/primary"
-            );
-            let expected = if driver == DriverType::MathCodeTerminal {
-                "mathcode"
-            } else {
-                "/target/alias"
-            };
-            assert_eq!(
-                terminal_binary_with_env(&driver, None, |key| Some(
-                    if key.ends_with("_BINARY") {
-                        "  "
-                    } else {
-                        " /target/alias "
-                    }
-                    .into()
-                )),
-                expected
-            );
-            assert_eq!(
-                terminal_binary_with_env(&driver, None, |_| Some("  ".into())),
-                default_terminal_binary(&driver)
-            );
-            assert_eq!(
-                terminal_binary_with_env(&driver, Some("/target/explicit"), |_| Some(
-                    "/target/automatic".into()
-                )),
-                "/target/explicit"
-            );
         }
     }
 }

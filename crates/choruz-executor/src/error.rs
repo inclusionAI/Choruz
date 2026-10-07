@@ -21,10 +21,6 @@ pub enum ExecutorError {
     #[error("epoch mismatch: expected {expected}, got {actual}")]
     EpochMismatch { expected: i32, actual: i32 },
 
-    /// Session-level error (delegated from choruz-session).
-    #[error("session error: {0}")]
-    Session(#[from] choruz_session::SessionError),
-
     /// Filesystem I/O error.
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),

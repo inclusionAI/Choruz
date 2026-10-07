@@ -1,6 +1,6 @@
-//! `choruz` is the scriptable control-plane client for a running Choruz host.
+//! `choruz` exposes local libraries and the authenticated host control plane.
 //!
-//! It deliberately talks to the same authenticated HTTP API used by the Web
+//! Host operations use the same authenticated HTTP API as the Web
 //! Dashboard. It never writes the database directly, so CLI and Web behavior
 //! share permissions, audit records, and validation.
 
@@ -19,6 +19,7 @@ use tokio::{
 };
 
 mod activity;
+mod capabilities;
 
 const DEFAULT_API_URL: &str = "http://127.0.0.1:3000";
 const DEFAULT_PIPELINE_URL: &str = "http://127.0.0.1:3020";
@@ -27,13 +28,14 @@ const DEFAULT_PIPELINE_URL: &str = "http://127.0.0.1:3020";
 enum Command {
     Help,
     Version,
-    Start,
+    Start { local: bool },
     Status,
     CompanyList,
     AgentList,
     RemoteStatus,
     RemotePairingCredential,
     Activity(Vec<String>),
+    Capability(Vec<String>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,7 +53,7 @@ fn usage() -> &'static str {
 
 USAGE:
   choruz status [--json]
-  choruz start
+  choruz start [local]
   choruz company list [--json]
   choruz agent list [--json]
   choruz remote status [--json]
@@ -59,6 +61,25 @@ USAGE:
   choruz activity list|export|summary --since <RFC3339> --until <RFC3339> [--source telemetry|audit] [--trace-id <id>]
   choruz activity messages --conversation <id> [--include-content]
   choruz activity prune --before <RFC3339> [--apply]
+  choruz library trace <source.json>
+  choruz library score <check.json> <output.txt>
+  choruz library community <records.json>
+  choruz tools status
+  choruz tools enable|disable browser|desktop
+  choruz learning show|evaluations|community <binding-id>
+  choruz learning configure|select|evaluate|community-configure|prepare <binding-id> <body.json>
+  choruz api GET|POST|PUT|PATCH|DELETE /v1/<path> [body.json]
+
+COMPOSABLE CAPABILITIES:
+  Library and tools commands run locally without a server or login. They print
+  JSON. A trace source explicitly selects harness, account_home, workspace_path
+  and session_id; optional cursor resumes reading. Only read finished turns.
+  Library results do not install guidance or authorize publication. A null score
+  requires an independent judge, not a failed grade. Tools enable waits for its
+  installer; OS permissions and browser extension setup remain external.
+  Learning and api commands use the existing authenticated host, sharing its
+  storage, permissions, asynchronous workers and audit trail. Bodies are JSON
+  files; no implicit retries or new background service is created.
 
 GLOBAL OPTIONS:
   --api-url <url>       API Gateway URL (default: CHORUZ_API_BASE_URL or http://127.0.0.1:3000)
@@ -163,7 +184,8 @@ fn parse_args(input: &[String]) -> Result<Args, String> {
     let command = match positional.as_slice() {
         [] => Command::Help,
         [command] if command == "status" => Command::Status,
-        [command] if command == "start" => Command::Start,
+        [command] if command == "start" => Command::Start { local: false },
+        [command, mode] if command == "start" && mode == "local" => Command::Start { local: true },
         [command] if command == "version" => Command::Version,
         [area, action] if area == "company" && action == "list" => Command::CompanyList,
         [area, action] if area == "agent" && action == "list" => Command::AgentList,
@@ -174,6 +196,10 @@ fn parse_args(input: &[String]) -> Result<Args, String> {
         [area, rest @ ..] if area == "activity" => {
             activity::parse(rest)?;
             Command::Activity(rest.to_vec())
+        }
+        [area, ..] if matches!(area.as_str(), "library" | "tools" | "learning" | "api") => {
+            capabilities::validate(&positional)?;
+            Command::Capability(positional)
         }
         _ => return Err(format!("unknown command: {}", positional.join(" "))),
     };
@@ -432,9 +458,15 @@ fn server_binary() -> Result<PathBuf, String> {
     }
 }
 
-async fn start_host(client: &Client, args: &Args) -> Result<(), String> {
+async fn start_host(client: &Client, args: &Args, local_only: bool) -> Result<(), String> {
     let mut local = args.clone();
-    local.api_url = DEFAULT_API_URL.into();
+    if !is_loopback(&local.api_url) {
+        return Err("start requires a loopback API URL".into());
+    }
+    let port = reqwest::Url::parse(&local.api_url)
+        .map_err(|e| format!("invalid API URL: {e}"))?
+        .port_or_known_default()
+        .ok_or("API URL requires a port")?;
     // choruz-server is loopback-only; its documented first-run credentials are
     // the local defaults unless the operator supplied an override.
     if local.token.is_none() && local.operator_password.is_none() {
@@ -454,6 +486,10 @@ async fn start_host(client: &Client, args: &Args) -> Result<(), String> {
             .open(&log_path)
             .map_err(|error| format!("open {}: {error}", log_path.display()))?;
         let mut command = ProcessCommand::new(binary);
+        command.env("CHORUZ_API_PORT", port.to_string());
+        if local_only {
+            command.arg("--api-only");
+        }
         command
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -488,8 +524,10 @@ async fn start_host(client: &Client, args: &Args) -> Result<(), String> {
     } else {
         println!("Choruz host is already running in the background.");
     }
-    let pairing = create_remote_pairing(client, &local).await?;
-    print_pairing(&pairing, false);
+    if !local_only {
+        let pairing = create_remote_pairing(client, &local).await?;
+        print_pairing(&pairing, false);
+    }
     Ok(())
 }
 
@@ -543,6 +581,15 @@ async fn main() -> ExitCode {
     match args.command.clone() {
         Command::Help => print!("{}", usage()),
         Command::Version => println!("choruz {}", env!("CARGO_PKG_VERSION")),
+        Command::Capability(input) if capabilities::is_local(&input) => {
+            match capabilities::local(&input).await {
+                Ok(value) => print_value(&value, true),
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    return ExitCode::FAILURE;
+                }
+            }
+        }
         command => {
             let client = match Client::builder()
                 .connect_timeout(std::time::Duration::from_secs(5))
@@ -559,7 +606,7 @@ async fn main() -> ExitCode {
                 Command::Status => status(&client, &args).await.map(|value| {
                     print_status(&value, args.json);
                 }),
-                Command::Start => start_host(&client, &args).await,
+                Command::Start { local } => start_host(&client, &args, local).await,
                 Command::CompanyList => authenticated_request(&client, &args, "/v1/companies")
                     .await
                     .map(|value| print_companies(&value, args.json)),
@@ -577,6 +624,9 @@ async fn main() -> ExitCode {
                     .await
                     .map(|value| print_pairing(&value, args.json)),
                 Command::Activity(input) => activity::run(&client, &args, &input).await,
+                Command::Capability(input) => capabilities::remote(&client, &args, &input)
+                    .await
+                    .map(|value| print_value(&value, true)),
                 Command::Help | Command::Version => unreachable!(),
             };
             if let Err(error) = outcome {
@@ -632,7 +682,11 @@ mod tests {
     #[test]
     fn parses_start_as_the_zero_configuration_host_flow() {
         let args = parse_args(&values(&["start"])).unwrap();
-        assert_eq!(args.command, Command::Start);
+        assert_eq!(args.command, Command::Start { local: false });
+        assert_eq!(
+            parse_args(&values(&["start", "local"])).unwrap().command,
+            Command::Start { local: true }
+        );
         assert!(!args.json);
     }
 

@@ -1,7 +1,8 @@
 //! Bounded command/observation loop in a disposable, network-disabled container.
-use crate::{TerminalSpec, learning_runner::CliRunner};
+use crate::TerminalSpec;
 use choruz_common::AppError;
 use choruz_evaluation::evaluation::ReplayEnvironment;
+use choruz_learning::native_cli::CliRunner;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{process::Stdio, time::Duration};
@@ -149,7 +150,7 @@ pub async fn run(
                 json!({"task":input,"observations":observations})
             );
             let response = choruz_learning::evaluate(
-                &CliRunner(spec.clone()),
+                &CliRunner(spec.clone().into()),
                 task,
                 instruction.clone(),
                 preflight.clone(),

@@ -86,6 +86,7 @@ async fn exercise_sockets(silent: Option<&str>) {
     let attachments = tempfile::tempdir().unwrap();
     let state = ApiState {
         experience_worker: None,
+        account_retirement_worker: None,
         app: app.clone(),
         db: db.clone(),
         runtime: choruz_application::runtime_store::RuntimeStore::new(&database.database_url),

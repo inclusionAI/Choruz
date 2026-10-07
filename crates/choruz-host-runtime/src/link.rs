@@ -105,6 +105,10 @@ pub enum LinkRequest {
     TerminalClose {
         terminal_id: String,
     },
+    HarnessAccountClose {
+        account_id: String,
+        binding_ids: Vec<String>,
+    },
     TerminalAlive {
         terminal_id: String,
     },
@@ -302,6 +306,13 @@ async fn handle_call(
     attachments: &Attachments,
 ) -> Result<Value, AppError> {
     match request {
+        LinkRequest::HarnessAccountClose {
+            account_id,
+            binding_ids,
+        } => {
+            crate::terminal::close_account(pool, &account_id, &binding_ids).await?;
+            Ok(json!({"stopped":true}))
+        }
         LinkRequest::Session { request } => crate::session::execute(pool.clone(), request)
             .await
             .map(|state| json!(state)),
@@ -593,7 +604,7 @@ mod tests {
                 LinkRequest::Host {
                     request: HostRequest::ExperienceReferences {
                         spec: Box::new(spec.clone()),
-                        cursor: crate::experience_source::Cursor {
+                        cursor: choruz_learning::source::Cursor {
                             session: "history".into(),
                             offset: (meta.len() + record.len()) as u64,
                         },
@@ -732,7 +743,7 @@ mod tests {
             "disable-browser",
             LinkRequest::Host {
                 request: HostRequest::ComputerUse {
-                    tool: Some(crate::computer_use::Tool::Browser),
+                    tool: Some(choruz_computer_use::Tool::Browser),
                     enabled: Some(false),
                 },
             },

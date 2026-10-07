@@ -1,12 +1,13 @@
 import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "@playwright/test";
 import { API_BASE, login } from "../fixtures/auth";
 
 test("directory listing follows allowed symlinks and refuses targets outside browse roots", async ({ page }) => {
   const root = await mkdtemp(join(homedir(), ".choruz-symlink-test-"));
-  const outside = await mkdtemp(join(tmpdir(), "choruz-symlink-outside-"));
+  // The Unix host runner may place TMPDIR under the allowed home directory.
+  const outside = await mkdtemp(join("/tmp", "choruz-symlink-outside-"));
   try {
     const canonicalRoot = await realpath(root);
     const target = join(canonicalRoot, "target");

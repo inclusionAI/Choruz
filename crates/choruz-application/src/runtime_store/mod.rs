@@ -4,7 +4,8 @@ pub use policy::{AutoMode, ConversationRuntimePolicy, UntaggedHumanMode, UpsertP
 
 use choruz_agent_runtime::{
     AuditActor, BindingState, CodexTerminalCaptureInput, CreateBindingInput, RuntimeBinding,
-    TerminalSessionAnchorInput, latest_native_session, normalize_workspace_path,
+    TerminalSessionAnchor, TerminalSessionAnchorInput, latest_native_session,
+    normalize_workspace_path,
 };
 use choruz_common::{AppError, AppResult, new_id};
 use chrono::{DateTime, Utc};
@@ -563,6 +564,39 @@ impl RuntimeStore {
         binding_from_row(&row)
     }
 
+    pub async fn select_binding_models(
+        &self,
+        selections: &[(&RuntimeBinding, &str)],
+    ) -> AppResult<()> {
+        let mut selections = selections.to_vec();
+        selections.sort_by_key(|(binding, _)| &binding.id);
+        let mut client = self.connect().await?;
+        let tx = client.transaction().await.map_err(map_db_error)?;
+        for (binding, model) in selections {
+            choruz_agent_runtime::headless::validate_model(model)
+                .map_err(|error| AppError::Validation(error.into()))?;
+            if model.trim().is_empty() {
+                return Err(AppError::Validation("Select an explicit model".into()));
+            }
+            let changed = tx.execute(
+            "UPDATE agent_runtime_bindings SET config_json=config_json||jsonb_build_object('model',$2::text),updated_at=NOW()
+             WHERE id=$1 AND config_json-ARRAY['terminal_session','terminal_capture','agent_workspace_id','conversation_workspace_id']::text[]=$3::jsonb-ARRAY['terminal_session','terminal_capture','agent_workspace_id','conversation_workspace_id']::text[]
+               AND workspace_path=$4 AND driver_type=$5 AND conversation_id=$6 AND agent_principal_id=$7
+               AND ($3::jsonb->>'agent_workspace_id' IS NULL OR EXISTS(SELECT 1 FROM principal p WHERE p.id=$7 AND p.workspace_id=$3::jsonb->>'agent_workspace_id'))
+               AND ($3::jsonb->>'conversation_workspace_id' IS NULL OR EXISTS(SELECT 1 FROM conversation c WHERE c.id=$6 AND c.workspace_id=$3::jsonb->>'conversation_workspace_id'))
+               AND state NOT IN ('disabled','running') AND in_flight_turn_id IS NULL",
+            &[&binding.id,&model.trim(),&binding.config_json,&binding.workspace_path,&binding.driver_type.as_str(),&binding.conversation_id,&binding.agent_principal_id],
+        ).await.map_err(map_db_error)?;
+            if changed != 1 {
+                return Err(AppError::Conflict(
+                    "The Agent changed or is working; refresh before selecting its model".into(),
+                ));
+            }
+        }
+        tx.commit().await.map_err(map_db_error)?;
+        Ok(())
+    }
+
     pub async fn begin_codex_terminal_capture(
         &self,
         binding_id: &str,
@@ -687,6 +721,44 @@ impl RuntimeStore {
         input: TerminalSessionAnchorInput,
     ) -> AppResult<RuntimeBinding> {
         self.write_session_anchor(binding_id, input, None).await
+    }
+
+    /// Retain prior generations for learning, never for implicit CLI resume.
+    /// Account, device and workspace changes exclude their previous sources.
+    pub async fn retained_native_sources(
+        &self,
+        binding: &RuntimeBinding,
+    ) -> AppResult<Vec<TerminalSessionAnchor>> {
+        let client = self.connect().await?;
+        let rows = client.query(
+            "SELECT s.anchor,p.workspace_id AS agent_workspace,c.workspace_id AS conversation_workspace FROM runtime_native_sources s JOIN agent_runtime_bindings b ON b.id=s.binding_id
+             JOIN principal p ON p.id=b.agent_principal_id JOIN conversation c ON c.id=b.conversation_id
+             WHERE b.id=$1 AND s.context->>'driver_type'=b.driver_type
+               AND s.context->>'workspace_path'=b.workspace_path
+               AND s.context->'runtime_host_id'=COALESCE(b.config_json->'runtime_host_id','null'::jsonb)
+               AND s.context->'harness_account_id'=COALESCE(b.config_json->'harness_account_id','null'::jsonb)
+             ORDER BY s.captured_at,s.session_id,s.binding_generation",
+            &[&binding.id],
+        ).await.map_err(map_db_error)?;
+        let mut sources = Vec::new();
+        for row in rows {
+            let anchor: Value = row.get(0);
+            let Some(generation) = anchor["binding_generation"].as_i64() else {
+                continue;
+            };
+            let mut historical = binding.clone();
+            historical.config_json["terminal_generation"] = serde_json::json!(generation);
+            historical.config_json["terminal_session"] = anchor;
+            if let Some(source) = historical.valid_terminal_session_anchor_for_context(
+                Some(row.get::<_, String>("agent_workspace").as_str()),
+                Some(row.get::<_, String>("conversation_workspace").as_str()),
+                Some(generation),
+                None,
+            ) {
+                sources.push(source);
+            }
+        }
+        Ok(sources)
     }
 
     /// Direct sessions may race a headless completion, but not a change to

@@ -15,7 +15,7 @@ export default function Page() {
         <li><strong>Next.js:</strong> MIT License.</li>
         <li><strong>PostgreSQL:</strong> PostgreSQL License.</li>
         <li><strong>CodeMirror:</strong> MIT License.</li>
-        <li><strong>Agent CLIs:</strong> Claude Code, Codex, Pi Agent, Grok Build, and OpenCode remain subject to their respective licenses.</li>
+        <li><strong>Agent CLIs:</strong> Claude Code, Codex, Muse Code, Pi Agent, Grok Build, and OpenCode remain subject to their respective licenses.</li>
       </ul>
 
       <div className="callout callout-info">

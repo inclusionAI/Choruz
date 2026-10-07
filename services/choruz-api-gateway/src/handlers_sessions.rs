@@ -38,7 +38,7 @@ async fn context(
     Ok((RuntimeHost::for_binding(state, &binding)?, binding))
 }
 
-fn binding_owner(binding: &RuntimeBinding) -> String {
+pub(crate) fn binding_owner(binding: &RuntimeBinding) -> String {
     choruz_host_runtime::session::owner_key(&terminal_spec(binding, 120, 40, None, None))
 }
 
@@ -210,6 +210,35 @@ pub(crate) struct SessionAction {
     command: SessionCommand,
 }
 
+async fn capture_decision(
+    state: &ApiState,
+    binding: &RuntimeBinding,
+    command: &SessionCommand,
+    snapshot: &SessionSnapshot,
+) -> Result<(), ApiError> {
+    if let SessionCommand::Send {
+        text,
+        submission_id,
+    } = command
+        && let Some(item) = snapshot
+            .items
+            .iter()
+            .find(|item| item.id == format!("decision-{submission_id}-assistant"))
+    {
+        let decision =
+            serde_json::from_value(item.detail["decision"].clone()).map_err(|error| {
+                ApiError(choruz_common::AppError::Internal(format!(
+                    "decode completed decision: {error}"
+                )))
+            })?;
+        state
+            .db
+            .record_decision_completion(&binding.id, submission_id, text, &decision)
+            .await?;
+    }
+    Ok(())
+}
+
 pub(crate) async fn command(
     headers: HeaderMap,
     State(state): State<ApiState>,
@@ -262,6 +291,7 @@ pub(crate) async fn command(
                 })
                 .await?;
             if reserved.reservation_id.is_none() {
+                capture_decision(&state, &binding, &command, &reserved.snapshot).await?;
                 return Ok(Json(reserved.snapshot));
             }
             reservation_id = reserved.reservation_id;
@@ -298,7 +328,7 @@ pub(crate) async fn command(
             binding_id: id.clone(),
             owner: binding_owner(&binding),
             instance,
-            command,
+            command: command.clone(),
             experience,
             preflight: preflight.map(Box::new),
             reservation_id,
@@ -314,6 +344,7 @@ pub(crate) async fn command(
     )
     .await;
     let snapshot = result?;
+    capture_decision(&state, &binding, &command, &snapshot).await?;
     capture(&state, &host, binding, &snapshot).await?;
     tracing::info!(binding_id = %id, action, "structured session command accepted");
     Ok(Json(snapshot))

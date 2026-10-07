@@ -1746,6 +1746,7 @@ async fn direct_chat_commands_do_not_include_other_direct_history() {
 }
 
 #[tokio::test]
+#[cfg(feature = "postgres")]
 async fn router_dead_letters_malformed_outbox_after_retry_budget() {
     let db_url = std::env::var("CHORUZ_TEST_DATABASE_URL")
         .expect("source infra/host/setup_test_database.sh before database tests");
@@ -1832,6 +1833,7 @@ async fn router_dead_letters_malformed_outbox_after_retry_budget() {
 }
 
 #[tokio::test]
+#[cfg(feature = "postgres")]
 async fn router_dead_letter_requires_current_outbox_claim() {
     let db_url = std::env::var("CHORUZ_TEST_DATABASE_URL")
         .expect("source infra/host/setup_test_database.sh before database tests");
@@ -1919,6 +1921,7 @@ async fn router_dead_letter_requires_current_outbox_claim() {
 }
 
 #[tokio::test]
+#[cfg(feature = "postgres")]
 async fn router_drains_valid_outbox_backlog_and_marks_published() {
     let db_url = std::env::var("CHORUZ_TEST_DATABASE_URL")
         .expect("source infra/host/setup_test_database.sh before database tests");

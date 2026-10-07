@@ -3,8 +3,12 @@
 
 pub mod binding;
 pub mod computer_use;
+pub mod executable;
 pub mod headless;
+pub mod process;
+pub mod process_scope;
 pub mod session_catalog;
+pub mod session_files;
 
 pub use binding::{
     AuditActor, BindingState, CodexTerminalCaptureInput, CodexTerminalCaptureMetadata,

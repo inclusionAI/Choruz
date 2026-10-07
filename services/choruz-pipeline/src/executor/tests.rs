@@ -221,6 +221,7 @@ async fn seed_prerequisites(database_url: &str, agent_id: &str, conversation_id:
         )
         .await
         .expect("seed conversation");
+    client.execute("INSERT INTO conversation_member(conv_id,principal_id) VALUES($1,$2),($1,'human-1') ON CONFLICT DO NOTHING", &[&conversation_id,&agent_id]).await.unwrap();
 }
 
 fn shell_quote(value: &str) -> String {
@@ -920,6 +921,16 @@ async fn supported_cli_driver_bindings_execute_with_fake_binaries() {
                 expected_prompt_arg: 3,
             },
             DriverCase {
+                label: "muse-terminal",
+                driver_type: DriverType::MuseTerminal,
+                selected_cli: "muse",
+                expected_bootstrap: "AGENTS.md",
+                stdout_lines: vec![r#"{"schema_version":1,"stream":{"kind":"session","id":"muse-terminal-session"},"payload_type":"run.terminal.completed","payload":{"text":"stdout is internal"}}"#.into()],
+                expected_session_id: "muse-terminal-session",
+                expected_args: vec!["exec", "--json", "--trust-workspace", "--disable-approval", "--"],
+                expected_prompt_arg: 6,
+            },
+            DriverCase {
                 label: "opencode-terminal",
                 driver_type: DriverType::OpenCodeTerminal,
                 selected_cli: "opencode",
@@ -1010,10 +1021,11 @@ async fn supported_cli_driver_bindings_execute_with_fake_binaries() {
             "codex" => config.codex_cli_path = script_path.display().to_string(),
             "pi" => config.pi_cli_path = script_path.display().to_string(),
             "grok" => config.grok_cli_path = script_path.display().to_string(),
+            "muse" => config.muse_cli_path = script_path.display().to_string(),
             "opencode" => config.opencode_cli_path = script_path.display().to_string(),
             other => panic!("unknown selected cli: {other}"),
         }
-        let ctx = ExecutorContext::from_config(&config)
+        let mut ctx = ExecutorContext::from_config(&config)
             .with_event_store(choruz_store::EventStore::new(database.database_url.clone()));
         let cmd = make_command(&agent_id, &conversation_id);
 
@@ -1098,6 +1110,70 @@ async fn supported_cli_driver_bindings_execute_with_fake_binaries() {
             case.driver_type.as_str()
         );
         assert_eq!(refreshed.config_json["external_session_mode"], "headless");
+        if case.label == "codex-terminal" {
+            let client = runtime.connect().await.unwrap();
+            client.execute("UPDATE experience_revision SET validation=jsonb_set(validation,'{program_trial,resolved_model}','\"fixture-version\"') WHERE id='learned-test'",&[]).await.unwrap();
+            client.execute("UPDATE experience_policy SET decision_settings='{\"complete_turns\":true}' WHERE binding_id=$1", &[&binding.id]).await.unwrap();
+            ctx.decision_result = Some(choruz_decision::programs::ProgramResult {
+                output: Some("Inspect files".into()),
+                decision: choruz_decision::Response {
+                    model: "fixture-version".into(),
+                    answers: Default::default(),
+                    usage: choruz_decision::Usage {
+                        input_tokens: 10,
+                        output_tokens: 1,
+                    },
+                },
+            });
+            fs::remove_file(&record_path).unwrap();
+            let cheap = execute_command(&ctx, &cmd).await;
+            assert_eq!(
+                cheap.status,
+                AgentResultStatus::Succeeded,
+                "{:?}",
+                cheap.error
+            );
+            assert_eq!(cheap.content.as_deref(), Some("Inspect files"));
+            assert_eq!(
+                cheap.execution_metadata.as_ref().unwrap()["native_calls_avoided"],
+                1
+            );
+            assert!(
+                !record_path.exists(),
+                "eligible completion must not invoke the native CLI"
+            );
+            let decision = serde_json::from_value(
+                cheap.execution_metadata.as_ref().unwrap()["decision"].clone(),
+            )
+            .unwrap();
+            choruz_application::DbService::new(choruz_store::EventStore::new(
+                database.database_url.clone(),
+            ))
+            .record_decision_completion(&binding.id, "earlier-finite-turn", &cmd.prompt, &decision)
+            .await
+            .unwrap();
+            ctx.decision_result.as_mut().unwrap().output = None;
+            let fallback = execute_command(&ctx, &cmd).await;
+            assert_eq!(
+                fallback.status,
+                AgentResultStatus::Succeeded,
+                "{:?}",
+                fallback.error
+            );
+            assert_eq!(fallback.content.as_deref(), Some("stdout is internal"));
+            assert!(fallback.execution_metadata.is_none());
+            assert!(record_path.exists(), "abstention must use native inference");
+            let fallback_input = fs::read_to_string(&record_path).unwrap();
+            assert!(fallback_input.contains("[choruz-decision-history]"));
+            assert!(
+                fallback_input.contains("Inspect files"),
+                "actual native fallback must receive the completed answer"
+            );
+            assert!(
+                fallback_input.contains(&cmd.prompt),
+                "actual native fallback must receive the earlier request"
+            );
+        }
     }
 }
 
@@ -1228,7 +1304,30 @@ async fn local_cli_failures_are_classified_for_bounded_recovery() {
             let ctx = ExecutorContext::from_config(&config)
                 .with_event_store(choruz_store::EventStore::new(database.database_url.clone()));
 
-            let result = execute_command(&ctx, &make_command(&agent_id, &conversation_id)).await;
+            let command = make_command(&agent_id, &conversation_id);
+            let result = if failure.label == "timeout" {
+                // Hold the deadline until the owned child reports readiness.
+                // A yielding branch prevents Tokio's idle auto-advance during spawn.
+                tokio::time::pause();
+                let execution = execute_command(&ctx, &command);
+                tokio::pin!(execution);
+                let readiness_deadline =
+                    std::time::Instant::now() + std::time::Duration::from_secs(30);
+                loop {
+                    tokio::select! {
+                        result = &mut execution => panic!("{suffix}: completed before child readiness: {result:?}"),
+                        _ = tokio::task::yield_now() => {
+                            if child_pid_file.exists() { break; }
+                            assert!(std::time::Instant::now() < readiness_deadline, "{suffix}: child did not start");
+                        }
+                    }
+                }
+                tokio::time::advance(std::time::Duration::from_secs(2)).await;
+                tokio::time::resume();
+                execution.await
+            } else {
+                execute_command(&ctx, &command).await
+            };
             assert_eq!(result.status, AgentResultStatus::Failed, "{suffix}");
             let error = result.error.as_deref().expect("durable failure marker");
             assert!(
@@ -1407,15 +1506,6 @@ async fn group_send_outbox_suppresses_stdout_fallback() {
     tokio::spawn(async move {
         let _ = connection.await;
     });
-    client
-        .execute(
-            "INSERT INTO conversation_member (conv_id, principal_id, joined_at)
-                 VALUES ($1, $2, NOW())",
-            &[&conversation_id, &agent_id],
-        )
-        .await
-        .expect("seed agent group membership");
-
     let workspace = tmp.path().join("workspace-group-send");
     fs::create_dir_all(&workspace).unwrap();
     runtime

@@ -9,7 +9,7 @@
 
 Choruz is a local-first collaboration app where humans and AI agents work together in a Slack-like space. Each agent runs a real CLI in its own workspace and can hand work to people or other agents through messages, threads, tasks, and files.
 
-Choruz supports Claude Code, Codex, Grok, and webhook-driven external agents by default. Plugins enable Pi, OpenCode, and MathCode; see [plugin configuration](docs/plugins.md).
+Choruz supports Claude Code, Codex, Muse Code, and webhook-driven external agents by default. Plugins enable Grok, Pi, OpenCode, and MathCode; see [plugin configuration](docs/plugins.md).
 
 ## Demo
 

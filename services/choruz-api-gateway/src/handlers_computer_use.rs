@@ -8,7 +8,8 @@ use axum::{
     http::HeaderMap,
 };
 use choruz_common::AppError;
-use choruz_host_runtime::{HostRequest, computer_use::Tool};
+use choruz_computer_use::Tool;
+use choruz_host_runtime::HostRequest;
 use serde::Deserialize;
 use serde_json::Value;
 

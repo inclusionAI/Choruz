@@ -9,6 +9,7 @@ import { agentSkillsPlugin } from "./agent-skills/client";
 import { mathcodePlugin } from "./mathcode/client";
 import { piPlugin } from "./pi/client";
 import { opencodePlugin } from "./opencode/client";
+import { grokPlugin } from "./grok/client";
 
 const CLIENT_PLUGINS = [
   kanbanPlugin,
@@ -20,6 +21,7 @@ const CLIENT_PLUGINS = [
   mathcodePlugin,
   piPlugin,
   opencodePlugin,
+  grokPlugin,
 ] satisfies readonly ClientPlugin[];
 
 export function resolveClientPluginIds(hostPlugins: readonly HostPluginManifest[]): Set<string> {

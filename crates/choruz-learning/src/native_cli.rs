@@ -1,5 +1,4 @@
 //! Official CLI adapter for fixed learning procedures in fresh scratch conversations.
-use crate::TerminalSpec;
 use choruz_agent_runtime::headless::{
     HeadlessDriver, configure_command_workspace, harness_account_env, parse_output,
 };
@@ -16,9 +15,18 @@ use tokio::{
 
 /// Runs each learning call in a fresh bounded CLI process, never a live Agent session.
 /// Dropping the future terminates its process group; no account credentials are copied.
-pub struct CliRunner(pub TerminalSpec);
+pub struct CliRunner(pub CliConfig);
 
-impl choruz_learning::Runner for CliRunner {
+/// Device-local CLI selection; learning never attaches to a foreground workspace.
+#[derive(Debug, Clone)]
+pub struct CliConfig {
+    pub driver_type: String,
+    pub binary_path: Option<String>,
+    pub model: Option<String>,
+    pub harness_account: serde_json::Value,
+}
+
+impl crate::Runner for CliRunner {
     async fn run(
         &self,
         prompt: String,
@@ -30,11 +38,15 @@ impl choruz_learning::Runner for CliRunner {
 }
 
 async fn run_with_role(
-    spec: TerminalSpec,
+    spec: CliConfig,
     prompt: String,
     research: bool,
     system_prompt: &str,
 ) -> Result<String, AppError> {
+    let job = choruz_agent_runtime::process_scope::Job::begin(
+        spec.harness_account["harness_account_id"].as_str(),
+    )
+    .map_err(|message| AppError::Conflict(message.into()))?;
     if prompt.len() > 256 * 1024 {
         return Err(AppError::Validation(
             "Learning input exceeds the analysis window".into(),
@@ -45,7 +57,7 @@ async fn run_with_role(
         .ok_or_else(|| AppError::Validation("Unsupported analysis Harness".into()))?;
     let scratch = tempfile::tempdir()
         .map_err(|e| AppError::Internal(format!("create analysis workspace: {e}")))?;
-    let binary = crate::terminal::terminal_binary(
+    let binary = choruz_agent_runtime::executable::terminal_binary(
         &spec
             .driver_type
             .parse()
@@ -114,12 +126,20 @@ async fn run_with_role(
         .kill_on_drop(true);
     #[cfg(unix)]
     command.process_group(0);
+    if job.is_cancelled() {
+        return Err(AppError::Conflict(
+            "Harness account is being removed".into(),
+        ));
+    }
     let mut child = command
         .spawn()
         .map_err(|e| AppError::Internal(format!("start analysis Harness: {e}")))?;
-    let _container = child
-        .id()
-        .map(|pid| crate::ProcessContainer::new("experience-analysis", pid));
+    let container = child.id().map(|pid| {
+        choruz_agent_runtime::process::ProcessContainer::new(
+            format!("experience-analysis-{pid}"),
+            pid,
+        )
+    });
     let mut stdin = child
         .stdin
         .take()
@@ -167,20 +187,35 @@ async fn run_with_role(
         };
         tokio::try_join!(send, read, child.wait())
     };
-    let (_, output, status) = tokio::time::timeout(Duration::from_secs(75), run)
-        .await
-        .map_err(|_| {
-            AppError::Internal(format!(
-                "Background analysis timed out ({}); foreground work is unaffected",
-                match phase.load(Ordering::Relaxed) {
-                    0 => "waiting for Harness output",
-                    1 => "waiting for model report",
-                    2 => "waiting for search completion",
-                    _ => "waiting for process exit",
-                }
-            ))
-        })?
-        .map_err(|e| AppError::Internal(format!("wait for analysis: {e}")))?;
+    let outcome = tokio::select! {
+        result = tokio::time::timeout(Duration::from_secs(75), run) => Some(result),
+        _ = job.cancelled() => None,
+    };
+    let completed = match outcome {
+        Some(Ok(result)) => {
+            result.map_err(|e| AppError::Internal(format!("wait for analysis: {e}")))
+        }
+        None => Err(AppError::Conflict("Harness account was removed".into())),
+        Some(Err(_)) => Err(AppError::Internal(format!(
+            "Background analysis timed out ({}); foreground work is unaffected",
+            match phase.load(Ordering::Relaxed) {
+                0 => "waiting for Harness output",
+                1 => "waiting for model report",
+                2 => "waiting for search completion",
+                _ => "waiting for process exit",
+            }
+        ))),
+    };
+    if completed.is_err() {
+        if let Some(container) = &container {
+            container.kill_all();
+        }
+        child
+            .wait()
+            .await
+            .map_err(|e| AppError::Internal(format!("reap analysis: {e}")))?;
+    }
+    let (_, output, status) = completed?;
     if String::from_utf8_lossy(&output).lines().any(|line| {
         serde_json::from_str::<serde_json::Value>(line).is_ok_and(|event| {
             event["subtype"] == "model_refusal_no_fallback"
@@ -257,6 +292,99 @@ fn completed_search(output: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::completed_search;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn native_drivers_execute_in_scratch_and_reject_unsafe_reports() {
+        use super::{CliConfig, CliRunner};
+        use crate::Runner;
+        use std::os::unix::fs::PermissionsExt;
+
+        // Replace only the external model binary. Exercise real process creation,
+        // stdin, arguments, workspace selection and production output validation.
+        let fixture = tempfile::tempdir().unwrap();
+        let binary = fixture.path().join("model");
+        let args = fixture.path().join("args");
+        let input = fixture.path().join("input");
+        let cwd = fixture.path().join("cwd");
+        for (driver, event, required) in [
+            (
+                "claude_terminal",
+                r#"{"type":"result","result":"fixture report"}"#,
+                vec![
+                    "--print",
+                    "--strict-mcp-config",
+                    "--safe-mode",
+                    "--no-session-persistence",
+                ],
+            ),
+            (
+                "codex_terminal",
+                r#"{"type":"item.completed","item":{"type":"agent_message","text":"fixture report"}}"#,
+                vec![
+                    "exec",
+                    "--ephemeral",
+                    "--ignore-user-config",
+                    "read-only",
+                    "shell_tool",
+                ],
+            ),
+        ] {
+            let script = format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\ncat > '{}'\npwd > '{}'\nprintf '%s\\n' '{}'\n",
+                args.display(),
+                input.display(),
+                cwd.display(),
+                event
+            );
+            std::fs::write(&binary, script).unwrap();
+            std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let runner = CliRunner(CliConfig {
+                driver_type: driver.into(),
+                binary_path: Some(binary.to_string_lossy().into_owned()),
+                model: Some("fixture-model".into()),
+                harness_account: serde_json::json!({}),
+            });
+            assert_eq!(
+                runner
+                    .run("private input".into(), false, "fixed role")
+                    .await
+                    .unwrap(),
+                "fixture report"
+            );
+            assert_eq!(std::fs::read_to_string(&input).unwrap(), "private input");
+            let observed = std::fs::read_to_string(&args).unwrap();
+            for flag in required {
+                assert!(observed.lines().any(|arg| arg == flag), "missing {flag}");
+            }
+            assert!(observed.contains("--model\nfixture-model\n"));
+            let scratch = std::fs::read_to_string(&cwd).unwrap();
+            assert!(
+                !std::path::Path::new(scratch.trim()).exists(),
+                "scratch survives completion"
+            );
+
+            std::fs::write(&binary, "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '{\"type\":\"result\",\"stop_reason\":\"refusal\"}'\n").unwrap();
+            assert!(
+                runner
+                    .run("input".into(), false, "role")
+                    .await
+                    .unwrap_err()
+                    .to_string()
+                    .contains("declined")
+            );
+            std::fs::write(&binary, "#!/bin/sh\ncat >/dev/null\nexit 7\n").unwrap();
+            assert!(
+                runner
+                    .run("input".into(), false, "role")
+                    .await
+                    .unwrap_err()
+                    .to_string()
+                    .contains("Harness failed")
+            );
+        }
+    }
+
     #[test]
     fn research_requires_a_completed_search_not_a_claim_or_failed_attempt() {
         let started = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"WebSearch","id":"s1"}]}}"#;

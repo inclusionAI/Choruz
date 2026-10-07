@@ -34,9 +34,8 @@ pub struct ProcessContainer {
 }
 
 impl ProcessContainer {
-    /// Wrap an already-spawned child.  `child_pid` **must** be the direct child
-    /// returned by `portable_pty::SlavePty::spawn_command`, which is also the
-    /// session leader (because portable-pty calls `setsid()`).
+    /// Wrap an already-spawned child. On Unix, `child_pid` must be the process
+    /// group leader: use portable-pty, `setsid()`, or a new process group before exec.
     pub fn new(id: impl Into<String>, child_pid: u32) -> Self {
         let id = id.into();
         let inner = PlatformContainer::new(&id, child_pid);

@@ -12,6 +12,8 @@ Executor-side building blocks the pipeline uses to run an agent turn: `SandboxMa
 
 ## Tests
 
+This package does not depend on the platform session store or PostgreSQL.
+
 `cargo test -p choruz-executor`; the WAL tests use temporary SQLite files, no PostgreSQL.
 
 ## Related

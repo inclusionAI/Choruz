@@ -34,7 +34,7 @@ export const runtimeTest = test.extend<{ device: RuntimeDevice }>({
       const config = path.join(home, "connector.json");
       await writeFile(config, JSON.stringify({ api_url: API_BASE, host_id: host.id, host_token, host_name: host.name, max_concurrency: 1 }), { mode: 0o600 });
       child = spawn(path.resolve("../../target/debug/choruz-connector"), ["run", "--config", config], {
-        env: { ...process.env, HOME: home, PATH: `${path.join(home, "bin")}:${process.env.PATH}`, CHORUZ_CLAUDE_BINARY: path.join(home, "bin", "claude"), CHORUZ_CODEX_BINARY: path.join(home, "bin", "codex"), CHORUZ_GROK_BINARY: path.join(home, "grok-target"), CLAUDE_CONFIG_DIR: path.join(home, ".claude"), CODEX_HOME: path.join(home, ".codex"), CHORUZ_HARNESS_ACCOUNT_ROOT: path.join(home, "accounts"), CHORUZ_RUNTIME_DIR: path.join(home, "runtime"), CHORUZ_FS_BROWSE_ROOTS: home }, stdio: "ignore",
+        env: { ...process.env, HOME: home, PATH: `${path.join(home, "bin")}:${process.env.PATH}`, CHORUZ_CLAUDE_BINARY: path.join(home, "bin", "claude"), CHORUZ_CODEX_BINARY: path.join(home, "bin", "codex"), CHORUZ_GROK_BINARY: path.join(home, "grok-target"), CHORUZ_MUSE_BINARY: path.join(home, "muse-target"), CLAUDE_CONFIG_DIR: path.join(home, ".claude"), CODEX_HOME: path.join(home, ".codex"), CHORUZ_HARNESS_ACCOUNT_ROOT: path.join(home, "accounts"), CHORUZ_RUNTIME_DIR: path.join(home, "runtime"), CHORUZ_FS_BROWSE_ROOTS: home }, stdio: "ignore",
       });
       await expect.poll(async () => {
         const response = await page.request.post(`${API_BASE}/v1/runtime-hosts/${host.id}/operations`, { headers, data: { kind: "filesystem.home" } });

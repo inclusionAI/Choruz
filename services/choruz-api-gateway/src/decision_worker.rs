@@ -4,11 +4,21 @@ use crate::{
     host_runtime::RuntimeHost,
 };
 use choruz_application::db_service::ExperienceClaim;
+use choruz_application::db_service::ProgramTrialAdmission;
 use choruz_common::AppError;
 use choruz_decision::task::{DecisionTask, Job};
 use choruz_host_runtime::HostRequest;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+
+fn executor_context(spec: &choruz_host_runtime::TerminalSpec) -> Value {
+    json!({"binding":spec.terminal_id,"driver":spec.driver_type,"model":spec.model,
+        "binary":spec.binary_path,"workspace":spec.workspace_path,
+        "account":spec.harness_account["harness_account_id"],
+        "profile":spec.harness_account["harness_account_profile_kind"],
+        "profile_directory":spec.harness_account["harness_account_profile_directory"],
+        "host":spec.harness_account["runtime_host_id"]})
+}
 
 fn training_examples(
     cases: &[choruz_evaluation::evaluation::EvaluationCase],
@@ -43,7 +53,8 @@ fn training_examples(
 }
 
 /// Generation sees training objectives only. Evaluation answers and feedback
-/// never return to the builder; a corpus is tried once, not mined repeatedly.
+/// never return to the builder; each configuration is tried once within a
+/// bounded per-corpus budget.
 pub(crate) async fn build(
     state: &crate::ApiState,
     claim: &ExperienceClaim,
@@ -66,7 +77,7 @@ pub(crate) async fn build(
         .collect();
     let current: Vec<_> = current.into_values().collect();
     let Some(suite) =
-        choruz_application::db_service::measured_trace_suite(&current, 24, &Default::default())
+        choruz_evaluation::dataset::measured_trace_suite(&current, 24, &Default::default())
     else {
         return Ok(json!({"status":"insufficient_independent_objectives"}));
     };
@@ -88,14 +99,37 @@ pub(crate) async fn build(
             .await
             .map_err(|e| e.0)?;
     let judge_spec = crate::handlers_terminals::terminal_spec(&target, 120, 40, None, None);
-    if !state
+    let spec = crate::handlers_terminals::terminal_spec(&builder, 120, 40, None, None);
+    let context = json!({"version":1,"decision_model":settings.model,"minimum_confidence":settings.minimum_confidence,
+        "builder":executor_context(&spec),"judge":executor_context(&judge_spec)});
+    let key = match state
         .db
-        .reserve_decision_program_trial(claim, &corpus)
+        .reserve_decision_program_trial(claim, &corpus, &context)
         .await?
     {
-        return Ok(json!({"status":"corpus_reserved_or_completed"}));
-    }
-    let spec = crate::handlers_terminals::terminal_spec(&builder, 120, 40, None, None);
+        ProgramTrialAdmission::Reserved(key) => key,
+        ProgramTrialAdmission::Existing(status) => {
+            return Ok(
+                json!({"corpus":corpus,"status":"configuration_reserved_or_completed","trial_state":status}),
+            );
+        }
+        ProgramTrialAdmission::BudgetExhausted => {
+            return Ok(json!({"corpus":corpus,"status":"corpus_configuration_budget_exhausted"}));
+        }
+        ProgramTrialAdmission::LegacyUncertain => {
+            return Ok(json!({"corpus":corpus,"status":"legacy_trial_uncertain"}));
+        }
+        ProgramTrialAdmission::ClaimExpired => {
+            return Err(AppError::Conflict(
+                "Decision learning claim expired before reservation".into(),
+            ));
+        }
+    };
+    state
+        .db
+        .update_decision_program_trial(claim, &corpus, &key, "generating", None)
+        .await?;
+    let outcome = async {
     let training = training_examples(&suite.cases, records);
     let generated: Result<Option<choruz_learning::GeneratedProgram>, AppError> = check
         .call(
@@ -122,6 +156,7 @@ pub(crate) async fn build(
         }
     };
     program.minimum_confidence = program.minimum_confidence.max(settings.minimum_confidence);
+    state.db.update_decision_program_trial(claim,&corpus,&key,"evaluating",None).await?;
     let mut results = Vec::new();
     for case in &suite.cases {
         if !state.db.decision_claim_current(claim).await? {
@@ -181,10 +216,29 @@ pub(crate) async fn build(
                 && resolved_model.is_some()
                 && r["result"]["decision"]["model"].as_str() == resolved_model
         });
-    Ok(
+    Ok::<Value,AppError>(
         json!({"corpus":corpus,"status":if passed {"validated"} else {"not_validated"},
         "program":program,"model":settings.model,"resolved_model":resolved_model,"suite":suite,"results":results}),
     )
+    }.await;
+    let report = match &outcome {
+        Ok(report) => report.clone(),
+        Err(error) => json!({"status":"interrupted","failure":failure(error)}),
+    };
+    let status = if outcome.is_err() || report["status"] == "generation_failed" {
+        "uncertain"
+    } else {
+        "completed"
+    };
+    state
+        .db
+        .update_decision_program_trial(claim, &corpus, &key, status, Some(&report))
+        .await?;
+    outcome.map(|mut report| {
+        report["context_key"] = json!(key);
+        report["context"] = context;
+        report
+    })
 }
 
 pub(crate) async fn annotate(

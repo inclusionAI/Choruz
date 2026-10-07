@@ -21,7 +21,7 @@ type Library = {
   sync: { checked_at: string | null; error: string | null } | null;
 };
 
-export function ExperienceCommunity({ endpoint, sessionToken }: { endpoint: string; sessionToken: string }) {
+export function ExperienceCommunity({ endpoint, sessionToken, sharedScope = false, busy = false }: { endpoint: string; sessionToken: string; sharedScope?: boolean; busy?: boolean }) {
   const [data, setData] = useState<Library | null>(null);
   const [settings, setSettings] = useState<Settings | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -77,15 +77,16 @@ export function ExperienceCommunity({ endpoint, sessionToken }: { endpoint: stri
     {saveError && <p role="alert" className="modal-form-error">{saveError}</p>}
     {!data && !error && <p role="status">Loading behavior evidence…</p>}
     {data && settings && <>
-      <fieldset disabled={saving} style={{ display: "grid", gap: "var(--space-3)", padding: "var(--space-3)", border: "1px solid var(--border)", borderRadius: "var(--radius-md)" }}>
+      <fieldset disabled={saving || busy} style={{ display: "grid", gap: "var(--space-3)", padding: "var(--space-3)", border: "1px solid var(--border)", borderRadius: "var(--radius-md)" }}>
         <legend>Community permissions</legend>
         <label style={{ flexDirection: "row", alignItems: "center" }}><input style={{ width: "auto" }} type="checkbox" checked={settings.search} onChange={(event) => setSettings({ ...settings, search: event.target.checked, automatic_trial: event.target.checked && settings.automatic_trial })} />Search accepted community experience</label>
         <label style={{ flexDirection: "row", alignItems: "center" }}><input style={{ width: "auto" }} type="checkbox" disabled={!settings.search} checked={settings.automatic_trial} onChange={(event) => setSettings({ ...settings, automatic_trial: event.target.checked })} />Automatically trial applicable solutions through learning review</label>
         <label style={{ flexDirection: "row", alignItems: "center" }}><input style={{ width: "auto" }} type="checkbox" checked={settings.contribute} onChange={(event) => setSettings({ ...settings, contribute: event.target.checked })} />Contribute independently reviewed, redacted experience publicly</label>
       </fieldset>
       <p>Public contributions use this server’s Hugging Face publisher account and remain pending until the community accepts them. Redaction can make mistakes; enable only for work you are authorized to share.</p>
+      {sharedScope && <p>Contribution includes this Agent’s shared task history. While task reuse is on, future matching tasks are included too.</p>}
       {!data.publisher_configured && <p>Public contribution needs a server publisher token. Local learning and public search do not.</p>}
-      <button type="button" className="btn-secondary" disabled={saving} onClick={() => void save()}>{saving ? "Saving…" : "Save community permissions"}</button>
+      <button type="button" className="btn-secondary" disabled={saving || busy} onClick={() => void save()}>{saving ? "Saving…" : "Save community permissions"}</button>
       <p>Displayed evidence: {data.counts.encountered} encounters · {data.counts.applied} applications · {data.counts.effective} effective · {data.counts.ineffective} ineffective · {data.counts.recurrence} recurrences. These are deduplicated reports, not model failure rates.</p>
       <h4>Local experience</h4>
       {!data.local.length && <p>No confirmed problems have been organized yet.</p>}

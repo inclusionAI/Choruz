@@ -72,6 +72,8 @@ struct RelayPairRequest {
 
 #[derive(Debug, Clone, Deserialize)]
 struct ClaimedCommand {
+    #[serde(default)]
+    decision_input: Option<String>,
     command_id: String,
     attempt_id: String,
     binding_id: String,
@@ -136,6 +138,8 @@ struct CompleteCommand<'a> {
     execution_duration_ms: i64,
     external_session_id: Option<&'a str>,
     clear_external_session: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    execution_metadata: Option<&'a serde_json::Value>,
 }
 
 fn default_concurrency() -> usize {
@@ -808,6 +812,7 @@ async fn execute(
                 execution_duration_ms: 0,
                 external_session_id: None,
                 clear_external_session: false,
+                execution_metadata: None,
             },
         )
         .await;
@@ -828,6 +833,7 @@ async fn execute(
                 execution_duration_ms: 0,
                 external_session_id: None,
                 clear_external_session: false,
+                execution_metadata: None,
             },
         )
         .await;
@@ -848,9 +854,48 @@ async fn execute(
                 execution_duration_ms: 0,
                 external_session_id: None,
                 clear_external_session: false,
+                execution_metadata: None,
             },
         )
         .await;
+    }
+    if let Some(decision) = command
+        .preflight
+        .as_ref()
+        .and_then(|preflight| preflight.decision.as_ref())
+        && let Some(output) = decision.completion()
+    {
+        let job = choruz_agent_runtime::process_scope::Job::begin(
+            command
+                .harness_account
+                .as_ref()
+                .map(|account| account.id.as_str()),
+        )
+        .map_err(|error| error.to_string())?;
+        if job.is_cancelled() {
+            return Err("Harness account was removed".into());
+        }
+        let metadata = decision
+            .completion_metadata(command.decision_input.as_deref().unwrap_or(&command.prompt));
+        complete(
+            &client,
+            &config,
+            &command,
+            &CompleteCommand {
+                attempt_id: &command.attempt_id,
+                succeeded: true,
+                contents: &[output.into()],
+                error: None,
+                tool_calls_count: 0,
+                execution_duration_ms: decision.elapsed_ms.min(i64::MAX as u64) as i64,
+                external_session_id: None,
+                clear_external_session: false,
+                execution_metadata: metadata.as_ref(),
+            },
+        )
+        .await?;
+        info!(command_id=%command.command_id,model=decision.evidence["model"].as_str().unwrap_or_default(),native_calls_avoided=1,"evaluated program completed remote turn");
+        return Ok(());
     }
     info!(
         command_id = %command.command_id,
@@ -904,6 +949,7 @@ async fn execute(
                                 as i64,
                             external_session_id: None,
                             clear_external_session: false,
+                            execution_metadata: None,
                         },
                     )
                     .await;
@@ -926,6 +972,7 @@ async fn execute(
                             as i64,
                         external_session_id: None,
                         clear_external_session: false,
+                        execution_metadata: None,
                     },
                 )
                 .await;
@@ -953,6 +1000,10 @@ async fn execute(
         }
     });
     let process = async {
+        let account_job = choruz_agent_runtime::process_scope::Job::begin(
+            command.harness_account.as_ref().map(|a| a.id.as_str()),
+        )
+        .map_err(std::io::Error::other)?;
         let mut prompt = prompt;
         if let Some(role) = &command.preflight {
             let account = command
@@ -1001,9 +1052,29 @@ async fn execute(
             .env("DISABLE_AUTOUPDATER", "1")
             .env("PI_SKIP_VERSION_CHECK", "1")
             .env("CLAUDE_CODE_ENABLE_TASKS", "1")
-            .kill_on_drop(true)
-            .output()
-            .await
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true);
+        #[cfg(unix)]
+        process_command.process_group(0);
+        if account_job.is_cancelled() {
+            return Err(std::io::Error::other("Harness account was removed"));
+        }
+        let child = process_command.spawn()?;
+        let container = child.id().map(|pid| {
+            choruz_agent_runtime::process::ProcessContainer::new(format!("connector-{pid}"), pid)
+        });
+        let output = child.wait_with_output();
+        tokio::pin!(output);
+        tokio::select! {
+            result=&mut output=>result,
+            _=account_job.cancelled()=>{
+                if let Some(container)=&container{container.kill_all();}
+                let _=output.await?;
+                Err(std::io::Error::new(std::io::ErrorKind::Interrupted,"Harness account was removed"))
+            }
+        }
     };
     let outcome = tokio::time::timeout(DEFAULT_TIMEOUT, process).await;
     heartbeat_task.abort();
@@ -1107,6 +1178,7 @@ async fn execute(
             execution_duration_ms: elapsed,
             external_session_id: session_id.as_deref(),
             clear_external_session: clear_session,
+            execution_metadata: None,
         },
     )
     .await?;
@@ -1675,6 +1747,29 @@ mod tests {
                 "model":null, "external_session_id":null, "harness_account":null,
                 "preflight":{"team":null,"decision":{"revision_id":"selected","status":"proposed","evidence":{"output":"Inspect the manifest"},"elapsed_ms":1}}
             })).unwrap();
+            let mut completed = claimed.clone();
+            let decision = completed
+                .preflight
+                .as_mut()
+                .unwrap()
+                .decision
+                .as_mut()
+                .unwrap();
+            decision.status = "completed".into();
+            decision.evidence["model"] = serde_json::json!("fixture-version");
+            completed.decision_input = Some("Inspect workspace".into());
+            completed.prompt = "Earlier history and learned guidance: Inspect workspace".into();
+            execute(
+                Client::new(),
+                Arc::new(ConnectorConfig { ..config.clone() }),
+                completed,
+            )
+            .await
+            .unwrap();
+            assert!(
+                !Path::new(&root).join("invocation").exists(),
+                "finite answer must skip native CLI"
+            );
             execute(Client::new(), Arc::new(config), claimed)
                 .await
                 .unwrap();
@@ -1687,39 +1782,62 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.unwrap();
-            let mut request = Vec::new();
-            loop {
-                let mut bytes = [0; 4096];
-                let count = stream.read(&mut bytes).await.unwrap();
-                assert!(count > 0);
-                request.extend_from_slice(&bytes[..count]);
-                if let Some(end) = request.windows(4).position(|w| w == b"\r\n\r\n") {
-                    let header = String::from_utf8_lossy(&request[..end]);
-                    let length: usize = header
-                        .lines()
-                        .find_map(|line| {
-                            line.to_lowercase()
-                                .strip_prefix("content-length:")
-                                .map(|value| value.trim().parse().unwrap())
-                        })
-                        .unwrap();
-                    if request.len() >= end + 4 + length {
-                        assert!(header.starts_with(
-                            "POST /v1/runtime-hosts/fixture/commands/command/complete"
-                        ));
-                        let body: serde_json::Value =
-                            serde_json::from_slice(&request[end + 4..end + 4 + length]).unwrap();
-                        assert_eq!(body["succeeded"], true, "{body}");
-                        assert_eq!(body["contents"][0], "Native finished");
-                        break;
+            for index in 0..2 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                loop {
+                    let mut bytes = [0; 4096];
+                    let count = stream.read(&mut bytes).await.unwrap();
+                    assert!(count > 0);
+                    request.extend_from_slice(&bytes[..count]);
+                    if let Some(end) = request.windows(4).position(|w| w == b"\r\n\r\n") {
+                        let header = String::from_utf8_lossy(&request[..end]);
+                        let length: usize = header
+                            .lines()
+                            .find_map(|line| {
+                                line.to_lowercase()
+                                    .strip_prefix("content-length:")
+                                    .map(|value| value.trim().parse().unwrap())
+                            })
+                            .unwrap();
+                        if request.len() >= end + 4 + length {
+                            assert!(header.starts_with(
+                                "POST /v1/runtime-hosts/fixture/commands/command/complete"
+                            ));
+                            let body: serde_json::Value =
+                                serde_json::from_slice(&request[end + 4..end + 4 + length])
+                                    .unwrap();
+                            assert_eq!(body["succeeded"], true, "{body}");
+                            assert_eq!(
+                                body["contents"][0],
+                                if index == 0 {
+                                    "Inspect the manifest"
+                                } else {
+                                    "Native finished"
+                                }
+                            );
+                            if index == 0 {
+                                assert_eq!(
+                                    body["execution_metadata"]["request"], "Inspect workspace",
+                                    "record the actual decision input, not native preparation"
+                                );
+                                assert_eq!(body["execution_metadata"]["native_calls_avoided"], 1);
+                                assert_eq!(
+                                    body["execution_metadata"]["decision"]["evidence"]["model"],
+                                    "fixture-version"
+                                );
+                            } else {
+                                assert!(body["execution_metadata"].is_null());
+                            }
+                            break;
+                        }
                     }
                 }
+                stream
+                    .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\nconnection: close\r\n\r\n")
+                    .await
+                    .unwrap();
             }
-            stream
-                .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\nconnection: close\r\n\r\n")
-                .await
-                .unwrap();
         });
         let mut child = Command::new(env::current_exe().unwrap());
         child

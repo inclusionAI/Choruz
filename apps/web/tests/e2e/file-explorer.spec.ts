@@ -29,6 +29,7 @@ test("Explorer reloads after workspace switches and retries failed directory rea
       companies.push(await response.json());
     }
     await gotoDashboard(page);
+    await page.getByRole("button", { name: "Project files", exact: true }).click();
     await switchTo(companies[0]);
     await folder("src").click();
     await expect(folder("a.txt")).toBeVisible();

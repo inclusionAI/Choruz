@@ -52,7 +52,7 @@ use sha2::{Digest, Sha256};
 ///   confusing matching, admission or action acknowledgement with completion.
 /// - v12: standing browser permission and durable asynchronous continuation.
 /// - v13: require plugin opt-in before provisioning Pi or OpenCode.
-pub const BOOTSTRAP_INSTRUCTION_VERSION: u32 = 13;
+pub const BOOTSTRAP_INSTRUCTION_VERSION: u32 = 14;
 
 const BOOTSTRAP_VERSION_HEADER_PREFIX: &str = "<!-- choruz-bootstrap-version: ";
 const BOOTSTRAP_VERSION_HEADER_SUFFIX: &str = " -->";
@@ -106,7 +106,7 @@ const INSTRUCTION_FILENAMES: &[&str] = &["CLAUDE.md", "AGENTS.md"];
 fn known_instruction_filename(driver_type: Option<&str>) -> Option<&'static str> {
     match driver_type? {
         "codex_exec" | "codex_terminal" | "codex_app_server" | "pi_terminal" | "grok_terminal"
-        | "opencode_terminal" => Some("AGENTS.md"),
+        | "opencode_terminal" | "muse_terminal" => Some("AGENTS.md"),
         "claude_print" | "claude_terminal" => Some("CLAUDE.md"),
         _ => None,
     }
@@ -238,6 +238,14 @@ fn extract_managed_role<'a>(path: &Path, content: &'a str) -> Option<&'a str> {
             extensions[7] =
                 include_str!("instructions_fixtures/bootstrap-v11-browser-workflows.md");
         }
+        return extract_role_from_layout(
+            content_body,
+            &render_instructions_with_extensions(path, ROLE_PLACEHOLDER, &extensions),
+        );
+    }
+    if version == Some(13) {
+        let mut extensions = STANDARD_EXTENSIONS.to_vec();
+        extensions[3] = include_str!("instructions_fixtures/bootstrap-v13-agent-management.md");
         return extract_role_from_layout(
             content_body,
             &render_instructions_with_extensions(path, ROLE_PLACEHOLDER, &extensions),
@@ -1256,7 +1264,7 @@ mod tests {
 
     #[tokio::test]
     async fn bootstrap_refreshes_recent_managed_files_without_losing_roles() {
-        for version in [9, 10, 11, 12] {
+        for version in [9, 10, 11, 12, 13] {
             for filename in ["CLAUDE.md", "AGENTS.md"] {
                 let dir = TempDir::new().unwrap();
                 let path = dir.path().join(filename);
@@ -1267,7 +1275,11 @@ mod tests {
                     render_v10_instructions(Path::new(filename), &role)
                 } else {
                     let mut extensions = super::STANDARD_EXTENSIONS.to_vec();
-                    extensions[3] = super::V12_AGENT_MANAGEMENT;
+                    extensions[3] = if version == 13 {
+                        include_str!("instructions_fixtures/bootstrap-v13-agent-management.md")
+                    } else {
+                        super::V12_AGENT_MANAGEMENT
+                    };
                     if version == 11 {
                         extensions[7] = include_str!(
                             "instructions_fixtures/bootstrap-v11-browser-workflows.md"
@@ -1519,7 +1531,12 @@ mod tests {
             canonical_instructions("AGENTS.md", DEFAULT_ROLE)
         );
 
-        for driver in ["pi_terminal", "grok_terminal", "opencode_terminal"] {
+        for driver in [
+            "pi_terminal",
+            "grok_terminal",
+            "opencode_terminal",
+            "muse_terminal",
+        ] {
             let dir = TempDir::new().unwrap();
             let rewritten = force_rewrite_bootstrap(dir.path(), Some(driver))
                 .await

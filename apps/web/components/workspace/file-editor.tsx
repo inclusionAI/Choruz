@@ -9,6 +9,7 @@ import { syntaxHighlighting, HighlightStyle, bracketMatching, foldGutter } from 
 import { searchKeymap, highlightSelectionMatches } from "@codemirror/search";
 import { tags } from "@lezer/highlight";
 import { transportFetch } from "../../lib/api/transport";
+import { readFileDraft, writeFileDraft } from "../../lib/chat-drafts";
 
 // Lazy-load the markdown renderer. Same pattern as message-bubble.tsx so
 // the bundle only pulls react-markdown when a Markdown file is previewed.
@@ -84,6 +85,7 @@ const LANG_LOADERS: Record<string, () => Promise<{ default: any } | any>> = {
 };
 
 type FileEditorProps = {
+  principalId: string;
   filePath: string;
   workspaceId?: string | null;
   sessionToken: string;
@@ -91,7 +93,7 @@ type FileEditorProps = {
   onDirty: (dirty: boolean) => void;
 };
 
-export function FileEditor({ filePath, workspaceId, sessionToken, onClose, onDirty }: FileEditorProps) {
+export function FileEditor({ principalId, filePath, workspaceId, sessionToken, onClose, onDirty }: FileEditorProps) {
   const [content, setContent] = useState<string | null>(null);
   const [originalContent, setOriginalContent] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -136,10 +138,15 @@ export function FileEditor({ filePath, workspaceId, sessionToken, onClose, onDir
   const onDirtyRef = useRef(onDirty);
   onDirtyRef.current = onDirty;
   useEffect(() => { onDirtyRef.current(isDirty); }, [isDirty]);
+  useEffect(() => {
+    if (content === null || originalContent === null) return;
+    writeFileDraft(principalId, workspaceId, filePath, isDirty ? { content, original: originalContent } : null);
+  }, [principalId, workspaceId, filePath, content, originalContent, isDirty]);
 
   // Load file content
   useEffect(() => {
     let cancelled = false;
+    const draft = readFileDraft(principalId, workspaceId, filePath);
     setContent(null);
     setOriginalContent(null);
     setError(null);
@@ -151,11 +158,16 @@ export function FileEditor({ filePath, workspaceId, sessionToken, onClose, onDir
       .then(data => {
         if (cancelled) return;
         if (data.error) setError(typeof data.error === "string" ? data.error : JSON.stringify(data.error));
-        else { setContent(data.content); setOriginalContent(data.content); contentRef.current = data.content; }
+        else {
+          const restored = draft?.content ?? data.content;
+          setContent(restored);
+          setOriginalContent(draft?.original ?? data.content);
+          contentRef.current = restored;
+        }
       })
       .catch(e => { if (!cancelled) setError(e.message); });
     return () => { cancelled = true; };
-  }, [filePath, workspaceId]);
+  }, [principalId, filePath, workspaceId]);
 
   // Save handler
   const handleSave = useCallback(async (expectedContent = originalContent) => {
@@ -244,8 +256,9 @@ export function FileEditor({ filePath, workspaceId, sessionToken, onClose, onDir
 
     // Load language extension
     const langLoader = LANG_LOADERS[ext];
+    let cancelled = false;
     const initEditor = (langExt?: any) => {
-      if (!editorRef.current) return;
+      if (cancelled || !editorRef.current) return;
       const state = EditorState.create({
         doc: content,
         extensions: langExt ? [...extensions, langExt] : extensions,
@@ -263,6 +276,7 @@ export function FileEditor({ filePath, workspaceId, sessionToken, onClose, onDir
     }
 
     return () => {
+      cancelled = true;
       viewRef.current?.destroy();
       viewRef.current = null;
     };

@@ -178,7 +178,7 @@ Links agent principals to runtime sessions (tmux/CLI).
 | id | TEXT | PK | |
 | conversation_id | TEXT | FK → conversation(id) CASCADE | |
 | agent_principal_id | TEXT | FK → principal(id) CASCADE | |
-| driver_type | TEXT | NOT NULL | `claude_print`, `claude_terminal`, `codex_exec`, `codex_app_server`, `codex_terminal`, `pi_terminal`, `grok_terminal`, `opencode_terminal`, `acp`, `webhook_agent` |
+| driver_type | TEXT | NOT NULL | `claude_print`, `claude_terminal`, `codex_exec`, `codex_app_server`, `codex_terminal`, `muse_terminal`, `pi_terminal`, `grok_terminal`, `opencode_terminal`, `mathcode_terminal`, `acp`, `webhook_agent` |
 | workspace_path | TEXT | NOT NULL | Agent's workspace directory |
 | git_worktree_path | TEXT | | Isolated git worktree |
 | external_session_id | TEXT | | tmux session ID |
@@ -212,6 +212,9 @@ One Claude Code or Codex login that agents of a company can run under, scoped to
 | last_error | TEXT | | Sanitized probe or login failure |
 | probed_at | TIMESTAMPTZ | | Last successful verification |
 | disabled_at | TIMESTAMPTZ | | Soft delete; the device keeps its credentials |
+| removal_requested_at | TIMESTAMPTZ | | Durable cleanup request; new account work is fenced |
+| removal_completed_at | TIMESTAMPTZ | | Set after device cleanup and active command completion |
+| removal_actor_id | TEXT | FK → principal(id) SET NULL | Human who requested removal |
 
 **Unique:** active `name` per (company_id, runtime_host_id, driver_type); one `default` profile per (company_id, runtime_host_id, driver_type); `account_fingerprint`
 **Trigger:** `validate_runtime_binding_harness_account` on `agent_runtime_bindings` requires an `active` account of the same company, driver and host, and stamps `harness_account_name` and `harness_account_profile_kind` into `config_json`
@@ -239,9 +242,18 @@ One official browser sign-in for a harness account. A runtime host's connector c
 
 ### experience_policy and experience_revision
 
+Finite headless replies retain execution metadata on their existing reply event.
+Structured finite replies create an idempotent `runtime.decision` event keyed by
+binding and submission, without another chat message or outbox command. The scoped
+learning-feedback reader includes these events; normal message lists exclude them.
+
 Background learning belongs to one target binding, owner and workspace. `experience_policy` stores the selected analyst binding, opt-in state, active revision, sequential source cursors and cumulative summary. Its generation and expiring lease fence concurrent analysis and settings changes. Deleting the owner or either binding cascades the policy; deleting the policy cascades its revisions.
 
-`decision_settings` separately authorizes TypeSafe transmission and selects an optional program-building binding. `active_decision_revision_id` points to a validated program in the same binding and workspace. Program trials, task partitions and assessment results live in revision validation. Corrected source objectives invalidate dependent programs and clear their selection; changing decision settings also clears the selection. `experience_decision_trial` reserves one corpus per workspace and binding before external generation; a reservation is not evidence that generation completed and survives a worker crash to prevent blind duplicate paid calls. The [decision schema](../migrations/V059__decision_settings.sql) defines these fields.
+`experience_task_profile` opts a policy into future task reuse and records whether shared task history exists. `experience_task_link` references that policy from a task; it does not copy revisions or optimizer state. Selection checks the same owner, project path, driver, device and account. A default-model task inherits the source's explicit model; an explicitly different model does not match. Settings choose the most recently saved enabled matching profile. Runtime resolution rechecks the context, so moving a task to a different context detaches its shared learning. Enabling reuse clears prior public-contribution consent and fences undispatched work in the same transaction. The [task schema](../migrations/V065__shared_task_learning.sql) defines these records.
+
+`runtime_native_sources` retains captured source anchors independently of the current session pointer. Capture updates populate it transactionally; reset does not erase it. Learning revalidates binding, agent/conversation workspace, directory, driver, account and device before reading a source. These anchors do not authorize implicit CLI resume. Deleting a binding cascades its source ledger. The [source schema](../migrations/V064__retained_native_sources.sql) defines the ledger.
+
+`decision_settings` separately authorizes TypeSafe transmission and selects an optional program-building binding. `active_decision_revision_id` points to a validated program in the same binding and workspace. Program trials, task partitions and assessment results live in revision validation. Corrected source objectives invalidate dependent programs and clear their selection; changing decision settings also clears the selection. `experience_decision_trial` reserves each corpus and execution-configuration fingerprint before external generation. Its state and outcome distinguish completed attempts from uncertain external calls. A changed decision model, builder or judge configuration can reserve a new attempt, up to four configurations per corpus; the same configuration is not blindly redispatched after failure or restart. Legacy attempts without a known completed report remain uncertain and block reuse of that corpus. See the [decision schema](../migrations/V059__decision_settings.sql) and [versioned trial migration](../migrations/V066__versioned_program_trials.sql).
 
 `experience_revision` stores source references, analysis, optional instruction text and review evidence. The `(binding_id, policy_generation, source_digest)` unique constraint prevents duplicate reports. Report insertion, cursor advancement and optional activation commit together under the live lease. Manual revision selection verifies the same owner and workspace and invalidates outstanding analysis. Review evidence establishes content acceptance, not future task improvement; see [background experience learning](subsystems/agent-runtime.md#background-experience-learning) for runtime behavior. The [schema](../migrations/V052__experience_learning.sql) defines the fields and constraints.
 

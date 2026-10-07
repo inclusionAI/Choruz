@@ -10,6 +10,7 @@ export type DecisionSettings = {
   classify: boolean;
   supervise: boolean;
   assist_turns: boolean;
+  complete_turns?: boolean;
   builder_binding_id: string | null;
 };
 
@@ -50,6 +51,8 @@ export function ExperienceDecisions({ endpoint, sessionToken, initial, bindings,
       <label><input type="checkbox" style={{ width: "auto" }} checked={value.classify} disabled={saving} onChange={(e) => { setValue({ ...value, classify: e.target.checked }); setSaved(false); }} /> Classify reviewed work</label>
       <label><input type="checkbox" style={{ width: "auto" }} checked={value.supervise} disabled={saving} onChange={(e) => { setValue({ ...value, supervise: e.target.checked }); setSaved(false); }} /> Suggest progress checks</label>
       <label><input type="checkbox" style={{ width: "auto" }} checked={Boolean(value.assist_turns)} disabled={saving} onChange={(e) => { setValue({ ...value, assist_turns: e.target.checked }); setSaved(false); }} /> Assist later Agent turns with the selected program</label>
+      <label><input type="checkbox" style={{ width: "auto" }} checked={Boolean(value.complete_turns)} disabled={saving} onChange={(e) => { setValue({ ...value, complete_turns: e.target.checked }); setSaved(false); }} /> Automatically complete applicable turns with the evaluated program</label>
+      {value.complete_turns && <p className="field-hint">Finite answers skip native model inference. Out-of-scope, low-confidence or unavailable results fall back to the native Agent. This does not run tools or change files.</p>}
       <p className="field-hint">When enabled, later task inputs are sent to TypeSafe on this device. The selected program supplies a bounded proposal; your Agent still handles tools, verification and the final reply. Provider failures and abstentions return the task to your Agent.</p>
       <label>Program-building Agent<select value={value.builder_binding_id ?? ""} disabled={saving} onChange={(e) => { setValue({ ...value, builder_binding_id: e.target.value || null }); setSaved(false); }}>
         <option value="">Do not build programs</option>
@@ -59,7 +62,7 @@ export function ExperienceDecisions({ endpoint, sessionToken, initial, bindings,
     </>}
     {error && <p role="alert" className="modal-form-error">{error}</p>}
     {saved && <p role="status">Decision settings saved.</p>}
-    <button className="btn-secondary" type="button" disabled={saving || (enabled && (!confidenceValid || !value.model.trim() || !(value.classify || value.supervise || value.assist_turns || value.builder_binding_id)))} onClick={() => void save()}>{saving ? "Saving decisions…" : "Save decision settings"}</button>
+    <button className="btn-secondary" type="button" disabled={saving || (enabled && (!confidenceValid || !value.model.trim() || !(value.classify || value.supervise || value.assist_turns || value.complete_turns || value.builder_binding_id)))} onClick={() => void save()}>{saving ? "Saving decisions…" : "Save decision settings"}</button>
   </section>;
 }
 

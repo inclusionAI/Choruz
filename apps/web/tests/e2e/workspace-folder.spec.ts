@@ -5,14 +5,24 @@ import { expect, test } from "@playwright/test";
 import { API_BASE, login, gotoDashboard } from "../fixtures/auth";
 import { createCompany, deleteCompany, uniqueName } from "../fixtures/api";
 
-for (const scenario of ["restore", "typed"] as const) {
-  test(`workspace folder ${scenario === "restore" ? "can be removed and selected again" : "confirmation validates the typed path"}`, async ({ page }) => {
+for (const scenario of ["restore", "typed", "native"] as const) {
+  test(`workspace folder ${scenario === "restore" ? "can be removed and selected again" : scenario === "native" ? "persists native selection and leaves cancellation unchanged" : "confirmation validates the typed path"}`, async ({ page }) => {
     const root = await mkdtemp(join(homedir(), ".choruz-folder-test-"));
     let companyId: string | undefined;
     let token = "";
     try {
       const first = join(await realpath(root), "first");
       const second = join(await realpath(root), "second");
+      if (scenario === "native") {
+        // Only the OS dialog is replaced; selection persists through the real company API.
+        await page.addInitScript((selected) => {
+          let cancelled = false;
+          window.choruzDesktop = { chooseFolder: async () => {
+            if (!cancelled) { cancelled = true; return null; }
+            return selected;
+          } };
+        }, second);
+      }
       await mkdir(first);
       await mkdir(second);
       await mkdir(join(first, "child"));
@@ -35,6 +45,7 @@ for (const scenario of ["restore", "typed"] as const) {
       await page.locator(".company-selector-btn").click();
       await page.locator(".company-dropdown-item").filter({ hasText: company.name })
         .locator(".company-dropdown-item-name").click();
+      await page.getByRole("button", { name: "Project files", exact: true }).click();
       await page.getByRole("button", { name: "Change workspace folder" }).click();
       const dialog = page.getByRole("dialog", { name: "Select Folder" });
       const input = dialog.getByPlaceholder("/path/to/folder");
@@ -47,7 +58,7 @@ for (const scenario of ["restore", "typed"] as const) {
         await expect(chooseFolder).toBeVisible();
         await chooseFolder.click();
         await expect(dialog).toBeVisible();
-      } else {
+      } else if (scenario === "typed") {
         await dialog.getByText("child", { exact: true }).click();
         await input.fill(join(root, "missing"));
         await dialog.getByRole("button", { name: "Select This Folder" }).click();
@@ -55,8 +66,15 @@ for (const scenario of ["restore", "typed"] as const) {
         await expect(dialog.getByText("Cannot read this directory", { exact: true })).toBeVisible();
         expect(await persistedFolder()).toBe(first);
       }
-      await input.fill(second);
-      await dialog.getByRole("button", { name: "Select This Folder" }).click();
+      if (scenario === "native") {
+        await dialog.getByRole("button", { name: "Choose in Finder" }).click();
+        await expect(dialog).toBeVisible();
+        expect(await persistedFolder()).toBe(first);
+        await dialog.getByRole("button", { name: "Choose in Finder" }).click();
+      } else {
+        await input.fill(second);
+        await dialog.getByRole("button", { name: "Select This Folder" }).click();
+      }
       await expect(dialog).toBeHidden();
       await expect.poll(persistedFolder).toBe(second);
       await expect(page.locator(".company-selector-name")).toHaveText(company.name);

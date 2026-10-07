@@ -106,6 +106,7 @@ export type ConsoleSnapshot = {
 };
 
 export type RuntimeBinding = {
+  model?: string | null;
   id: string;
   workspace_id: string;
   conversation_id: string;
@@ -119,6 +120,7 @@ export type RuntimeBinding = {
     | "codex_exec"
     | "codex_app_server"
     | "codex_terminal"
+    | "muse_terminal"
     | "pi_terminal"
     | "grok_terminal"
     | "opencode_terminal"

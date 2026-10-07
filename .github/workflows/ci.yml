@@ -88,6 +88,7 @@ jobs:
               - 'infra/host/setup_test_database.sh'
             web: &web
               - *ci
+              - 'apps/desktop/**'
               - 'apps/web/**'
               - 'crates/choruz-host-runtime/assets/agent-templates/**'
               - 'package.json'
@@ -235,6 +236,15 @@ jobs:
           export CHORUZ_REQUIRE_TEST_DATABASE=1
           source ./infra/host/setup_test_database.sh
           cargo test ${{ needs.changes.outputs.cargo_args }}
+      - name: Database-free routing libraries
+        run: |
+          cargo test -p choruz-router -p choruz-session -p choruz-store --no-default-features
+          cargo run -p choruz-router --no-default-features --example route_message
+          routing_dependencies=$(cargo tree -p choruz-router --no-default-features --edges normal --prefix none)
+          if grep -E '^(tokio-postgres|deadpool-postgres) ' <<< "$routing_dependencies"; then
+            echo "Database-free routing must not depend on PostgreSQL clients" >&2
+            exit 1
+          fi
 
   web:
     name: Web
@@ -263,6 +273,8 @@ jobs:
           fi
       - name: Web typecheck
         run: pnpm web:check
+      - name: Desktop lifecycle tests
+        run: pnpm --dir apps/desktop test
       - name: Web build
         run: pnpm web:build
 

@@ -12,7 +12,7 @@ default, preventing a self-contained musl cross-build.
 
 ## Decision
 
-The headless Linux bundle keeps `choruz`, `choruz-server`, `choruz-api-gateway`,
+The full headless Linux bundle keeps `choruz`, `choruz-server`, `choruz-api-gateway`,
 `choruz-pipeline`, and `migrations/` in one binary directory. The supervisor
 uses the source workspace while developing and uses that complete binary
 directory when launched from a bundle. `choruz-supervisor` selects the Rustls TLS
@@ -35,9 +35,7 @@ artifact contract.
 ## Consequences
 
 The bundle is larger than two files, but it is an executable deployment unit
-with no glibc or OpenSSL runtime dependency. The server continues to download
-its embedded PostgreSQL runtime on first launch, so that initial setup still
-requires outbound network access.
+with no glibc or OpenSSL runtime dependency. The server downloads its embedded PostgreSQL runtime on first launch when no external database is selected, so that initial setup requires outbound network access. [Selective composition](2026-09-28-selective-host-composition.md) defines API-only bundles and external database ownership.
 
 ## Testing
 

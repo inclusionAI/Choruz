@@ -4,6 +4,8 @@ The web client is the Next.js 16 / React 19 application in `apps/web` that rende
 
 ## Layout
 
+The dashboard opens a task workbench. `components/chat/task-start.tsx` provisions a Claude Code or Codex binding through the existing agent route and hands the first instruction to `AgentSessionView`. Tasks stay in the existing direct-conversation store; there is no separate task runtime. Project files and background collaboration are explicit sidebar entries, and the Actions menu retains device, account, import and group management. Saved group selection does not reopen collaboration on startup; an explicit conversation link still opens its target.
+
 `lib/` is grouped by domain; a new module goes in the folder whose name matches the concept it serves, and a React hook goes in `hooks/`:
 
 | Folder | Holds |
@@ -112,7 +114,7 @@ Use `data-activity` for a stable control identity when the accessible name is ab
   Leaving or removal disables sending; saved history remains readable. Files,
   terminal output and private chats are not included in the shared projection.
 
-- Browser: `/` → `/dashboard`; the server component renders `ChatApp` with the bootstrap snapshot, then the client opens `/v1/ws/sync?device_id=…&cursor=…` through `useChatWebSocket` and re-fetches `/v1/unreads` on demand.
+- Browser: `/` → `/dashboard`; the authenticated client bootstrap mounts `ChatApp`, then opens `/v1/ws/sync?device_id=…&cursor=…` through `useChatWebSocket` and re-fetches `/v1/unreads` on demand. Failed bootstrap requests retry in a connection screen before the chat shell mounts.
 - Gateway traffic: `next.config.ts` rewrites `/api/v1/:path*` to the gateway resolved from `CHORUZ_API_BASE_URL`, `CHORUZ_API_URL` or `CHORUZ_API_PORT` (default `http://127.0.0.1:3000`); `apiBaseUrl()` in `lib/api/choruz-api.ts` uses the same precedence server-side, and `NEXT_PUBLIC_CHORUZ_API_PORT` is exposed to the browser.
 - Telemetry: `choruz-trace.ts` stores sanitized entries in the IndexedDB outbox before POSTing to `/api/v1/telemetry`. The gateway commits each batch atomically and deduplicates event IDs within the authenticated actor and workspace. HTTP 204 removes only the acknowledged IDs; failed delivery retries, including after reload. Client occurrence time is separate from server receipt time. These are client-reported observations, not authoritative audit evidence.
 - Next.js API routes call `requireAuth` first, then use `CHORUZ_RUNTIME_DIR`, `CHORUZ_GIT_REPO_PATH`, `CHORUZ_INTERNAL_PROVISION_TOKEN`, `CHORUZ_DATABASE_URL` / `CHORUZ_PG_*` and the `CHORUZ_{CLAUDE,CODEX,PI,GROK,OPENCODE}_BINARY` variables for provisioning and filesystem work.
@@ -141,7 +143,7 @@ Use `data-activity` for a stable control identity when the accessible name is ab
 - Agent provisioning preserves gateway HTTP errors and `Retry-After` through its step wrapper. Local failures remain HTTP 500; step records and raw error causes are not serialized to the caller.
 - IndexedDB unavailable (quota, private mode, schema upgrade): every `message-db.ts` operation catches and emits `trace.event("indexeddb_fallback", { op, error })`; the chat path re-fetches over HTTP.
 - Sync WebSocket drop: `useChatWebSocket` reports `status: "reconnecting"` and retries with backoff from `RECONNECT_BASE_MS` (500 ms) to `RECONNECT_MAX_MS` (16 s), resuming from the persisted `ack_cursor`.
-- Bootstrap or bindings fetch failure on `/dashboard`: `DashboardPage` logs `[dashboard] fetch failed source=…` and renders with empty companies and bindings instead of failing the page.
+- Initial bootstrap failure on `/dashboard`: `components/chat/dashboard.tsx` displays the connection error and retries automatically or through Retry connection. It does not initialize the chat shell with an empty identity.
 - Gateway unreachable from `requireAuth`: the route answers `503 Auth service unavailable` (3 s timeout) rather than `401`.
 - Unknown sync change types trigger a full bootstrap refresh (`refreshBootstrap = true` in `chat-app.tsx`), visible as an extra `GET /v1/bootstrap`.
 - Telemetry delivery failure retains pending events and logs a content-free warning; retries back off to one minute. Storage denial, browser eviction or quota exhaustion can still lose observations. Credentials never enter the outbox. Data over 16 KiB is replaced with an omission marker.

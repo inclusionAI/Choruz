@@ -4,10 +4,12 @@
 //! transaction as the conversation_events row.  A CDC poller then
 //! reads unpublished rows, publishes them, and marks them done.
 
+#[cfg(feature = "postgres")]
 use choruz_common::{AppError, AppResult};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "postgres")]
 use crate::EventStore;
 
 /// Input struct for inserting a new outbox entry.
@@ -35,6 +37,7 @@ pub struct OutboxRow {
     pub attempt_count: i32,
 }
 
+#[cfg(feature = "postgres")]
 impl EventStore {
     /// Insert a new outbox entry.
     ///
@@ -151,6 +154,7 @@ impl EventStore {
     }
 }
 
+#[cfg(feature = "postgres")]
 fn row_to_outbox(row: tokio_postgres::Row) -> OutboxRow {
     OutboxRow {
         id: row.get("id"),

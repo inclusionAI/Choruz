@@ -60,7 +60,7 @@ test("remote creation reads B's harness and writes B's custom workspace through 
   const home = await realpath(await mkdtemp(path.join(tmpdir(), "choruz-device-b-")));
   const workspace = path.join(home, "project");
   // The fixture tests device ownership under both default and optional-plugin configurations.
-  const harness = process.env.CHORUZ_PLUGINS?.split(",").map((id) => id.trim()).includes("opencode") ? "opencode" : "grok";
+  const harness = process.env.CHORUZ_PLUGINS?.split(",").map((id) => id.trim()).includes("opencode") ? "opencode" : "muse";
   const binary = path.join(home, harness);
   const config = path.join(home, "connector.json");
   const connector = path.resolve("../../target/debug/choruz-connector");
@@ -86,7 +86,7 @@ test("remote creation reads B's harness and writes B's custom workspace through 
       return response.ok() ? (await response.json()).home : null;
     }).toBe(home);
 
-    for (const [plugin, scanHarness] of [["pi", "pi"], ["opencode", "open_code"]]) {
+    for (const [plugin, scanHarness] of [["pi", "pi"], ["opencode", "open_code"], ["grok", "grok"]]) {
       const scan = await page.request.post(`${API_BASE}/v1/runtime-hosts/${host.id}/operations`, {
         headers,
         data: { kind: "workspace_sessions.scan", request: { workspace_path: workspace, harnesses: [scanHarness] } },
@@ -121,7 +121,7 @@ test("remote creation reads B's harness and writes B's custom workspace through 
     await modal.getByLabel("Agent name", { exact: true }).fill(uniqueName("device-owned-agent"));
     await modal.getByLabel("Runtime server").selectOption(host.id);
     await modal.getByLabel("Driver", { exact: true }).selectOption(`${harness}_terminal`);
-    await expect(modal.locator('datalist option[value="fixture/device-b-model"]')).toHaveCount(1);
+    await expect(modal.locator('datalist option[value="fixture/device-b-model"]')).toHaveCount(harness === "muse" ? 0 : 1);
     await modal.getByLabel("Model", { exact: true }).fill("fixture/device-b-model");
     await modal.getByLabel("Custom workspace path").check();
     await modal.getByPlaceholder("/path/to/workspace").fill(workspace);
@@ -136,7 +136,7 @@ test("remote creation reads B's harness and writes B's custom workspace through 
     expect(await readFile(path.join(workspace, "AGENTS.md"), "utf8")).toContain("choruz");
     const binding = await page.request.get(`${API_BASE}/v1/runtime/bindings/${created.binding.id}`, { headers });
     expect(binding.ok()).toBeTruthy();
-    expect((await binding.json()).runtime_host_id).toBe(host.id);
+    expect(await binding.json()).toMatchObject({ runtime_host_id: host.id, driver_type: `${harness}_terminal`, model: "fixture/device-b-model" });
   } finally {
     if (processB && processB.exitCode === null) {
       const exited = once(processB, "exit");

@@ -1,0 +1,21 @@
+[package]
+name = "choruz-computer-use"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Device-local browser and desktop tool setup and diagnostics"
+
+[dependencies]
+choruz-agent-runtime = { path = "../choruz-agent-runtime", version = "0.2.3" }
+choruz-common = { path = "../choruz-common", version = "0.2.3" }
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tempfile = "3"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[lints]
+workspace = true

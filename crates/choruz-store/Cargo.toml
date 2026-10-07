@@ -5,19 +5,23 @@ edition.workspace = true
 license.workspace = true
 description = "Conversation event store and outbox for the Choruz durable message pipeline"
 
+[features]
+default = ["postgres"]
+postgres = ["dep:deadpool", "dep:deadpool-postgres", "dep:tokio", "dep:tokio-postgres", "dep:tracing", "dep:futures-util"]
+
 [dependencies]
 chrono.workspace = true
 choruz-common = { path = "../choruz-common" }
-deadpool.workspace = true
-deadpool-postgres.workspace = true
+deadpool = { workspace = true, optional = true }
+deadpool-postgres = { workspace = true, optional = true }
 choruz-events = { path = "../choruz-events" }
 choruz-ids = { path = "../choruz-ids" }
 serde.workspace = true
 serde_json.workspace = true
-tokio.workspace = true
-tokio-postgres.workspace = true
-tracing.workspace = true
-futures-util.workspace = true
+tokio = { workspace = true, optional = true }
+tokio-postgres = { workspace = true, optional = true }
+tracing = { workspace = true, optional = true }
+futures-util = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio.workspace = true

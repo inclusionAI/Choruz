@@ -5,6 +5,15 @@ import { API_BASE, gotoDashboard, signup } from "../fixtures/auth";
 import { createAgent } from "../fixtures/api";
 import { postgresQueryClient } from "../../lib/groups/group-provisioning-db";
 
+async function reopenSharedGroup(page: Page) {
+  await page.getByRole("button", { name: "Actions menu", exact: true }).click();
+  await page.getByRole("button", { name: "Background collaboration", exact: true }).click();
+  const section = page.getByRole("group", { name: "Group Conversations", exact: true });
+  const toggle = section.getByRole("button", { name: "Group Conversations", exact: true });
+  if (await toggle.getAttribute("aria-expanded") !== "true") await toggle.click();
+  await page.locator(".conv-item").filter({ hasText: "Online shared acceptance" }).first().click();
+}
+
 async function submitOnline(page: Page, action: "sign-up" | "sign-in", password: string) {
   for (let attempt = 0; attempt < 6; attempt++) {
     await page.getByLabel("Password", { exact: true }).fill(password);
@@ -152,6 +161,7 @@ test("Online group invitation exchanges real encrypted messages without granting
     await expect(b.locator(".messages-area .msg-runtime-host").filter({ hasText: "Guest account" })).toContainText("Guest's device");
     await expect(b.locator(".messages-area").getByText("Agent owner: Online Guest", { exact: true })).toBeVisible();
     await b.reload();
+    await reopenSharedGroup(b);
     await b.getByTitle("Toggle details", { exact: true }).click();
     await expect(b.getByRole("region", { name: "Your Agents in this group" }).getByText("In this group", { exact: true })).toBeVisible();
     await b.getByRole("button", { name: "Remove guest-online-assistant", exact: true }).click();
@@ -178,6 +188,7 @@ test("Online group invitation exchanges real encrypted messages without granting
     await expect(b.getByText("Message not sent", { exact: true })).toBeVisible();
     await expect(b.getByPlaceholder("Message Online shared acceptance...")).toHaveValue(guestText);
     await b.reload();
+    await reopenSharedGroup(b);
     await expect(b.getByPlaceholder("Message Online shared acceptance...")).toHaveValue(guestText);
     await b.getByRole("button", { name: "Send message", exact: true }).click();
     await expect.poll(async () => {
@@ -207,6 +218,7 @@ test("Online group invitation exchanges real encrypted messages without granting
       await route.fulfill({ status: 429, headers: { "Retry-After": "60" }, json: { error: { detail: "Too many requests" } } });
     });
     await b.reload();
+    await reopenSharedGroup(b);
     await expect(b.getByRole("dialog")).toHaveCount(0);
     await expect(b.getByPlaceholder("Message Online shared acceptance...")).toHaveValue("Draft survives navigation");
     await b.waitForResponse(response => response.url().endsWith("/v1/online/groups") && response.ok(), { timeout: 30_000 });
@@ -218,7 +230,7 @@ test("Online group invitation exchanges real encrypted messages without granting
     await expect(b.getByPlaceholder("Message Online shared acceptance...")).toBeDisabled({ timeout: 20_000 });
     expect((await b.request.post(`${API_BASE}/v1/online/groups/${guestLink.id}/messages`, { headers: auth(guest.token), data: { id: randomUUID(), content: "Must be denied" } })).status()).toBe(409);
     await a.reload();
-    await a.locator(".conv-item").filter({ hasText: "Online shared acceptance" }).first().click();
+    await reopenSharedGroup(a);
     await expect(a.getByRole("tabpanel", { name: "Chat", exact: true }).getByText("Online Guest", { exact: true })).toBeVisible();
     expect(received).toEqual([guestText]);
     for (const [i, local] of [owner, guest, outsider].entries()) await pages[i].request.delete(`${API_BASE}/v1/online/session`, { headers: auth(local.token) });

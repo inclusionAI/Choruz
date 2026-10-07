@@ -834,6 +834,7 @@ impl PgSessionStore {
         execution_duration_ms: i64,
         external_session_id: Option<&str>,
         clear_external_session: bool,
+        execution_metadata: Option<&serde_json::Value>,
     ) -> SessionResult<()> {
         let mut client = self.connect().await?;
         let tx = client.transaction().await?;
@@ -1000,6 +1001,7 @@ impl PgSessionStore {
                     "attempt_id": attempt_id,
                     "tool_calls_count": tool_calls_count,
                     "execution_duration_ms": execution_duration_ms,
+                    "execution": execution_metadata,
                     "runtime_host_id": runtime_host_id,
                     "runtime_host_name": runtime_host_name,
                     "reply_index": reply_index,

@@ -53,6 +53,10 @@ can continue the native session without dropping the duplicate-delivery guard.
 
 ## Standalone use
 
+Computer-tool installation and health checks are composed from
+[`choruz-computer-use`](../choruz-computer-use/README.md). Consumers needing only
+those operations can use that package without this request dispatcher.
+
 The package needs no platform database or HTTP server. The caller supplies authorization before dispatch; library access is not an authorization boundary.
 
 ```sh
@@ -61,6 +65,10 @@ CHORUZ_FS_BROWSE_ROOTS="$PWD" cargo run -p choruz-host-runtime --example browse
 
 The example lists only its temporary directory and removes it on exit. CLI operations require the user's installed, authenticated harness; this package does not distribute those executables or credentials.
 
-`learning_runner::CliRunner` implements the learning library's asynchronous runner in a fresh scratch conversation. It retains the 256 KiB input bound, 1 MiB output bound and 75-second deadline, verifies tool activity, and terminates its process group when dropped. It does not attach analysis to the Agent's foreground session.
+Background calls use [`choruz-learning::native_cli::CliRunner`](../choruz-learning/README.md#model-execution). The host converts its terminal specification into the runner's CLI configuration; workspace, terminal size and foreground resume state are not part of learning execution.
+
+Native evidence parsing uses [`choruz-learning::native_source`](../choruz-learning/README.md#native-evidence). This host selects the binding's account and session and checks that the current turn has finished before requesting a new analysis window. Standalone readers supply their own authorization and turn-completion gate.
+
+`learning_executor::LearningExecutor` connects the shared evaluation workflow to an authorized `LearningHost` and account-specific `TerminalSpec`. `LocalLearningHost` dispatches on this machine; the gateway implements the same interface for paired devices. Neither adapter replaces a disconnected remote host with local execution. Evaluation, replay, team preparation and independent judging use the same host operations as the full platform.
 
 Instruction fragments and test fixtures live inside this package. A path consumer needs the sibling library dependencies, but not a checkout of the web app or root template directory. No durable service is started by adding this dependency.

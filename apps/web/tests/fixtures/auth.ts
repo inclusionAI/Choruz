@@ -105,6 +105,11 @@ export async function gotoDashboard(
 }
 
 export async function expandSidebarConversationSections(page: Page) {
+  await page.getByRole("button", { name: "Actions menu", exact: true }).click();
+  const collaboration = page.getByRole("button", { name: /^(Hide background collaboration|Background collaboration)$/ });
+  await expect(collaboration).toBeVisible();
+  if ((await collaboration.getAttribute("aria-pressed")) !== "true") await collaboration.click();
+  else await page.locator(".dropdown-backdrop").click({ position: { x: 1, y: 1 } });
   for (const title of CONVERSATION_SECTION_TITLES) {
     const header = page
       .getByRole("group", { name: title })

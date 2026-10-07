@@ -1,7 +1,7 @@
 "use client";
 
 import { MessageSquare } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import type { Principal, Conversation, ChatMessage } from "../../lib/api/choruz-types";
 import { MessageBubble, shouldGroup, type ThreadRollupInfo } from "./message-bubble";
@@ -225,7 +225,12 @@ function MeasuredMessageRow({
   useEffect(() => {
     const row = rowRef.current;
     if (!row) return;
-    const report = () => onHeight(messageId, row.getBoundingClientRect().height, layoutSignature);
+    const report = () => {
+      const height = row.getBoundingClientRect().height;
+      // Removal and hidden tabs can notify before passive observer cleanup.
+      // Their zero-size boxes are not measurements of a rendered message.
+      if (row.isConnected && height > 0) onHeight(messageId, height, layoutSignature);
+    };
     report();
     const observer = new ResizeObserver(report);
     observer.observe(row);
@@ -362,7 +367,10 @@ export function MessageList({
 
   const wasNearBottomRef = useRef(true);
   const followingBottomRef = useRef(true);
-  const stopFollowing = () => {
+  const mayResumeFollowingRef = useRef(false);
+  const touchYRef = useRef<number | null>(null);
+  const stopFollowing = (towardBottom: boolean) => {
+    mayResumeFollowingRef.current = towardBottom;
     followingBottomRef.current = false;
     // Cancel already queued bottom-follow frames before the scroll event arrives.
     wasNearBottomRef.current = false;
@@ -408,11 +416,12 @@ export function MessageList({
     const previousHeight = el.scrollHeight;
     const previousTop = el.scrollTop;
     const requestedConversationId = activeConv?.id;
+    const requestedScrollId = scrollRequestRef.current;
     const preservePosition = !navigationTarget;
     void onLoadOlderMessages().then(() => {
       requestAnimationFrame(() => {
         const current = containerRef.current;
-        if (current && preservePosition && !wasNearBottomRef.current && activeConversationIdRef.current === requestedConversationId) {
+        if (current && preservePosition && !wasNearBottomRef.current && activeConversationIdRef.current === requestedConversationId && scrollRequestRef.current === requestedScrollId) {
           current.scrollTop = preservePrependScrollTop(
             previousTop,
             previousHeight,
@@ -434,7 +443,7 @@ export function MessageList({
     // Virtual row measurements can emit scroll events before following settles.
     // Only a new reading gesture interrupts following the bottom.
     if (!followingBottomRef.current) {
-      wasNearBottomRef.current = !navigationTarget && isNearBottom();
+      wasNearBottomRef.current = mayResumeFollowingRef.current && !navigationTarget && isNearBottom();
       followingBottomRef.current = wasNearBottomRef.current;
     }
     if (el.scrollTop < 200 && !historyError) loadHistory();
@@ -536,31 +545,36 @@ export function MessageList({
       const targetCenter = targetTop - containerHeight / 2;
       const conversationId = activeConv?.id;
       const requestId = ++scrollRequestRef.current;
-      el.scrollTo({ top: Math.max(0, targetCenter), behavior: "instant" });
+      const target = el.querySelector(`[data-msg-id="${msgId}"]`);
+      if (target) target.scrollIntoView({ block: "center" });
+      else el.scrollTo({ top: Math.max(0, targetCenter), behavior: "instant" });
+      setScrollTop(el.scrollTop);
+      const measuredWindow = messages.slice(startIdx, endIdx).every((message, index) =>
+        measuredHeights[message.id]?.layoutSignature === layoutSignatures[startIdx + index]);
+      if (!target || !measuredWindow || Math.abs(scrollTop - el.scrollTop) > 1) return;
       requestAnimationFrame(() => {
-        setTimeout(() => {
-          if (activeConversationIdRef.current !== conversationId || scrollRequestRef.current !== requestId) return;
-          const domEl = el.querySelector(`[data-msg-id="${msgId}"]`);
-          if (domEl) {
-            domEl.scrollIntoView({ block: "center" });
-            domEl.classList.add("msg-highlight");
-            setTimeout(() => domEl.classList.remove("msg-highlight"), 1500);
-            onLocated?.();
-          }
-        }, 400);
+        if (activeConversationIdRef.current !== conversationId || scrollRequestRef.current !== requestId) return;
+        target.classList.add("msg-highlight");
+        setTimeout(() => target.classList.remove("msg-highlight"), 1500);
+        onLocated?.();
       });
     },
-    [messages, offsets, containerHeight, activeConv?.id],
+    [messages, offsets, containerHeight, activeConv?.id, startIdx, endIdx, measuredHeights, layoutSignatures, scrollTop],
   );
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!navigationTarget) return;
-    if (messages.some((message) => message.id === navigationTarget)) {
-      scrollToMessage(navigationTarget, loadingOlderMessages ? undefined : onNavigationComplete);
-    } else if (hasOlderMessages && !loadingOlderMessages && !historyError) {
-      wasNearBottomRef.current = false;
-      loadHistory();
-    }
+    // Virtual rows must finish layout between corrections; synchronous corrections
+    // can recursively change the rendered window before its heights are measured.
+    const frame = requestAnimationFrame(() => {
+      if (messages.some((message) => message.id === navigationTarget)) {
+        scrollToMessage(navigationTarget, loadingOlderMessages ? undefined : onNavigationComplete);
+      } else if (hasOlderMessages && !loadingOlderMessages && !historyError) {
+        wasNearBottomRef.current = false;
+        loadHistory();
+      }
+    });
+    return () => cancelAnimationFrame(frame);
   }, [navigationTarget, loadingOlderMessages, historyError, messages, hasOlderMessages, loadHistory, scrollToMessage, onNavigationComplete]);
 
   // ---- Build the visible slice of rendered messages ----
@@ -627,10 +641,19 @@ export function MessageList({
 
   return (
     <div className="messages-area" ref={containerRef} onScroll={onScroll}
-      onWheelCapture={stopFollowing}
-      onTouchMoveCapture={stopFollowing}
-      onPointerDown={(event) => { if (event.target === event.currentTarget) stopFollowing(); }}
-      onKeyDown={(event) => { if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(event.key)) stopFollowing(); }}>
+      onWheelCapture={(event) => { if (event.deltaY !== 0) stopFollowing(event.deltaY > 0); }}
+      onTouchStartCapture={(event) => { touchYRef.current = event.touches[0]?.clientY ?? null; }}
+      onTouchMoveCapture={(event) => {
+        const y = event.touches[0]?.clientY;
+        if (y !== undefined && touchYRef.current !== null && y !== touchYRef.current) stopFollowing(y < touchYRef.current);
+        touchYRef.current = y ?? null;
+      }}
+      onPointerDown={(event) => { if (event.target === event.currentTarget) stopFollowing(true); }}
+      onKeyDown={(event) => {
+        if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(event.key)) {
+          stopFollowing(["ArrowDown", "PageDown", "End"].includes(event.key) || (event.key === " " && !event.shiftKey));
+        }
+      }}>
       {messages.length === 0 ? (
         <EmptyState
           icon={<MessageSquare size={40} strokeWidth={1.25} />}

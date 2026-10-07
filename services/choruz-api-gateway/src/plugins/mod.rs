@@ -4,6 +4,7 @@ use serde::Serialize;
 use crate::ApiState;
 
 mod agent_skills;
+mod grok;
 mod kanban;
 mod mathcode;
 mod opencode;
@@ -26,7 +27,7 @@ struct HostPluginRegistration {
     router: Option<fn() -> Router<ApiState>>,
 }
 
-fn registrations() -> [HostPluginRegistration; 9] {
+fn registrations() -> [HostPluginRegistration; 10] {
     [
         HostPluginRegistration {
             manifest: kanban::manifest,
@@ -62,6 +63,10 @@ fn registrations() -> [HostPluginRegistration; 9] {
         },
         HostPluginRegistration {
             manifest: opencode::manifest,
+            router: None,
+        },
+        HostPluginRegistration {
+            manifest: grok::manifest,
             router: None,
         },
     ]

@@ -34,6 +34,27 @@ pub(crate) enum RuntimeHost {
     Linked(Arc<HostLink>),
 }
 
+impl choruz_host_runtime::learning_executor::LearningHost for RuntimeHost {
+    async fn dispatch(&self, request: HostRequest) -> Result<Value, AppError> {
+        self.call(request).await
+    }
+}
+
+/// Resolve only when dispatched: a reserved target evaluation does not require
+/// the analyst's device to be online until a proposal actually runs.
+pub(crate) struct BoundLearningHost<'a> {
+    pub state: &'a ApiState,
+    pub binding: &'a RuntimeBinding,
+}
+
+impl choruz_host_runtime::learning_executor::LearningHost for BoundLearningHost<'_> {
+    async fn dispatch(&self, request: HostRequest) -> Result<Value, AppError> {
+        RuntimeHost::for_binding(self.state, self.binding)?
+            .call(request)
+            .await
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct LocalHost {
     pub(crate) terminals: TerminalPool,
@@ -267,6 +288,33 @@ impl RuntimeHost {
                 })
                 .await
                 .map(|_| ())
+            }
+        }
+    }
+
+    pub(crate) async fn close_account(
+        &self,
+        account_id: &str,
+        bindings: &[String],
+    ) -> Result<(), AppError> {
+        match self {
+            Self::Local(local) => {
+                choruz_host_runtime::terminal::close_account(&local.terminals, account_id, bindings)
+                    .await
+            }
+            Self::Linked(link) => {
+                let result = link
+                    .call(LinkRequest::HarnessAccountClose {
+                        account_id: account_id.to_owned(),
+                        binding_ids: bindings.to_vec(),
+                    })
+                    .await?;
+                if result["stopped"] != true {
+                    return Err(AppError::Conflict(
+                        "The device did not confirm account cleanup".into(),
+                    ));
+                }
+                Ok(())
             }
         }
     }

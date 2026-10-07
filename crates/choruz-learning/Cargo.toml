@@ -6,16 +6,30 @@ license.workspace = true
 description = "Fixed evidence analysis and evaluation procedures with an injected runner"
 readme = "README.md"
 
+[features]
+native-cli = ["dep:choruz-agent-runtime", "dep:tokio", "dep:tempfile"]
+native-source = ["dep:choruz-agent-runtime"]
+
+[[example]]
+name = "native-source"
+required-features = ["native-source"]
+
 [dependencies]
+choruz-agent-runtime = { path = "../choruz-agent-runtime", version = "0.2.3", optional = true }
+tokio = { workspace = true, optional = true }
+tempfile = { version = "3", optional = true }
 choruz-decision = { path = "../choruz-decision", version = "0.2.3" }
 choruz-common = { path = "../choruz-common", version = "0.2.3" }
 choruz-evaluation = { path = "../choruz-evaluation", version = "0.2.3" }
 choruz-community = { path = "../choruz-community", version = "0.2.3" }
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
+hex.workspace = true
 
 [dev-dependencies]
 tokio.workspace = true
+tempfile = "3"
 
 [lints]
 workspace = true

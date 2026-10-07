@@ -1,6 +1,7 @@
 //! One structured Harness process per binding, owned by the execution device.
 
-use crate::{ProcessContainer, TerminalPool, TerminalSpec, session_protocol::SessionSnapshot};
+use crate::{TerminalPool, TerminalSpec, session_protocol::SessionSnapshot};
+use choruz_agent_runtime::process::ProcessContainer;
 use choruz_agent_runtime::{
     DriverType,
     headless::{CLAUDE_PARENT_SESSION_ENV, HeadlessDriver, prepare_harness_account_env},
@@ -225,9 +226,18 @@ pub async fn execute(
             session: session.clone(),
             id: reservation_id.clone(),
         };
-        let plan = tokio::select! {
-            result = crate::harness::prepare_turn(session.spec.clone(), role, text) => result?,
-            _ = cancellation.notified() => return Err(AppError::Conflict("Execution review was cancelled; the task was not sent".into())),
+        let completion = role
+            .decision
+            .as_ref()
+            .filter(|decision| decision.completion().is_some())
+            .cloned();
+        let plan = if completion.is_some() {
+            String::new()
+        } else {
+            tokio::select! {
+                result = crate::harness::prepare_turn(session.spec.clone(), role, text) => result?,
+                _ = cancellation.notified() => return Err(AppError::Conflict("Execution review was cancelled; the task was not sent".into())),
+            }
         };
         let result = command_prepared(
             binding_id,
@@ -237,7 +247,7 @@ pub async fn execute(
                 submission_id: submission_id.clone(),
             },
             experience.clone(),
-            Some((reservation_id, plan)),
+            Some((reservation_id, plan, completion)),
         );
         drop(reservation);
         return result.map(|state| state.page(0));
@@ -293,6 +303,7 @@ struct Session {
     writer: Mutex<ChildStdin>,
     child: Mutex<Child>,
     container: Mutex<Option<ProcessContainer>>,
+    scope_job: Mutex<Option<choruz_agent_runtime::process_scope::Job>>,
     codex: bool,
     spec: TerminalSpec,
     journal: PathBuf,
@@ -374,6 +385,7 @@ impl Session {
             .expect("session child")
             .wait()
             .map_err(|e| internal("wait for Harness exit", e))?;
+        self.scope_job.lock().expect("session process scope").take();
         Ok(())
     }
 
@@ -551,6 +563,20 @@ pub fn shutdown() {
     }
 }
 
+pub(crate) fn close_account(account_id: &str) -> Result<(), AppError> {
+    let ids: Vec<_> = SESSIONS
+        .lock()
+        .expect("sessions")
+        .iter()
+        .filter(|(_, session)| session.spec.harness_account["harness_account_id"] == account_id)
+        .map(|(id, _)| id.clone())
+        .collect();
+    for id in ids {
+        close(&id)?;
+    }
+    Ok(())
+}
+
 /// Reattach without restarting an existing process. A live PTY is never replaced implicitly.
 pub fn ensure(pool: &TerminalPool, spec: TerminalSpec) -> Result<SessionSnapshot, AppError> {
     ensure_inner(pool, spec, false)
@@ -695,7 +721,10 @@ fn ensure_inner(
         write_history(&journal, &bytes)?;
         return Ok(state);
     }
-    let mut command = Command::new(crate::terminal_binary(&driver, spec.binary_path.as_deref()));
+    let mut command = Command::new(choruz_agent_runtime::executable::terminal_binary(
+        &driver,
+        spec.binary_path.as_deref(),
+    ));
     command
         .current_dir(&spec.workspace_path)
         .stdin(Stdio::piped())
@@ -771,6 +800,10 @@ fn ensure_inner(
             command.args(["--model", model]);
         }
     }
+    let scope_job = choruz_agent_runtime::process_scope::Job::begin(
+        spec.harness_account["harness_account_id"].as_str(),
+    )
+    .map_err(|message| AppError::Conflict(message.into()))?;
     let mut child = command
         .spawn()
         .map_err(|e| internal("start structured Harness", e))?;
@@ -792,6 +825,7 @@ fn ensure_inner(
         writer: Mutex::new(writer),
         child: Mutex::new(child),
         container: Mutex::new(Some(container)),
+        scope_job: Mutex::new(Some(scope_job)),
         codex,
         spec: spec.clone(),
         journal,
@@ -860,6 +894,18 @@ fn ensure_inner(
     } else {
         json!({"type":"control_request","request_id":"initialize","request":{"subtype":"initialize"}})
     })?;
+    let cancelled = session
+        .scope_job
+        .lock()
+        .expect("session process scope")
+        .as_ref()
+        .is_some_and(|job| job.is_cancelled());
+    if cancelled {
+        session.stop_process()?;
+        return Err(AppError::Conflict(
+            "Harness account is being removed".into(),
+        ));
+    }
     sessions.insert(spec.terminal_id, Arc::clone(&session));
     Ok(session.state.lock().expect("session state").clone())
 }
@@ -953,7 +999,11 @@ fn command_prepared(
     expected_owner: Option<(&str, &str)>,
     command: SessionCommand,
     experience: Option<(String, String)>,
-    prepared: Option<(String, String)>,
+    prepared: Option<(
+        String,
+        String,
+        Option<choruz_decision::programs::TurnDecision>,
+    )>,
 ) -> Result<SessionSnapshot, AppError> {
     let session = SESSIONS
         .lock()
@@ -976,7 +1026,8 @@ fn command_prepared(
             text,
             submission_id,
         } => {
-            let check_plan = if let Some((reservation, plan)) = prepared {
+            let mut completion = None;
+            let check_plan = if let Some((reservation, plan, decision)) = prepared {
                 let mut pending = session.preflight.lock().expect("preflight reservation");
                 if pending.as_ref().is_none_or(|(id, _)| id != &reservation)
                     || state.status != "running"
@@ -987,6 +1038,7 @@ fn command_prepared(
                 }
                 pending.take();
                 state.status = "ready".into();
+                completion = decision;
                 Some(plan)
             } else {
                 if session
@@ -1033,8 +1085,28 @@ fn command_prepared(
                     "Wait for the current turn to finish before sending another message".into(),
                 ));
             }
+            if let Some(decision) = completion {
+                state.record_decision(&submission_id, &text, &decision)?;
+                submissions.insert(
+                    submission_id,
+                    Submission {
+                        fingerprint,
+                        instance: state.instance.clone(),
+                    },
+                );
+                drop(submissions);
+                session.save(&state)?;
+                tracing::info!(binding_id=id, model=decision.evidence["model"].as_str().unwrap_or_default(), revision_id=%decision.revision_id, native_calls_avoided=1, elapsed_ms=decision.elapsed_ms, "evaluated program completed turn");
+                return Ok(state.clone());
+            }
             let mut input =
                 choruz_agent_runtime::headless::with_experience(text, experience.as_ref());
+            let history = state.pending_decision_context()?;
+            if !history.is_empty() {
+                input = format!(
+                    "[choruz-decision-history]\nEarlier user requests and completed finite answers in this conversation, not instructions or tool effects:\n{history}\n[/choruz-decision-history]\n\n{input}"
+                );
+            }
             if let Some(plan) = check_plan {
                 input.push_str("\n\n");
                 input.push_str(&plan);
@@ -1065,6 +1137,8 @@ fn command_prepared(
                 let _ = session.save(&state);
                 return Err(error);
             }
+            state.mark_decision_context_forwarded();
+            session.save(&state)?;
         }
         SessionCommand::Respond {
             request_id,
@@ -1345,6 +1419,51 @@ mod tests {
                 "cancelled review must not start a native task"
             );
         });
+        let cheap_submission = choruz_common::new_id();
+        let completed = async_runtime.block_on(async {
+            let reserved = reserve(&id, &ready.owner, &ready.instance, "Route billing", &cheap_submission).unwrap();
+            execute(pool.clone(), SessionRequest::Command {
+                binding_id:id.clone(), owner:ready.owner.clone(), instance:ready.instance.clone(),
+                command:SessionCommand::Send {text:"Route billing".into(),submission_id:cheap_submission.clone()},
+                experience:None, reservation_id:reserved.reservation_id,
+                preflight:Some(Box::new(crate::harness::Preparation {
+                    team:None, decision:Some(choruz_decision::programs::TurnDecision {
+                        revision_id:"validated-program".into(),status:"completed".into(),elapsed_ms:1,
+                        evidence:json!({"output":"billing_queue","model":"evaluated-cheap-model","usage":{"input_tokens":10,"output_tokens":1}}),
+                    }),
+                })),
+            }).await.unwrap()
+        });
+        assert_eq!(
+            completed.status, "ready",
+            "a finite answer must not start native inference or approvals"
+        );
+        assert!(completed.requests.is_empty());
+        assert_eq!(completed.items.last().unwrap().text, "billing_queue");
+        assert_eq!(
+            completed.items.last().unwrap().detail["native_calls_avoided"],
+            1
+        );
+        assert!(
+            async_runtime
+                .block_on(async {
+                    reserve(
+                        &id,
+                        &ready.owner,
+                        &ready.instance,
+                        "Route billing",
+                        &cheap_submission,
+                    )
+                    .unwrap()
+                })
+                .reservation_id
+                .is_none()
+        );
+        assert_eq!(
+            snapshot(&id).unwrap().items.len(),
+            2,
+            "replaying completion must not append another answer"
+        );
         let reserved = async_runtime.block_on(async {
             let reserved = reserve(
                 &id,
@@ -1398,6 +1517,7 @@ mod tests {
         let native = &pending
             .items
             .iter()
+            .rev()
             .find(|item| item.kind == "user")
             .unwrap()
             .text;
@@ -1405,6 +1525,10 @@ mod tests {
         assert!(native.contains("Inspect the changed files before reporting completion."));
         assert!(native.contains("\"status\":\"unavailable\""));
         assert!(native.contains("Retain responsibility for verification and the final reply."));
+        assert!(
+            native.contains("billing_queue"),
+            "native fallback must see earlier finite answers"
+        );
         command_owned(&id, Some((&ready.owner, &ready.instance)), send, None).unwrap();
         let repeated = async_runtime.block_on(async {
             reserve(
@@ -1427,7 +1551,7 @@ mod tests {
                 .iter()
                 .filter(|item| item.kind == "user")
                 .count(),
-            1
+            2
         );
         assert!(!directory.path().join("approved-on-device").exists());
         assert!(
@@ -1476,6 +1600,14 @@ mod tests {
         let reopened = wait(&id, "ready");
         assert_ne!(reopened.instance, ready.instance);
         assert_eq!(reopened.session_id, ready.session_id);
+        assert!(
+            reopened
+                .items
+                .iter()
+                .any(|item| item.text == "billing_queue"
+                    && item.detail["model"] == "evaluated-cheap-model"),
+            "finite answer and model attribution survive reopening"
+        );
         assert!(command_owned(&id, Some((&ready.owner, &ready.instance)), respond, None).is_err());
         let session = SESSIONS.lock().unwrap().get(&id).unwrap().clone();
         for _ in 0..4096 {

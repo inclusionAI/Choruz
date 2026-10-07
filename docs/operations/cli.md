@@ -1,8 +1,6 @@
 # Choruz CLI
 
-`choruz` is the scriptable control-plane client for a running Choruz host.
-It uses the same authenticated HTTP API as the Web Dashboard; it never writes
-the database directly.
+`choruz` exposes local library operations and authenticated control of a running host. Host operations use the same HTTP API as the Web Dashboard and never write the database directly. Local `library` and `tools` commands need no server or login.
 
 ## Install
 
@@ -14,15 +12,9 @@ cargo build --release -p choruz-cli
 ./target/release/choruz --help
 ```
 
-## Commands available now
+## Choose an operation
 
-```bash
-choruz status
-choruz company list
-choruz agent list
-choruz remote status
-choruz remote pairing-credential
-```
+The binary's `--help` lists all commands. Use `library` for explicit native trace reading, output checks and community record validation; `tools` for local browser/desktop setup; and `learning` for an existing host binding's policy and evaluations. The [package contract](../../apps/choruz-cli/README.md) defines their inputs and limitations. `api` calls other existing `/v1/` host endpoints without requiring a dashboard. These commands print JSON.
 
 Use `--json` for automation. `--api-url` and `--pipeline-url` select another
 host; they default to `CHORUZ_API_BASE_URL` and `CHORUZ_PIPELINE_URL`.

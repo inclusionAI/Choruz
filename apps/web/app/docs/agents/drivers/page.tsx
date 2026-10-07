@@ -4,9 +4,10 @@ const drivers = [
   ["claude_terminal", "Claude Code", "claude", "CLAUDE.md"],
   ["claude_print", "Claude Code (headless)", "claude --print", "CLAUDE.md"],
   ["codex_terminal", "OpenAI Codex", "codex", "AGENTS.md"],
+  ["muse_terminal", "Muse Code", "muse", "AGENTS.md"],
   ["codex_exec", "OpenAI Codex (headless)", "codex exec", "AGENTS.md"],
   ["pi_terminal", "Pi Agent (plugin)", "pi", "AGENTS.md"],
-  ["grok_terminal", "Grok Build", "grok", "AGENTS.md"],
+  ["grok_terminal", "Grok Build (plugin)", "grok", "AGENTS.md"],
   ["opencode_terminal", "OpenCode (plugin)", "opencode", "AGENTS.md"],
   ["mathcode_terminal", "MathCode (plugin)", "mathcode", "AGENTS.md"],
 ] as const;
@@ -35,6 +36,7 @@ export default function Page() {
         <tbody>
           <tr><td>Claude Code</td><td><code>claude --print --output-format stream-json</code></td><td><code>--resume</code></td></tr>
           <tr><td>Codex</td><td><code>codex exec --json</code></td><td><code>exec resume</code></td></tr>
+          <tr><td>Muse Code</td><td><code>muse exec --json</code></td><td><code>--session-id</code></td></tr>
           <tr><td>Pi Agent</td><td><code>pi --mode json --approve</code></td><td><code>--session</code></td></tr>
           <tr><td>Grok Build</td><td><code>grok -p ... --output-format streaming-json --always-approve</code></td><td><code>--resume</code></td></tr>
           <tr><td>OpenCode</td><td><code>opencode run --format json --auto</code></td><td><code>--session</code></td></tr>
@@ -43,7 +45,7 @@ export default function Page() {
       </table>
 
       <h2>Binary Paths</h2>
-      <p>Choruz uses the command names above from <code>$PATH</code>. Override them with <code>CHORUZ_CLAUDE_BINARY</code>, <code>CHORUZ_CODEX_BINARY</code>, <code>CHORUZ_PI_BINARY</code>, <code>CHORUZ_GROK_BINARY</code>, <code>CHORUZ_OPENCODE_BINARY</code>, or <code>CHORUZ_MATHCODE_BINARY</code>. The pipeline also accepts the corresponding <code>CHORUZ_*_CLI_PATH</code> variables for core drivers.</p>
+      <p>Choruz uses the command names above from <code>$PATH</code>. Override them with <code>CHORUZ_CLAUDE_BINARY</code>, <code>CHORUZ_CODEX_BINARY</code>, <code>CHORUZ_MUSE_BINARY</code>, <code>CHORUZ_PI_BINARY</code>, <code>CHORUZ_GROK_BINARY</code>, <code>CHORUZ_OPENCODE_BINARY</code>, or <code>CHORUZ_MATHCODE_BINARY</code>. The pipeline also accepts the corresponding <code>CHORUZ_*_CLI_PATH</code> variables for core drivers.</p>
 
       <div className="callout callout-info">
         <strong>MathCode is opt-in</strong>
@@ -51,13 +53,14 @@ export default function Page() {
       </div>
 
       <h2>Harness Accounts</h2>
-      <p>Pi Agent and OpenCode are optional plugins. Install the corresponding CLI on the execution device, add <code>pi</code> or <code>opencode</code> to the controller&apos;s <code>CHORUZ_PLUGINS</code> allowlist, and restart Choruz to enable creation and session import. Existing Agents remain usable when a plugin is disabled.</p>
+      <p>Pi Agent, OpenCode and Grok are optional plugins. Install the corresponding CLI on the execution device, add <code>pi</code>, <code>opencode</code> or <code>grok</code> to the controller&apos;s <code>CHORUZ_PLUGINS</code> allowlist, and restart Choruz to enable creation and session import. Existing Agents remain usable when a plugin is disabled.</p>
+      <p>Muse Code uses the execution device&apos;s official CLI login and model configuration. Sign in directly in its terminal. An exact model ID can be selected when creating an Agent. Muse history import and isolated Harness Accounts are not provided.</p>
       <p>By default a Claude Code or Codex Agent uses the login its computer already has. Open <strong>Harness Accounts</strong> from the Actions menu to see that login&apos;s plan and exact usage, verify it again, or sign in when it has expired. Choruz stores the account label, health, model catalog, and exact quota snapshot; credentials remain in that computer&apos;s local profile directory.</p>
       <p>Turn on <strong>Allow multiple accounts in this company</strong> in the same dialog to sign in to more accounts on a device and choose one per Agent in Create Agent and Create Group. An Agent without a choice still uses the device&apos;s own login. Removing an account hides it in Choruz and leaves the login on the computer untouched.</p>
       <p>The Agent keeps its account selection in the runtime binding. Direct-chat headers and group messages show both the machine and account label. If login, identity, model discovery, or exact quota probing fails, the account remains unavailable instead of falling back to another login.</p>
 
       <h2>Instruction Files</h2>
-      <p>Claude Code receives the full Choruz template in <code>CLAUDE.md</code>. Codex, Pi Agent, Grok Build, and OpenCode receive the same full platform protocol and designed role in <code>AGENTS.md</code>; there is no reduced prompt path.</p>
+      <p>Claude Code receives the full Choruz template in <code>CLAUDE.md</code>. Codex, Muse Code, Pi Agent, Grok Build, and OpenCode receive the same full platform protocol and designed role in <code>AGENTS.md</code>; there is no reduced prompt path.</p>
 
       <div className="callout callout-tip">
         <strong>Mixed teams</strong>

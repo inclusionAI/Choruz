@@ -34,13 +34,14 @@ import { useMessageSearch } from "../../hooks/use-message-search";
 import { useThinkingAgents } from "../../hooks/use-thinking-agents";
 import { thinkingMarkerClearIds } from "../../lib/messages/thinking";
 import { Sidebar } from "./sidebar";
+import { TaskStart } from "./task-start";
 import { MessageList } from "./message-list";
 import { ChatInput, type ReplyTo } from "./chat-input";
 import { ChatHeader } from "./chat-header";
 import { ChannelConversationTabs } from "./channel-conversation-tabs";
 import { ChannelTaskCreateModal } from "../channel-tasks/channel-task-create-modal";
 import { ChatModals } from "./chat-modals";
-import { MessagesSquare, Hash, FileCode2, X } from "lucide-react";
+import { Hash, FileCode2, X } from "lucide-react";
 import { FileEditor } from "../workspace/file-editor";
 import { useChatWebSocket } from "../../hooks/use-chat-web-socket";
 import { usePixelWorldStore, emitPixelWorldEvent } from "../pixel-world/pixel-world-store";
@@ -99,8 +100,8 @@ import {
 } from "../../lib/messages/thread-unreads";
 import { ThreadPanel } from "./thread-panel";
 import type { ThreadRollupInfo } from "./message-bubble";
-import { EmptyState } from "../ui/empty-state";
 import { transportFetch } from "../../lib/api/transport";
+import { readFileDraft, writeFileDraft } from "../../lib/chat-drafts";
 
 // ---------------------------------------------------------------------------
 // Props
@@ -124,7 +125,6 @@ type ChatAppProps = {
 // Constants
 // ---------------------------------------------------------------------------
 
-const PIXEL_WORLD_OPEN_KEY = "choruz_pixel_world_open";
 // Threads: coalescing window for the streaming-path /v1/unreads re-fetch
 // and the open-panel read-receipt POST. One knob: the receipt throttle
 // resolves into the debounced refresh, so the two windows are defined in
@@ -207,9 +207,8 @@ export function ChatApp({ initialSnapshot, sessionToken, runtimeBindings: initia
   }, [activeConvId]);
   const [showDetail, setShowDetail] = useState(false);
   const [showPixelWorld, setShowPixelWorld] = useState(false);
-  const [pixelWorldPreferenceLoaded, setPixelWorldPreferenceLoaded] = useState(false);
   const [showSidebar, setShowSidebar] = useState(false);
-  const sidebarResize = usePanelResize({ storageKey: "choruz_sidebar_width", initial: 320, min: 240, max: 480, anchor: "left" });
+  const sidebarResize = usePanelResize({ storageKey: "choruz_sidebar_width", initial: 260, min: 220, max: 480, anchor: "left" });
   const detailResize = usePanelResize({ storageKey: "choruz_detail_width", initial: 320, min: 280, max: 600, anchor: "right" });
   // ---- Analytics ----
   const trackEvent = useCallback((event: string, data?: Record<string, unknown>) => {
@@ -237,12 +236,6 @@ export function ChatApp({ initialSnapshot, sessionToken, runtimeBindings: initia
     };
   }, [sessionToken, gatewayBaseUrl, principal.id]);
 
-  useEffect(() => {
-    if (!pixelWorldPreferenceLoaded) return;
-    try {
-      localStorage.setItem(PIXEL_WORLD_OPEN_KEY, String(showPixelWorld));
-    } catch { /* ignore */ }
-  }, [pixelWorldPreferenceLoaded, showPixelWorld]);
 
   useEffect(() => {
     if (!pixelWorldEnabled) setShowPixelWorld(false);
@@ -500,6 +493,12 @@ export function ChatApp({ initialSnapshot, sessionToken, runtimeBindings: initia
 
   // Close any tab
   const closeTab = useCallback((id: string) => {
+    const closing = openTabs.find((tab) => tabId(tab) === id);
+    if (closing?.type === "file") {
+      if (readFileDraft(principal.id, closing.workspaceId, closing.path)
+        && !window.confirm("Discard unsaved changes to this file?")) return;
+      writeFileDraft(principal.id, closing.workspaceId, closing.path, null);
+    }
     const remaining = openTabs.filter(tab => tabId(tab) !== id);
     setOpenTabs(remaining);
     if (activeTabId !== id) return;
@@ -727,22 +726,11 @@ export function ChatApp({ initialSnapshot, sessionToken, runtimeBindings: initia
 
   // Restore client-only state from localStorage (avoids hydration mismatch)
   useEffect(() => {
-    try {
-      setShowPixelWorld(localStorage.getItem(PIXEL_WORLD_OPEN_KEY) === "true");
-    } catch { /* ignore */ }
-    setPixelWorldPreferenceLoaded(true);
 
     // Prefer an explicit dashboard deep link, then fall back to the last
     // locally selected conversation.
     try {
       const requested = new URLSearchParams(window.location.search).get("conversationId");
-      const savedOnline = localStorage.getItem(`choruz_active_online:${principal.id}`);
-      if (!requested && !initialActiveConversationId && savedOnline?.startsWith("online:")) {
-        setActiveConvId(null);
-        setActiveTabId(savedOnline);
-        setOpenTabs([{ type: "conv", convId: savedOnline }]);
-        return;
-      }
       const hiddenConversationIds = new Set(
         (initialSnapshot.hidden_conversations ?? []).map((hidden) => hidden.conversation_id),
       );
@@ -759,7 +747,7 @@ export function ChatApp({ initialSnapshot, sessionToken, runtimeBindings: initia
       }
       const savedExists = saved &&
         !hiddenConversationIds.has(saved) &&
-        initialSnapshot.conversations.some((c) => c.id === saved);
+        initialSnapshot.conversations.some((c) => c.id === saved && c.conversation_type === "direct");
       let restored = initialExists ? initialActiveConversationId : requestedExists ? requested : savedExists ? saved : null;
       const savedCompany = localStorage.getItem(`choruz_active_company:${principal.id}`);
       const validSavedCompany = initialCompanies.some((company) => company.id === savedCompany) ? savedCompany : null;
@@ -1996,7 +1984,7 @@ export function ChatApp({ initialSnapshot, sessionToken, runtimeBindings: initia
     ? (isAgentDm
         ? `AI agent${agentDmPlacement ? ` · ${agentDmPlacement}` : ""}`
         : `${Object.keys(activeConv.members).length} members`)
-    : "Select a conversation";
+    : "New task";
 
   // ---- Swipe gesture for mobile sidebar ----
   const shellRef = useRef<HTMLElement>(null);
@@ -2004,7 +1992,7 @@ export function ChatApp({ initialSnapshot, sessionToken, runtimeBindings: initia
 
   // ---- Render ----
   return (
-    <main className="chat-shell" ref={shellRef}>
+    <main className="chat-shell workbench" ref={shellRef}>
       {/* Mobile backdrop */}
       {(showSidebar || showDetail) && (
         <div
@@ -2039,6 +2027,17 @@ export function ChatApp({ initialSnapshot, sessionToken, runtimeBindings: initia
         onHideSession={handleHideSession}
         onSelectConversation={selectConversation}
         onCreateAgent={() => setShowCreateAgent(true)}
+        onNewTask={() => {
+          setActiveConvId(null);
+          setActiveTabId(null);
+          setShowDetail(false);
+          setShowSidebar(false);
+          setShowPixelWorld(false);
+          setReplyTo(null);
+          setOpenThreadRootId(null);
+          try { localStorage.removeItem("choruz_active_conv"); localStorage.removeItem(`choruz_active_online:${principal.id}`); } catch {}
+          trace.event("new_workbench_task");
+        }}
         onManageHarnessAccounts={() => setShowHarnessAccounts(true)}
         onCreateGroup={() => setShowCreateGroup(true)}
         sessionToken={sessionToken}
@@ -2100,8 +2099,7 @@ export function ChatApp({ initialSnapshot, sessionToken, runtimeBindings: initia
 
       {/* ---- Chat main area ---- */}
       <div className="chat-main">
-        {/* Tab bar — shown when 2+ tabs open */}
-        {openTabs.length > 1 && (
+        {openTabs.length > 1 || openTabs.some((tab) => tab.type === "file") ? (
           <div className="editor-tab-bar">
             {openTabs.map(tab => {
               const id = tab.type === 'conv' ? tab.convId : tab.path;
@@ -2141,7 +2139,7 @@ export function ChatApp({ initialSnapshot, sessionToken, runtimeBindings: initia
               );
             })}
           </div>
-        )}
+        ) : null}
 
         {/* Show chat or file editor based on active tab */}
         {/* Show chat when active tab is a conversation (or no tab selected), file editor when it's a file */}
@@ -2196,7 +2194,7 @@ export function ChatApp({ initialSnapshot, sessionToken, runtimeBindings: initia
               >
                 <Suspense fallback={null}>
                   {runtimeBindings.find((binding) => binding.id === bindingId)?.interaction_mode === "session"
-                    ? <AgentSessionView bindingId={bindingId} sessionToken={sessionToken} gatewayBaseUrl={gatewayBaseUrl} />
+                    ? <AgentSessionView principalId={principal.id} bindingId={bindingId} sessionToken={sessionToken} gatewayBaseUrl={gatewayBaseUrl} />
                     : <TerminalView bindingId={bindingId} sessionToken={sessionToken} gatewayBaseUrl={gatewayBaseUrl} />}
                 </Suspense>
               </div>
@@ -2280,15 +2278,27 @@ export function ChatApp({ initialSnapshot, sessionToken, runtimeBindings: initia
                 )}
               </>
             ) : (
-              <EmptyState
-                icon={<MessagesSquare size={40} strokeWidth={1.25} />}
-                title="Welcome to Choruz"
-                description="Select a conversation from the sidebar or create a new group to get started."
+              <TaskStart
+                key={activeCompanyId}
+                principalId={principal.id}
+                companyId={activeCompanyId}
+                projectName={companies.find((company) => company.id === activeCompanyId)?.name ?? "Your workspace"}
+                workspacePath={companies.find((company) => company.id === activeCompanyId)?.folder_path}
+                onAdvanced={() => setShowCreateAgent(true)}
+                onCreated={async (result) => {
+                  await refreshSnapshot();
+                  setConversations((current) => current.some((item) => item.id === result.conversation.id) ? current : [...current, result.conversation]);
+                  setAgents((current) => current.some((item) => item.id === result.agent.id) ? current : [...current, result.agent]);
+                  setRuntimeBindings((current) => current.some((item) => item.id === result.binding.id) ? current : [...current, result.binding]);
+                  selectConversation(result.conversation.id);
+                }}
               />
             )}
           </>
         ) : activeTabId ? (
           <FileEditor
+            key={`${activeFileTab?.type === "file" ? activeFileTab.workspaceId : activeCompanyId}:${activeTabId}`}
+            principalId={principal.id}
             filePath={activeTabId}
             workspaceId={activeFileTab?.type === "file" ? activeFileTab.workspaceId : activeCompanyId}
             sessionToken={sessionToken}

@@ -7,6 +7,7 @@ pub const AGENT_SKILLS_PLUGIN_ID: &str = "agent-skills";
 pub const MATHCODE_PLUGIN_ID: &str = "mathcode";
 pub const PI_PLUGIN_ID: &str = "pi";
 pub const OPENCODE_PLUGIN_ID: &str = "opencode";
+pub const GROK_PLUGIN_ID: &str = "grok";
 pub const KANBAN_PLUGIN_DISABLED_DETAIL: &str =
     "plugin 'kanban' is disabled; include it in CHORUZ_PLUGINS";
 
@@ -20,7 +21,7 @@ pub const DEFAULT_PLUGIN_IDS: [&str; 7] = [
     MATHCODE_PLUGIN_ID,
 ];
 
-pub const BUILTIN_PLUGIN_IDS: [&str; 9] = [
+pub const BUILTIN_PLUGIN_IDS: [&str; 10] = [
     KANBAN_PLUGIN_ID,
     PIXEL_WORLD_PLUGIN_ID,
     WORKSPACE_GIT_PLUGIN_ID,
@@ -30,11 +31,12 @@ pub const BUILTIN_PLUGIN_IDS: [&str; 9] = [
     MATHCODE_PLUGIN_ID,
     PI_PLUGIN_ID,
     OPENCODE_PLUGIN_ID,
+    GROK_PLUGIN_ID,
 ];
 
 /// Returns the built-in plugins enabled for this host.
 ///
-/// Pi and OpenCode require opt-in. Set `CHORUZ_PLUGINS` to a
+/// Pi, OpenCode and Grok require opt-in. Set `CHORUZ_PLUGINS` to a
 /// comma-separated allowlist (or an empty string to disable every plugin).
 pub fn enabled_plugin_ids() -> Vec<&'static str> {
     enabled_plugin_ids_from_env(std::env::var("CHORUZ_PLUGINS"))
@@ -98,6 +100,7 @@ mod tests {
             enabled_plugin_ids_from(Some("pi,opencode")),
             vec!["pi", "opencode"]
         );
+        assert_eq!(enabled_plugin_ids_from(Some("grok")), vec!["grok"]);
         assert_eq!(
             enabled_plugin_ids_from(Some(" pixel-world ")),
             vec![PIXEL_WORLD_PLUGIN_ID]

@@ -49,6 +49,8 @@ pub struct AgentResult {
     /// chain started without an `x-trace-id` header (e.g. server-initiated).
     #[serde(default)]
     pub trace_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_metadata: Option<serde_json::Value>,
 }
 
 /// Status of the agent result.
@@ -112,6 +114,7 @@ mod tests {
             }],
             command_results: command_results.clone(),
             trace_id: None,
+            execution_metadata: None,
         };
 
         let json = serde_json::to_string(&result).unwrap();
@@ -165,6 +168,7 @@ mod tests {
             secondary_command_attempts: Vec::new(),
             command_results: Vec::new(),
             trace_id: None,
+            execution_metadata: None,
         };
 
         let json = serde_json::to_string(&result).unwrap();

@@ -1,0 +1,80 @@
+.workbench {
+  background: var(--bg);
+  --font-brand: var(--font-sans), sans-serif;
+  --agent-luminous: var(--text);
+  --agent: var(--text-secondary);
+}
+.workbench .chat-sidebar {
+  min-width: 220px;
+  background: var(--bg-surface);
+  backdrop-filter: none;
+  border-right-color: transparent;
+}
+.workbench .sidebar-brand { padding: 20px 18px 12px; min-height: 60px; }
+.workbench .sidebar-brand-lockup { width: 108px; }
+.workbench-nav-action {
+  display: flex; align-items: center; gap: 10px; flex-shrink: 0;
+  margin: 3px 10px; padding: 10px; border: 0; border-radius: 8px;
+  background: transparent; color: var(--text); text-align: left; font: inherit; font-size: 13px; cursor: pointer;
+}
+.workbench-nav-action:hover, .workbench-nav-action[aria-pressed="true"] { background: var(--surface-hover); }
+.workbench .sidebar-header { order: 10; padding: 10px 16px; border-top: 1px solid var(--border); border-bottom: 0; }
+.workbench .sidebar-header .avatar { width: 26px; height: 26px; font-size: 12px; }
+.workbench .sidebar-header .user-info span { font-size: 13px; }
+.workbench .sidebar-header .dropdown-menu { top: auto; bottom: calc(100% + 10px); }
+.workbench .sidebar-search { padding: 10px 16px; }
+.workbench .sidebar-search input { font-size: 13px; min-height: 34px; background: transparent; }
+.workbench .company-selector { padding: 8px 16px; border: 0; }
+.workbench .company-selector-btn { background: transparent; font-weight: 500; }
+.workbench .conversation-list { padding: 6px 10px; }
+.workbench .conversation-section-header { text-transform: none; letter-spacing: 0; font-size: 12px; }
+.workbench .conv-item { border-radius: 7px; padding: 0; margin: 2px 0; border: 0; }
+.workbench .conv-item-main { padding: 9px 8px; gap: 8px; }
+.workbench .conv-item .avatar, .workbench .conv-preview, .workbench .conv-ai-badge { display: none; }
+.workbench .conv-item .conv-name { color: var(--text); font-family: var(--font-sans), sans-serif; font-weight: 400; font-size: 13px; }
+.workbench .conv-item.active { background: var(--surface-hover); }
+.workbench .conv-item-actions { opacity: 0; }
+.workbench .conv-item:hover .conv-item-actions, .workbench .conv-item:focus-within .conv-item-actions { opacity: 1; }
+.choruz-desktop .workbench .sidebar-brand { padding-top: 40px; }
+.choruz-desktop .workbench .chat-header { -webkit-app-region: drag; padding-top: 22px; }
+.choruz-desktop .workbench .chat-header button { -webkit-app-region: no-drag; }
+.workbench .chat-header, .workbench .chat-header.is-agent {
+  min-height: 60px; padding: 12px 24px; background: var(--bg); border-bottom: 0; box-shadow: none;
+}
+.workbench .chat-header-info .avatar { display: none; }
+.workbench .chat-header .chat-title { color: var(--text); text-shadow: none; font-size: 15px; }
+.workbench .chat-header .chat-subtitle { text-transform: none; letter-spacing: 0; color: var(--text-secondary); font-size: 11px; }
+.workbench .agent-session-toolbar { border: 0; padding: 6px 24px; font-size: 11px; gap: 8px; flex-wrap: wrap; }
+.workbench .agent-session-toolbar button { border-color: transparent; font-size: 11px; }
+.workbench .agent-session-item { max-width: 800px; }
+.workbench .agent-session-item.is-user { border: 0; padding: 12px 18px; background: var(--bg-elevated); border-radius: 16px; }
+.workbench .agent-session-item details { border: 0; padding: 5px 0; }
+.workbench .agent-session-composer { width: min(800px, calc(100% - 40px)); margin: 12px auto 24px; border-radius: 20px; padding: 16px; box-shadow: 0 4px 20px #00000006; }
+.task-start { flex: 1; min-height: 0; overflow: auto; display: grid; place-items: center; padding: 32px; }
+.task-start-content { width: min(100%, 760px); padding-bottom: 12vh; }
+.task-project { font-size: 13px; color: var(--text-secondary); margin-bottom: 12px; text-align: center; }
+.task-start h2 { margin: 0 0 32px; font-size: clamp(24px, 3vw, 34px); line-height: 1.25; letter-spacing: -1px; font-weight: 500; text-align: center; }
+.task-start-composer { border: 1px solid var(--border); border-radius: 22px; padding: 18px; box-shadow: 0 6px 28px #00000008; background: var(--bg); }
+.task-start-composer:focus-within { border-color: var(--text-muted); }
+.task-start textarea { width: 100%; resize: vertical; min-height: 88px; max-height: 280px; border: 0; background: transparent; color: var(--text); font: inherit; line-height: 1.6; outline: none; }
+.task-start textarea:focus-visible { box-shadow: none; }
+.task-start-controls { display: flex; align-items: center; gap: 10px; }
+.task-start-controls select, .task-start-controls input { min-width: 0; max-width: 180px; background: transparent; color: var(--text-secondary); border: 0; font: inherit; font-size: 12px; padding: 7px 2px; }
+.task-start-controls input { flex: 1; }
+.task-start-controls button { margin-left: auto; display: grid; place-items: center; width: 34px; height: 34px; border: 0; border-radius: 50%; background: var(--text); color: var(--bg); cursor: pointer; }
+.task-start button:disabled { opacity: .45; cursor: default; }
+.task-suggestions { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; margin-top: 22px; }
+.task-suggestions button { display: flex; gap: 8px; align-items: center; background: transparent; border: 1px solid var(--border); border-radius: 10px; color: var(--text-secondary); padding: 10px 12px; font: inherit; font-size: 12px; cursor: pointer; }
+.task-suggestions button:hover { background: var(--surface-hover); color: var(--text); }
+.task-advanced { display: block; margin: 22px auto 0; border: 0; background: transparent; color: var(--text-muted); font: inherit; font-size: 11px; cursor: pointer; }
+.dashboard-connection { min-height: 100dvh; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; padding: 24px; text-align: center; }
+.dashboard-connection h1 { font-size: 22px; }
+.dashboard-connection p { color: var(--text-secondary); }
+.workbench :is(button, select, input):focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+@media (max-width: 768px) {
+  .task-start { padding: 20px; }
+  .task-start-content { padding-bottom: 3vh; }
+  .task-start-controls { gap: 4px; }
+  .task-start-controls select { max-width: 140px; }
+  .workbench .conv-item-actions { opacity: 1; }
+}

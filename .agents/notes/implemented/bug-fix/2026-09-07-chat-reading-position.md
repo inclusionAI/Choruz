@@ -8,7 +8,7 @@ A reader scrolled into history cannot see a message they send. Treating every me
 
 ## Decision
 
-`chat-app.tsx` supplies an explicit conversation-scoped local-send identity to `message-list.tsx` when it appends a text or attachment message. That action resumes following the bottom; incoming messages preserve a reader's position. Opening a conversation and scrolling back to its bottom also start following. Following continues as virtualized row measurements settle; a reading gesture interrupts it. A pending history fetch cannot restore an old position after a local send resumes following.
+`chat-app.tsx` supplies an explicit conversation-scoped local-send identity to `message-list.tsx` when it appends a text or attachment message. That action resumes following the bottom; incoming messages preserve a reader's position. Opening a conversation and scrolling back to its bottom also start following. Following continues as virtualized row measurements settle; a reading gesture interrupts it. An upward wheel, touch or keyboard gesture keeps following disabled even near the bottom; measurement-generated scroll events cannot override that direction. A pending history fetch cannot restore an old position after a local send resumes following.
 
 `message-bubble.tsx` removes ANSI CSI sequences at presentation time, including Markdown fallback, quote previews and system text. Stored content and raw-copy behavior remain unchanged. The existing terminal text helper owns sequence removal; native PTY rendering is unaffected.
 

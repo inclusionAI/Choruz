@@ -16,6 +16,15 @@ SPEC.loader.exec_module(MODULE)
 
 
 class CheckCiResultsTests(unittest.TestCase):
+    def test_routing_portability_is_checked_separately_from_default_features(self) -> None:
+        workflow = (SCRIPT.parents[2] / ".github/workflows/ci.yml").read_text()
+        rust_job = workflow.split("  rust-test:\n", 1)[1].split("\n  web:\n", 1)[0]
+        self.assertIn("cargo test ${{ needs.changes.outputs.cargo_args }}", rust_job)
+        self.assertIn("cargo test -p choruz-router -p choruz-session -p choruz-store --no-default-features", rust_job)
+        self.assertIn("cargo run -p choruz-router --no-default-features --example route_message", rust_job)
+        self.assertIn("cargo tree -p choruz-router --no-default-features --edges normal", rust_job)
+        self.assertIn("exit 1", rust_job)
+
     def test_browser_failure_artifacts_survive_a_passing_retry(self) -> None:
         root = SCRIPT.parents[2]
         config = (root / "apps/web/playwright.config.ts").read_text()

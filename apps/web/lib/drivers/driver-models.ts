@@ -95,6 +95,8 @@ async function discoverDriverModelsUncached(
     const runCommand = options.runCommand ?? runModelCommand;
     let models: DriverModel[];
     switch (driverId) {
+      case "muse_terminal":
+        return { driverId, status: "unsupported", models: [], message: "Muse Code uses its configured model; you can enter an exact model ID." };
       case "claude_terminal":
         return unavailable(driverId, "Claude model discovery is provided by the device API.");
       case "codex_exec":

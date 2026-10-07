@@ -7,6 +7,7 @@ use axum::{
     http::HeaderMap,
     response::IntoResponse,
 };
+use choruz_agent_runtime::session_files::CodexSessionFileMeta;
 use choruz_agent_runtime::{
     BindingState, CodexTerminalCaptureInput, CodexTerminalCaptureMetadata, DriverType,
     RuntimeBinding, TerminalSessionAnchorInput,
@@ -14,9 +15,7 @@ use choruz_agent_runtime::{
 use choruz_application::runtime_store::RuntimeStore;
 use choruz_common::AppError;
 use choruz_domain::{ConversationType, Principal, PrincipalType};
-use choruz_host_runtime::{
-    CodexHomeReady, CodexSessionFileMeta, HostRequest, TerminalSpec, is_terminal_driver,
-};
+use choruz_host_runtime::{CodexHomeReady, HostRequest, TerminalSpec, is_terminal_driver};
 use serde::Deserialize;
 use serde_json::json;
 use std::sync::{
@@ -728,11 +727,23 @@ async fn terminal_bridge(
 
     // Task B: WebSocket -> terminal input and resize.
     let host_for_input = host.clone();
+    let state_for_input = state.clone();
+    let principal_for_input = principal.clone();
     let binding_id_for_input = binding_id.clone();
     let written_bytes = input_bytes.clone();
     let resized = resize_count.clone();
     let mut recv_task = tokio::spawn(async move {
         while let Some(Ok(msg)) = ws_receiver.next().await {
+            if authorize_terminal_binding(
+                &state_for_input,
+                &principal_for_input,
+                &binding_id_for_input,
+            )
+            .await
+            .is_err()
+            {
+                break;
+            }
             let data = match msg {
                 WsMessage::Text(text) => {
                     if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&text)

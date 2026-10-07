@@ -14,8 +14,6 @@ use choruz_agent_runtime::headless::{
 use choruz_executor::sandbox::{SandboxManager, WorkspaceConfig};
 use choruz_session::{AgentCommand, PgSessionStore};
 use choruz_store::EventStore;
-use choruz_tools::gateway::{ToolExecutor, ToolGateway};
-use choruz_tools::registry::default_registry;
 use choruz_writer::{AgentResult, AgentResultStatus};
 
 use crate::config::PipelineConfig;
@@ -25,37 +23,6 @@ use choruz_host_runtime::inbox::{
 use choruz_host_runtime::instructions::ensure_claude_md;
 
 mod wal_recovery;
-
-// ---------------------------------------------------------------------------
-// Tool Gateway integration (audit #2)
-// ---------------------------------------------------------------------------
-
-/// No-op tool executor for Phase 1.
-///
-/// In the current architecture, the CLI process (claude) handles tool
-/// execution internally.  The ToolGateway is wired in to record tool
-/// calls in the effect journal for idempotency on replay.  When we
-/// intercept tool calls before they reach the CLI (Phase 2), this
-/// executor will be replaced with real HTTP / shell backends.
-pub(crate) struct PassthroughToolExecutor;
-
-#[async_trait::async_trait]
-impl ToolExecutor for PassthroughToolExecutor {
-    async fn execute(
-        &self,
-        tool_name: &str,
-        _input: &serde_json::Value,
-        _idempotency_key: &str,
-    ) -> Result<serde_json::Value, String> {
-        // Phase 1: the CLI already executed the tool.  Return a marker
-        // indicating passthrough so the effect journal records the call.
-        Ok(serde_json::json!({
-            "passthrough": true,
-            "tool_name": tool_name,
-            "note": "CLI handled execution; recorded for idempotency audit"
-        }))
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Task event detection
@@ -231,6 +198,7 @@ pub struct ExecutorContext {
 
     /// Path to the `grok` CLI binary.
     pub grok_cli_path: String,
+    pub muse_cli_path: String,
 
     /// Path to the `opencode` CLI binary.
     pub opencode_cli_path: String,
@@ -244,13 +212,10 @@ pub struct ExecutorContext {
     /// Reference to the session store for heartbeat updates.
     pub session_store: Option<Arc<PgSessionStore>>,
 
-    /// Tool Gateway for idempotent tool invocation tracking (retained for future use).
-    #[allow(dead_code)]
-    pub tool_gateway: Arc<ToolGateway<PassthroughToolExecutor>>,
-
-    /// Event store for obtaining DB clients (used by Tool Gateway to write
-    /// to the effect_journal table).
+    /// Event storage for outbox delivery and execution records.
     pub event_store: Option<EventStore>,
+    #[cfg(test)]
+    decision_result: Option<choruz_decision::programs::ProgramResult>,
 
     /// Gateway base URL for outbox command processing (provision_agent, share_file, etc.)
     pub gateway_base_url: String,
@@ -266,13 +231,6 @@ impl ExecutorContext {
 
         let wal_base_dir = PathBuf::from(&config.sandbox_base_dir).join("_wal");
 
-        // Instantiate Tool Gateway with the default tool registry.
-        // Phase 1 uses a passthrough executor since the CLI handles tool
-        // execution directly; the gateway records calls in the effect
-        // journal for idempotent replay.
-        let tool_registry = default_registry();
-        let tool_gateway = Arc::new(ToolGateway::new(tool_registry, PassthroughToolExecutor));
-
         Self {
             sandbox_manager: SandboxManager::new(workspace_config),
             executor_timeout: config.executor_timeout(),
@@ -280,12 +238,14 @@ impl ExecutorContext {
             codex_cli_path: config.codex_cli_path.clone(),
             pi_cli_path: config.pi_cli_path.clone(),
             grok_cli_path: config.grok_cli_path.clone(),
+            muse_cli_path: config.muse_cli_path.clone(),
             opencode_cli_path: config.opencode_cli_path.clone(),
             mathcode_cli_path: config.mathcode_cli_path.clone(),
             wal_base_dir,
             session_store: None,
-            tool_gateway,
             event_store: None,
+            #[cfg(test)]
+            decision_result: None,
             gateway_base_url: config.gateway_base_url.clone(),
         }
     }
@@ -306,7 +266,14 @@ impl ExecutorContext {
     async fn execute_headless(
         &self,
         cmd: &AgentCommand,
-    ) -> Result<(Option<String>, Vec<serde_json::Value>), String> {
+    ) -> Result<
+        (
+            Option<String>,
+            Vec<serde_json::Value>,
+            Option<serde_json::Value>,
+        ),
+        String,
+    > {
         self.spawn_headless_session(cmd).await
     }
 
@@ -383,7 +350,14 @@ impl ExecutorContext {
     async fn spawn_headless_session(
         &self,
         cmd: &AgentCommand,
-    ) -> Result<(Option<String>, Vec<serde_json::Value>), String> {
+    ) -> Result<
+        (
+            Option<String>,
+            Vec<serde_json::Value>,
+            Option<serde_json::Value>,
+        ),
+        String,
+    > {
         let epoch = cmd.current_epoch.unwrap_or(0);
         let session_key = &cmd.session_key;
 
@@ -399,6 +373,10 @@ impl ExecutorContext {
             )
         })?;
         let binding_id = binding.binding_id.clone();
+        let account_job = choruz_agent_runtime::process_scope::Job::begin(
+            binding.config_json["harness_account_id"].as_str(),
+        )
+        .map_err(|_| "Harness account was removed [kind=account_removed]".to_owned())?;
         let selected_model = binding
             .config_json
             .get("model")
@@ -462,7 +440,11 @@ impl ExecutorContext {
                     "webhook_agent: outbox scan complete"
                 );
             }
-            return Ok((Some(outbox_result.reply), outbox_result.command_results));
+            return Ok((
+                Some(outbox_result.reply),
+                outbox_result.command_results,
+                None,
+            ));
         }
 
         let cli_driver = LocalCliDriver::from_driver_type(&drv)
@@ -543,6 +525,10 @@ impl ExecutorContext {
                     &binding_id,
                     &effective_prompt,
                     |request| async {
+                        #[cfg(test)]
+                        if let Some(result) = &self.decision_result {
+                            return Ok(result.clone());
+                        }
                         serde_json::from_value(
                             choruz_host_runtime::execute(
                                 choruz_host_runtime::HostRequest::Decision { request },
@@ -559,9 +545,33 @@ impl ExecutorContext {
         } else {
             None
         };
+        if let Some(decision) = &decision
+            && let Some(output) = decision.completion()
+        {
+            if account_job.is_cancelled() {
+                return Err("Harness account was removed [kind=account_removed]".into());
+            }
+            tracing::info!(binding_id=%binding_id,model=decision.evidence["model"].as_str().unwrap_or_default(),native_calls_avoided=1,elapsed_ms=decision.elapsed_ms,"evaluated program completed headless turn");
+            return Ok((
+                Some(output.into()),
+                Vec::new(),
+                decision.completion_metadata(&effective_prompt),
+            ));
+        }
         let preflight = choruz_host_runtime::harness::Preparation::new(preflight, decision);
         let mut effective_prompt =
             choruz_agent_runtime::headless::with_experience(effective_prompt, experience.as_ref());
+        if let Some(store) = &self.event_store {
+            let history = choruz_application::DbService::new(store.clone())
+                .decision_conversation_context(
+                    &binding.workspace_id,
+                    &binding_id,
+                    &cmd.conversation_id,
+                )
+                .await
+                .map_err(|error| format!("read finite-answer history: {error}"))?;
+            effective_prompt = format!("{history}{effective_prompt}");
+        }
 
         // 2. Build spawn args — headless mode so process exits after each command.
         //    This prevents 200+ zombie processes from accumulating.
@@ -573,6 +583,7 @@ impl ExecutorContext {
             LocalCliDriver::Codex => &self.codex_cli_path,
             LocalCliDriver::Pi => &self.pi_cli_path,
             LocalCliDriver::Grok => &self.grok_cli_path,
+            LocalCliDriver::Muse => &self.muse_cli_path,
             LocalCliDriver::OpenCode => &self.opencode_cli_path,
             LocalCliDriver::MathCode => &self.mathcode_cli_path,
         };
@@ -643,7 +654,7 @@ impl ExecutorContext {
             {
                 command.env(key, value);
             }
-            let cli_future = command
+            command
                 .args(&spawn_args)
                 .env("CHORUZ_WORKSPACE", &work_dir)
                 .env("CHORUZ_SEND", work_dir.join(".choruz").join("send"))
@@ -656,12 +667,43 @@ impl ExecutorContext {
                 .env("DISABLE_AUTOUPDATER", "1")
                 .env("PI_SKIP_VERSION_CHECK", "1")
                 .env("CLAUDE_CODE_ENABLE_TASKS", "1") // Enable file-backed TaskCreate in --print mode
-                .kill_on_drop(true)
-                .output();
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .kill_on_drop(true);
+            #[cfg(unix)]
+            command.process_group(0);
+            if account_job.is_cancelled() {
+                return Err("Harness account was removed [kind=account_removed]".into());
+            }
+            let child = command.spawn().map_err(|e| {
+                format!(
+                    "headless CLI could not start [kind={}]",
+                    classify_cli_start_error(e.kind())
+                )
+            })?;
+            let container = child.id().map(|pid| {
+                choruz_agent_runtime::process::ProcessContainer::new(format!("headless-{pid}"), pid)
+            });
+            let cli_future = async {
+                let output = child.wait_with_output();
+                tokio::pin!(output);
+                tokio::select! {
+                    result=&mut output=>result,
+                    _=account_job.cancelled()=>{
+                        if let Some(container)=&container {container.kill_all();}
+                        let _=output.await?;
+                        Err(std::io::Error::new(std::io::ErrorKind::Interrupted,"account removed"))
+                    }
+                }
+            };
 
             let output = match tokio::time::timeout(self.executor_timeout, cli_future).await {
                 Ok(Ok(output)) => output,
                 Ok(Err(e)) => {
+                    if account_job.is_cancelled() {
+                        return Err("Harness account was removed [kind=account_removed]".into());
+                    }
                     // Do not retain the OS error text: it can disclose a local
                     // path. A missing executable is deterministic and must not
                     // enter the retry loop; other spawn failures can be brief
@@ -793,7 +835,7 @@ impl ExecutorContext {
                 ));
             }
 
-            if cli_driver == LocalCliDriver::Pi
+            if matches!(cli_driver, LocalCliDriver::Pi | LocalCliDriver::Muse)
                 && parse_output(cli_driver, &stdout).structured_error
             {
                 tracing::error!(
@@ -965,6 +1007,12 @@ impl ExecutorContext {
                         _ => {}
                     }
                 }
+            }
+
+            if cli_driver == LocalCliDriver::Muse {
+                let parsed = parse_output(cli_driver, &stdout);
+                response_text = parsed.response_text;
+                new_session_id = parsed.session_id;
             }
 
             // Write detected tasks to agent_task table
@@ -1162,7 +1210,11 @@ impl ExecutorContext {
                 outbox_result.reply = response_text;
             }
 
-            return Ok((Some(outbox_result.reply), outbox_result.command_results));
+            return Ok((
+                Some(outbox_result.reply),
+                outbox_result.command_results,
+                None,
+            ));
         }
     }
 
@@ -1204,7 +1256,7 @@ pub async fn execute_command(ctx: &ExecutorContext, cmd: &AgentCommand) -> Agent
         .map(|s| s.to_string());
 
     match execute_command_inner(ctx, cmd).await {
-        Ok((content, tool_calls_count, command_results)) => {
+        Ok((content, tool_calls_count, command_results, execution_metadata)) => {
             let duration_ms = start.elapsed().as_millis() as i64;
             tracing::info!(
                 event = "executor_command_succeeded",
@@ -1236,6 +1288,7 @@ pub async fn execute_command(ctx: &ExecutorContext, cmd: &AgentCommand) -> Agent
                 secondary_command_attempts: Vec::new(),
                 command_results,
                 trace_id: trace_id.clone(),
+                execution_metadata,
             }
         }
         Err(error_msg) => {
@@ -1277,6 +1330,7 @@ pub async fn execute_command(ctx: &ExecutorContext, cmd: &AgentCommand) -> Agent
                 secondary_command_attempts: Vec::new(),
                 command_results: Vec::new(),
                 trace_id,
+                execution_metadata: None,
             }
         }
     }
@@ -1383,7 +1437,15 @@ fn structured_stdout_indicates_resume_failure(stdout: &str) -> bool {
 async fn execute_command_inner(
     ctx: &ExecutorContext,
     cmd: &AgentCommand,
-) -> Result<(String, i32, Vec<serde_json::Value>), String> {
+) -> Result<
+    (
+        String,
+        i32,
+        Vec<serde_json::Value>,
+        Option<serde_json::Value>,
+    ),
+    String,
+> {
     let epoch = cmd.current_epoch.unwrap_or(0);
     let session_key = &cmd.session_key;
 
@@ -1404,7 +1466,8 @@ async fn execute_command_inner(
 
     // 2. Get or create the persistent session.
     //    For --print mode, the response is captured directly from stdout.
-    let (print_mode_response, command_results) = ctx.execute_headless(cmd).await?;
+    let (print_mode_response, command_results, execution_metadata) =
+        ctx.execute_headless(cmd).await?;
 
     // All agents now run headlessly — print_mode_response is always Some.
     let content = print_mode_response
@@ -1415,7 +1478,7 @@ async fn execute_command_inner(
         content_len = content.len(),
         "headless mode: returning direct response"
     );
-    Ok((content, 0, command_results))
+    Ok((content, 0, command_results, execution_metadata))
 }
 
 // ---------------------------------------------------------------------------
