@@ -1,0 +1,51 @@
+{
+  "schema": "choruz-promo-provenance/1",
+  "title": "Your work becomes your benchmark",
+  "kind": "illustrated overview with an actual product settings capture",
+  "source_revision": "0e0401b90bd21bc547209d8142335227b1a9210d",
+  "source_repository": "https://github.com/jcguo123/Choruz",
+  "equivalent_public_revision": "eef4f5eb9b7b40244316a4b29ecd0b0a79079fba",
+  "source_tree": "4b5bd502d04381d78163ea6febefec275b938701",
+  "production": {
+    "narrative_and_visual_design": "Claude Opus 5.5",
+    "resolved_model": "claude-opus-5-5[1m]",
+    "requested_effort": "ultra",
+    "actual_effort": "max",
+    "effort_note": "Installed official CLI supports up to max for this model; ultra was not used.",
+    "motion_implementation_encoding_and_verification": "Codex",
+    "method": "time-addressable HTML/SVG renderer captured with Chromium and encoded with ffmpeg",
+    "audio": "none"
+  },
+  "video": {
+    "file": "choruz-learning-overview.mp4",
+    "codec": "H.264",
+    "width": 1920,
+    "height": 1080,
+    "fps": 24,
+    "frames": 2808,
+    "duration_seconds": 117,
+    "bytes": 11385534,
+    "sha256": "b64216bb18c9c314a055106a630f77ff021fce6a760b33d8a5340f233be4588f"
+  },
+  "verification": {
+    "ffprobe": "passed",
+    "complete_decode": "passed",
+    "decoded_frames_reviewed_seconds": [2, 7, 14, 25, 39, 53, 68, 81, 95, 105, 112],
+    "decoded_transition_frames_reviewed_seconds": [5.5, 11.5, 19.5, 34, 47.5, 62, 76.5, 88, 103, 109.5],
+    "privacy": "No credentials, private chats, unrelated tabs or native reasoning are shown.",
+    "claims": "No measured benchmark gains, speedups or cost savings are shown or asserted."
+  },
+  "product_capture": {
+    "time_seconds": [102, 108.5],
+    "scenario": "Official Claude Code replied to a benign example issue; user corrected language and output format; user enabled learning and chose a separate analysis agent.",
+    "editing": "Top of actual settings panel cropped only; contents not rewritten.",
+    "observed_limitation": "Background analysis later reported failure. No completed analysis or successful evaluation is claimed. Demo learning was disabled afterward."
+  },
+  "capability_limits": [
+    "Claude Code and Codex native trace-learning adapters only; Muse workspace execution does not imply native learning.",
+    "Provider model is explicitly configured by user; Choruz does not certify parameter count or billing cost.",
+    "Harness adaptation is not model-weight training.",
+    "Learning and provider transmission require opt-in permissions."
+  ],
+  "licenses": "See THIRD_PARTY_NOTICES.md and licenses/."
+}
