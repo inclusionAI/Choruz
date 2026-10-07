@@ -333,11 +333,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "choruz-activity"
+version = "0.2.3"
+dependencies = [
+ "choruz-common",
+ "chrono",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "choruz-agent-runtime"
 version = "0.2.3"
 dependencies = [
  "choruz-common",
  "chrono",
+ "libc",
  "rusqlite",
  "serde",
  "serde_json",
@@ -354,11 +365,13 @@ dependencies = [
  "aes-gcm",
  "axum",
  "base64",
+ "choruz-activity",
  "choruz-agent-runtime",
  "choruz-application",
  "choruz-auth",
  "choruz-common",
  "choruz-community",
+ "choruz-computer-use",
  "choruz-decision",
  "choruz-domain",
  "choruz-evaluation",
@@ -400,6 +413,7 @@ dependencies = [
 name = "choruz-application"
 version = "0.2.3"
 dependencies = [
+ "choruz-activity",
  "choruz-agent-runtime",
  "choruz-auth",
  "choruz-common",
@@ -441,6 +455,10 @@ dependencies = [
 name = "choruz-cli"
 version = "0.2.3"
 dependencies = [
+ "choruz-community",
+ "choruz-computer-use",
+ "choruz-evaluation",
+ "choruz-learning",
  "dirs",
  "libc",
  "reqwest 0.12.28",
@@ -474,6 +492,20 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+]
+
+[[package]]
+name = "choruz-computer-use"
+version = "0.2.3"
+dependencies = [
+ "choruz-agent-runtime",
+ "choruz-common",
+ "libc",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -525,8 +557,10 @@ dependencies = [
 name = "choruz-evaluation"
 version = "0.2.3"
 dependencies = [
+ "hex",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
 ]
 
 [[package]]
@@ -546,7 +580,6 @@ dependencies = [
  "async-trait",
  "choruz-events",
  "choruz-ids",
- "choruz-session",
  "chrono",
  "rusqlite",
  "serde",
@@ -579,6 +612,7 @@ dependencies = [
  "choruz-agent-runtime",
  "choruz-common",
  "choruz-community",
+ "choruz-computer-use",
  "choruz-decision",
  "choruz-evaluation",
  "choruz-harness-login",
@@ -620,12 +654,16 @@ dependencies = [
 name = "choruz-learning"
 version = "0.2.3"
 dependencies = [
+ "choruz-agent-runtime",
  "choruz-common",
  "choruz-community",
  "choruz-decision",
  "choruz-evaluation",
+ "hex",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
  "tokio",
 ]
 
@@ -639,6 +677,7 @@ dependencies = [
  "choruz-agent-runtime",
  "choruz-application",
  "choruz-common",
+ "choruz-decision",
  "choruz-events",
  "choruz-executor",
  "choruz-host-runtime",
@@ -647,7 +686,6 @@ dependencies = [
  "choruz-router",
  "choruz-session",
  "choruz-store",
- "choruz-tools",
  "choruz-writer",
  "chrono",
  "futures-util",
@@ -726,6 +764,7 @@ dependencies = [
  "choruz-infrastructure",
  "choruz-supervisor",
  "ctrlc",
+ "tempfile",
  "tokio",
  "tracing",
 ]

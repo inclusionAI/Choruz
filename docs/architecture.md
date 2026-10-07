@@ -4,17 +4,23 @@ Choruz is a chat platform where humans and AI agents share direct and group conv
 
 ## Shape
 
+The [desktop application](../apps/desktop/README.md) packages the shared web workbench and Rust runtime. Electron owns the native window and local service lifecycle; task, account and remote-device operations keep their existing owners.
+
 The repository is a modular monolith: one Cargo workspace (`Cargo.toml`) with shared crates under `crates/`, binaries under `apps/` and `services/`, and a Next.js client in `apps/web`. The layered crates are `crates/choruz-domain` (control-plane types), `crates/choruz-application` (`DbService` and the in-memory `ChatApp` shell), `crates/choruz-infrastructure` (tracing) and `crates/choruz-auth` (HMAC secrets and session tokens). The gateway and pipeline compose these libraries; independently usable capabilities stay in the same workspace rather than becoming separate services.
 
-[`choruz-evaluation`](../crates/choruz-evaluation/README.md) supplies fixed tasks, assessments and checkpointed prompt/team optimization without a database or model provider. The gateway's evaluation worker supplies execution and persistence; community solutions share the library's team configuration. The library never authorizes activation.
+[`choruz-evaluation`](../crates/choruz-evaluation/README.md) supplies dataset curation, fixed tasks, assessments and checkpointed prompt/team optimization without a database or model provider. Community solutions share the library's team configuration. The library never authorizes activation.
 
 [`choruz-community`](../crates/choruz-community/README.md) supplies behavior evidence, deduplicated counts and revision-pinned dataset exchange. The platform owns consent, privacy review, publication state and solution application.
 
+[`choruz-activity`](../crates/choruz-activity/README.md) supplies storage-free event validation and defensive redaction. The authenticated gateway, browser outbox and application database adapter own collection, delivery, actor scoping and retention.
+
 [`choruz-decision`](../crates/choruz-decision/README.md) validates structured inference and finite-output programs. Device execution owns the provider key; background learning owns program construction and independent evaluation, while the human owner controls selection.
 
-[`choruz-learning`](../crates/choruz-learning/README.md) owns fixed analysis and assessment procedures with an injected asynchronous runner. [`choruz-host-runtime`](../crates/choruz-host-runtime/README.md) supplies native CLI execution and packaged instruction resources; background workers retain collection, scheduling, persistence and activation. [`choruz-relay-client`](../crates/choruz-relay-client/README.md) carries encrypted device traffic without platform storage.
+[`choruz-learning`](../crates/choruz-learning/README.md) owns fixed analysis, task admission and evaluation workflows with injected asynchronous execution and evidence adapters, plus optional native CLI execution and bounded native evidence reading. [`choruz-host-runtime`](../crates/choruz-host-runtime/README.md) composes this runner with device dispatch and packaged instruction resources; background workers retain authorization, collection, scheduling, persistence and activation. They call the same workflows as standalone library consumers. [`choruz-relay-client`](../crates/choruz-relay-client/README.md) carries encrypted device traffic without platform storage.
 
 [`choruz-agent-runtime`](../crates/choruz-agent-runtime/README.md) provides CLI configuration and native session discovery without a PostgreSQL dependency. `choruz-application::runtime_store` owns binding and conversation-policy persistence; the gateway and pipeline compose the store with device execution.
+
+[`choruz-router`](../crates/choruz-router/README.md) exposes the shared routing policies and agent command construction without PostgreSQL when default features are disabled. The router, session and store crates keep their durable adapters behind the default `postgres` feature; the platform enables it. Standalone policy evaluation does not provide authentication, persistence or a running message service.
 
 | Package | Owns | Subsystem page |
 |---|---|---|
@@ -44,9 +50,16 @@ The web app (`apps/web/next.config.ts`) rewrites `/api/v1/*` to the gateway and 
 
 Liveness and readiness are `GET /healthz` and `GET /readyz` on both Rust processes: the gateway's readiness (`services/choruz-api-gateway/src/meta_handlers.rs`) checks the database, the pipeline's (`services/choruz-pipeline/src/meta.rs`) checks the event store and the session store. Every Rust binary initializes `tracing` through `crates/choruz-infrastructure`: `RUST_LOG` selects the filter and `CHORUZ_LOG_FORMAT=human|json` selects the encoding; the defaults are `info` and `human`.
 
-For a remote host, `services/choruz-server` starts embedded Postgres through `crates/choruz-supervisor`, spawns `choruz-api-gateway` on 3000 and `choruz-pipeline` on 3020, prints `CHORUZ_LISTENING=3000` on stdout, and blocks until a signal; the client keeps rendering the UI and proxies over an SSH tunnel. `services/choruz-connector` is the persistent connector for runtime hosts (`runtime_host`, `runtime_host_pairing`), and `services/remote-control-gateway` is the Cloudflare Worker that relays encrypted remote-control frames ([operations/remote-control.md](operations/remote-control.md)).
+`services/choruz-server` composes the shared API with an optional pipeline through `crates/choruz-supervisor`, using embedded PostgreSQL or an explicitly configured external database. `choruz start local` selects API-only operation without requesting pairing; the default start selects the full headless host. Both publish a readiness handshake and own child-process cleanup; [host-and-remote](subsystems/host-and-remote.md) defines the configuration. `services/choruz-connector` is the persistent connector for runtime hosts (`runtime_host`, `runtime_host_pairing`), and `services/remote-control-gateway` is the Cloudflare Worker that relays encrypted remote-control frames ([operations/remote-control.md](operations/remote-control.md)).
 
 ## Message flow
+
+Device-local browser and desktop setup lives in
+[`choruz-computer-use`](../crates/choruz-computer-use/README.md). The host dispatcher
+and gateway use that package; its diagnostics can also run without either service.
+Shared child-process containment lives in `choruz-agent-runtime::process`.
+
+Account removal persists its fence before stopping device-owned work. The gateway's retirement worker uses `RuntimeHost` for device cleanup; the pipeline observes the same durable requests to cancel local headless execution. `choruz-agent-runtime::process_scope` supplies admission fencing and cleanup acknowledgement without platform storage.
 
 ```text
 human types in apps/web
@@ -124,7 +137,7 @@ Migrations live in `migrations/` in two lexicographic series, `0001_init.sql` th
 - One in-flight turn per agent. `find_pending_commands` never leases a second command for an agent that already has active or retry-scheduled work (`crates/choruz-session/src/store.rs`), matching the one-binding-per-agent rule from `migrations/0018_agent_bindings_one_per_agent.sql`.
 - Sync cursors advance only on acknowledgement. `/v1/ws/sync` persists `sync_device.ack_cursor` after the client's `sync_ack`, never on send (`services/choruz-api-gateway/src/handlers_sync_ws.rs`).
 - The database is the source of truth. `choruz-api-gateway` builds `ChatApp` from `principal`, `conversation`, `company` and `event_webhook` at startup (`build_app_from_db` in `services/choruz-api-gateway/src/main.rs`) and never loads messages or audit logs into memory; every message read goes through `DbService`.
-- One control plane. `apps/choruz-cli` talks only to the authenticated HTTP API (`apps/choruz-cli/src/main.rs`) and never writes the database, so CLI and dashboard share permissions, audit records and validation.
+- One control plane. Host operations in `apps/choruz-cli` use the authenticated HTTP API and never write the database, so CLI and dashboard share permissions, audit records and validation. Local library and device-tool commands invoke their existing crate owners without a host; see the [CLI contract](../apps/choruz-cli/README.md).
 - Plugins are opt-out, not forked. `CHORUZ_PLUGINS` (`crates/choruz-common/src/plugins.rs`) narrows the built-in set; a disabled plugin registers no routes and renders no UI ([plugins.md](plugins.md)).
 
 ## Where new behaviour goes

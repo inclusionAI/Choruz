@@ -32,7 +32,9 @@ pub use models::{
 };
 pub use policy::evaluate_trigger;
 pub use router::{
-    DecisionSink, InMemoryDecisionSink, InMemoryMemberProvider, MemberProvider, RouterConfig,
-    RouterError, RouterResult, route_event, run_router_loop,
+    DecisionSink, InMemoryDecisionSink, InMemoryMemberProvider, MemberProvider, RouterError,
+    RouterResult, route_event,
 };
+#[cfg(feature = "postgres")]
+pub use router::{RouterConfig, run_router_loop};
 pub use workflow::parse_workflow_routing_event;

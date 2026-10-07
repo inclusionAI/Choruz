@@ -68,26 +68,14 @@ test.describe("Pixel World (additional)", () => {
   /*  Persistence                                                            */
   /* ---------------------------------------------------------------------- */
 
-  test("should persist pixel world open state in localStorage", async ({
-    page,
-  }) => {
-    // Check localStorage
-    const stored = await page.evaluate(() =>
-      localStorage.getItem("choruz_pixel_world_open"),
-    );
-    // Could be "true", "false", or null
-    expect(["true", "false", null]).toContain(stored);
-  });
-
-  test("should restore pixel world state on reload", async ({ page }) => {
+  test("opens the task workbench instead of restoring a background visualization", async ({ page }) => {
     await page.evaluate(() =>
       localStorage.setItem("choruz_pixel_world_open", "true"),
     );
     await page.reload();
     await page.waitForSelector(".chat-sidebar, .chat-app", { timeout: 15_000 });
-    await page.waitForTimeout(3000);
-    // Panel may or may not be visible depending on other conditions
-    expect(true).toBeTruthy();
+    await expect(page.locator(".pixel-world-panel")).toHaveCount(0);
+    await expect(page.getByRole("heading", { name: "What would you like to work on?" })).toBeVisible();
   });
 
   /* ---------------------------------------------------------------------- */

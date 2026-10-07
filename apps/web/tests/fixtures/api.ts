@@ -242,6 +242,8 @@ export async function createAndOpenGroup(
 ) {
   const group = await createGroup(page, token, principalId, uniqueName(prefix));
   await page.goto(`${WEB_BASE}/dashboard`);
+  await page.getByRole("button", { name: "Actions menu", exact: true }).click();
+  await page.getByRole("button", { name: "Background collaboration", exact: true }).click();
   const groupHeader = page
     .getByRole("group", { name: "Group Conversations" })
     .getByRole("button", { name: /^Group Conversations/ });

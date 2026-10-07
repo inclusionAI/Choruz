@@ -173,6 +173,7 @@ fn drains_via_watcher(driver_type: &DriverType) -> bool {
             | DriverType::CodexTerminal
             | DriverType::PiTerminal
             | DriverType::GrokTerminal
+            | DriverType::MuseTerminal
             | DriverType::OpenCodeTerminal
             | DriverType::WebhookAgent
     )

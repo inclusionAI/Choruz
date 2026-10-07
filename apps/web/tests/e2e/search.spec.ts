@@ -359,7 +359,7 @@ test.describe("Search", () => {
             await expect(page.getByText("Finding message…", { exact: true })).toHaveCount(0);
             const top = await page.locator(".messages-area").evaluate((element) => element.scrollTop);
             await page.clock.runFor(500);
-            await expect(page.locator(`[data-msg-id="${replacement.id}"]`)).not.toHaveClass(/msg-highlight/);
+            await expect(page.locator(`[data-msg-id="${replacement.id}"].msg-highlight`)).toHaveCount(0);
             expect(await page.locator(".messages-area").evaluate((element) => element.scrollTop)).toBe(top);
           }
         } else {

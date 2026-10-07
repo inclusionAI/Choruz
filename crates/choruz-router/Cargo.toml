@@ -5,13 +5,17 @@ edition.workspace = true
 license.workspace = true
 description = "Router / Policy Engine: consumes conversation events, writes mailbox visibility and route decisions, generates agent commands"
 
+[features]
+default = ["postgres"]
+postgres = ["choruz-store/postgres", "choruz-session/postgres"]
+
 [dependencies]
 chrono.workspace = true
 choruz-common = { path = "../choruz-common" }
 choruz-events = { path = "../choruz-events" }
 choruz-ids = { path = "../choruz-ids" }
-choruz-store = { path = "../choruz-store" }
-choruz-session = { path = "../choruz-session" }
+choruz-store = { path = "../choruz-store", default-features = false }
+choruz-session = { path = "../choruz-session", default-features = false }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

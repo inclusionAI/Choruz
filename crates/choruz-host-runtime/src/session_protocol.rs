@@ -41,6 +41,8 @@ pub struct SessionSnapshot {
     #[serde(default)]
     pub native_session_path: Option<String>,
     pub turn_id: Option<String>,
+    #[serde(default)]
+    pub last_native_turn_id: Option<String>,
     pub status: String,
     pub items: Vec<SessionItem>,
     pub requests: Vec<Value>,
@@ -60,6 +62,72 @@ pub struct SessionSnapshot {
 }
 
 impl SessionSnapshot {
+    pub(crate) fn pending_decision_context(&self) -> Result<String, choruz_common::AppError> {
+        let pending: Vec<_> = self
+            .items
+            .iter()
+            .filter(|item| {
+                item.detail["source"] == "decision_program" && item.detail["forwarded"] != true
+            })
+            .map(|item| json!({"role":item.kind,"text":item.text}))
+            .collect();
+        if pending.is_empty() {
+            return Ok(String::new());
+        }
+        let context = json!(pending).to_string();
+        if context.len() > 96 * 1024 {
+            return Err(choruz_common::AppError::Validation("Pending finite-answer context exceeds its limit. Start a new task before continuing.".into()));
+        }
+        Ok(context)
+    }
+
+    pub(crate) fn mark_decision_context_forwarded(&mut self) {
+        for item in &mut self.items {
+            if item.detail["source"] == "decision_program" {
+                item.detail["forwarded"] = json!(true);
+            }
+        }
+    }
+
+    pub(crate) fn record_decision(
+        &mut self,
+        submission: &str,
+        input: &str,
+        decision: &choruz_decision::programs::TurnDecision,
+    ) -> Result<(), choruz_common::AppError> {
+        let output = decision.completion().ok_or_else(|| {
+            choruz_common::AppError::Validation(
+                "Only an evaluated finite completion may finish a turn".into(),
+            )
+        })?;
+        // Do not evict unforwarded answers before a native fallback can see them.
+        let mut candidate = self.clone();
+        for (role, text) in [("user", input), ("assistant", output)] {
+            candidate.revision += 1;
+            candidate.items.push(SessionItem {
+                revision:candidate.revision, position:candidate.next_position(),
+                id:format!("decision-{submission}-{role}"), kind:role.into(), text:text.into(), status:"completed".into(),
+                detail:json!({"source":"decision_program","after_native_turn":candidate.last_native_turn_id,"forwarded":false,"decision":decision,"model":decision.evidence["model"],"native_calls_avoided":if role=="assistant" {1} else {0}}),
+            });
+        }
+        candidate.pending_decision_context()?;
+        candidate.status = "ready".into();
+        candidate.error = None;
+        candidate.enforce_limits();
+        if self.items.iter().any(|item| {
+            item.detail["source"] == "decision_program"
+                && item.detail["forwarded"] != true
+                && !candidate
+                    .items
+                    .iter()
+                    .any(|retained| retained.id == item.id)
+        }) {
+            return Err(choruz_common::AppError::Validation("Finite-answer history must be handed to the native Agent before more answers can be retained.".into()));
+        }
+        *self = candidate;
+        Ok(())
+    }
+
     /// Reconstructed native item ids need not equal live notification ids.
     /// Replace the preview at resume, using full native items rather than
     /// appending a display-summary replay to the previously saved projection.
@@ -76,6 +144,12 @@ impl SessionSnapshot {
         } else {
             return Err(choruz_common::AppError::Validation("Codex did not return full native history. Update Codex or use Terminal to continue this session.".into()));
         };
+        let mut decisions: Vec<_> = self
+            .items
+            .iter()
+            .filter(|item| item.detail["source"] == "decision_program")
+            .cloned()
+            .collect();
         self.items.clear();
         self.preview_sizes.clear();
         self.retained_from = 0;
@@ -89,6 +163,27 @@ impl SessionSnapshot {
             }
             if turn["status"] == "interrupted" {
                 self.interrupt_items_from(start);
+            }
+            self.last_native_turn_id = turn["id"].as_str().map(str::to_owned);
+            let mut index = 0;
+            while index < decisions.len() {
+                if decisions[index].detail["after_native_turn"].as_str()
+                    == self.last_native_turn_id.as_deref()
+                {
+                    let mut item = decisions.remove(index);
+                    item.position = self.next_position();
+                    self.items.push(item);
+                } else {
+                    index += 1;
+                }
+            }
+        }
+        if !decisions.is_empty() {
+            // These answers preceded the retained native page (or the first turn).
+            decisions.append(&mut self.items);
+            self.items = decisions;
+            for (position, item) in self.items.iter_mut().enumerate() {
+                item.position = position;
             }
         }
         Ok(())
@@ -265,6 +360,7 @@ impl SessionSnapshot {
             "turn/started" => {
                 self.turn_start_position = self.next_position();
                 self.turn_id = params["turn"]["id"].as_str().map(str::to_owned);
+                self.last_native_turn_id = self.turn_id.clone();
                 self.status = "running".into();
             }
             "turn/completed" => {

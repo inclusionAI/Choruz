@@ -10,6 +10,10 @@ name = "choruz"
 path = "src/main.rs"
 
 [dependencies]
+choruz-learning = { path = "../../crates/choruz-learning", features = ["native-source"] }
+choruz-evaluation = { path = "../../crates/choruz-evaluation" }
+choruz-community = { path = "../../crates/choruz-community" }
+choruz-computer-use = { path = "../../crates/choruz-computer-use" }
 reqwest.workspace = true
 rustls.workspace = true
 serde.workspace = true

@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 pub enum HeadlessDriver {
     Claude,
     Codex,
+    Muse,
     Pi,
     Grok,
     OpenCode,
@@ -222,6 +223,7 @@ impl HeadlessDriver {
         match driver_type {
             "claude_print" | "claude_terminal" => Some(Self::Claude),
             "codex_exec" | "codex_terminal" | "codex_app_server" => Some(Self::Codex),
+            "muse_terminal" => Some(Self::Muse),
             "pi_terminal" => Some(Self::Pi),
             "grok_terminal" => Some(Self::Grok),
             "opencode_terminal" => Some(Self::OpenCode),
@@ -234,6 +236,7 @@ impl HeadlessDriver {
         match self {
             Self::Claude => "claude",
             Self::Codex => "codex",
+            Self::Muse => "muse",
             Self::Pi => "pi",
             Self::Grok => "grok",
             Self::OpenCode => "opencode",
@@ -245,6 +248,7 @@ impl HeadlessDriver {
         match self {
             Self::Claude => "claude",
             Self::Codex => "codex",
+            Self::Muse => "muse",
             Self::Pi => "pi",
             Self::Grok => "grok",
             Self::OpenCode => "opencode",
@@ -359,6 +363,22 @@ impl HeadlessDriver {
                 args.push(prompt.into());
                 args
             }
+            Self::Muse => {
+                let mut args = vec![
+                    "exec".into(),
+                    "--json".into(),
+                    "--trust-workspace".into(),
+                    "--disable-approval".into(),
+                ];
+                if let Some(session_id) = resume {
+                    args.extend(["--session-id".into(), session_id.into()]);
+                }
+                if let Some(model) = model {
+                    args.extend(["--model".into(), model.into()]);
+                }
+                args.extend(["--".into(), prompt.into()]);
+                args
+            }
             Self::MathCode => vec!["-p".into(), prompt.into()],
         }
     }
@@ -391,10 +411,40 @@ pub fn parse_output(driver: HeadlessDriver, stdout: &str) -> ParsedOutput {
         };
     }
     let mut parsed = ParsedOutput::default();
+    let mut muse_completed = false;
     for line in stdout.lines() {
         let Ok(event) = serde_json::from_str::<serde_json::Value>(line) else {
             continue;
         };
+        if driver == HeadlessDriver::Muse {
+            if event["schema_version"] != 1 || event["stream"]["kind"] != "session" {
+                continue;
+            }
+            if let Some(id) = event["stream"]["id"].as_str().filter(|id| !id.is_empty()) {
+                parsed.session_id = Some(id.to_owned());
+            }
+            match event["payload_type"].as_str() {
+                Some("run.terminal.completed") => {
+                    muse_completed = true;
+                    parsed.response_text = event["payload"]["text"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_owned();
+                }
+                Some("run.terminal.failed" | "run.terminal.cancelled") => {
+                    parsed.structured_error = true;
+                }
+                Some("task.lifecycle.side_effect_intent")
+                    if event["payload"]["event"]["operation"]
+                        .as_str()
+                        .is_some_and(|operation| operation.starts_with("tool.")) =>
+                {
+                    parsed.tool_calls_count = parsed.tool_calls_count.saturating_add(1);
+                }
+                _ => {}
+            }
+            continue;
+        }
         let event_type = event
             .get("type")
             .and_then(|value| value.as_str())
@@ -494,6 +544,9 @@ pub fn parse_output(driver: HeadlessDriver, stdout: &str) -> ParsedOutput {
             _ => {}
         }
     }
+    if driver == HeadlessDriver::Muse && !muse_completed {
+        parsed.structured_error = true;
+    }
     parsed.response_text = parsed.response_text.trim().to_owned();
     parsed
 }
@@ -510,6 +563,49 @@ pub fn validate_model(value: &str) -> Result<&str, &'static str> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn muse_retains_session_and_reads_only_terminal_completion() {
+        use super::{HeadlessDriver, parse_output};
+        let args =
+            HeadlessDriver::Muse.args(Some("session-1"), Some("chosen-model"), "-literal input");
+        assert_eq!(
+            args,
+            [
+                "exec",
+                "--json",
+                "--trust-workspace",
+                "--disable-approval",
+                "--session-id",
+                "session-1",
+                "--model",
+                "chosen-model",
+                "--",
+                "-literal input"
+            ]
+        );
+        let output = concat!(
+            "{\"schema_version\":1,\"stream\":{\"kind\":\"session\",\"id\":\"session-1\"},\"payload_type\":\"run.output.delta\",\"payload\":{\"text\":\"partial\"}}\n",
+            "{\"schema_version\":1,\"stream\":{\"kind\":\"session\",\"id\":\"session-1\"},\"payload_type\":\"run.terminal.completed\",\"payload\":{\"text\":\"final answer\"}}\n"
+        );
+        let parsed = parse_output(HeadlessDriver::Muse, output);
+        assert_eq!(parsed.response_text, "final answer");
+        assert_eq!(parsed.session_id.as_deref(), Some("session-1"));
+        assert!(!parsed.structured_error);
+        let failed = output.replace("run.terminal.completed", "run.terminal.failed");
+        let parsed = parse_output(HeadlessDriver::Muse, &failed);
+        assert!(parsed.structured_error);
+        assert!(parsed.response_text.is_empty());
+        assert!(
+            parse_output(
+                HeadlessDriver::Muse,
+                &output.replace("\"schema_version\":1", "\"schema_version\":2")
+            )
+            .structured_error
+        );
+        assert!(
+            parse_output(HeadlessDriver::Muse, output.lines().next().unwrap()).structured_error
+        );
+    }
     #[test]
     fn learned_context_preserves_group_routing_and_original_input() {
         let prompt = "[choruz-incoming] group:Research | Compare the results".to_string();

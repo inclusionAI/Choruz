@@ -30,5 +30,4 @@ a second draft store.
 The file-editor browser regressions use an owned workspace and assert disk
 content after save, undo and retry. A directory substituted for the target file
 causes a real write failure. [External-write conflict detection](2026-09-05-editor-external-conflicts.md)
-owns the save precondition and explicit conflict choices. These decisions do
-not preserve drafts when their editor is unmounted.
+owns the save precondition and explicit conflict choices. [Workbench state recovery](2026-10-05-workbench-state-recovery.md) owns buffer retention across editor unmounts.

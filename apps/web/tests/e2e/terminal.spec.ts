@@ -1,11 +1,278 @@
 import { expect, test, request } from "@playwright/test";
 import { randomUUID } from "node:crypto";
-import { mkdir, writeFile, readFile, realpath } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { mkdir, writeFile, readFile, realpath, mkdtemp, rm } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { postgresQueryClient } from "../../lib/groups/group-provisioning-db";
 import { API_BASE, WEB_BASE, login, gotoDashboard } from "../fixtures/auth";
-import { createGroup, provisionAgent, sendMessage, uniqueName } from "../fixtures/api";
+import { createGroup, createCompany, deleteCompany, provisionAgent, sendMessage, uniqueName } from "../fixtures/api";
 import { runtimeTest } from "../fixtures/runtime-device";
+
+test("new task uses the project's shared learning through its native CLI", async ({ page }) => {
+  test.setTimeout(90_000);
+  const { token, principal } = await login(page);
+  const company = await createCompany(page, token, principal.id, uniqueName("shared-learning"));
+  const directory = await mkdtemp(path.join(homedir(), "choruz-shared-learning-"));
+  const headers = { Authorization: `Bearer ${token}` };
+  const bindings: string[] = [];
+  try {
+    const updated = await page.request.patch(`${API_BASE}/v1/companies/${company.id}`, { headers, data: { actor_id: principal.id, folder_path: directory } });
+    expect(updated.ok()).toBe(true);
+    const native = path.join(directory, "native.py");
+    const analyst = path.join(directory, "analyst.py");
+    const binary = path.join(directory, "codex");
+    await writeFile(native, await readFile(path.resolve("../../crates/choruz-host-runtime/tests/fixtures/structured-cli.py")), { mode: 0o700 });
+    await writeFile(analyst, await readFile(path.resolve("../../crates/choruz-host-runtime/tests/fixtures/experience-analyst.py")), { mode: 0o700 });
+    await writeFile(binary, `#!/usr/bin/env python3\nimport os,sys\np=${JSON.stringify(analyst)} if sys.argv[1:2]==['exec'] else ${JSON.stringify(native)}\nos.execv(sys.executable,[sys.executable,p,*sys.argv[1:]])\n`, { mode: 0o700 });
+    const agents = [];
+    for (const role of ["source", "analyst"]) {
+      const response = await page.request.post(`${WEB_BASE}/api/agents/provision`, { data: {
+        name: uniqueName(`shared-${role}`), driver_type: "codex_terminal", instructions: "Shared task acceptance.", workspace_id: company.id, workspace_path: directory,
+      } });
+      expect(response.status(), await response.text()).toBe(201);
+      const agent = await response.json();
+      bindings.push(agent.binding.id);
+      agents.push(agent);
+    }
+    const [source, reviewer] = agents;
+    const db = await postgresQueryClient();
+    await db.query("UPDATE harness_account SET models_json=$1::jsonb WHERE company_id=$2 AND id IN (SELECT config_json->>'harness_account_id' FROM agent_runtime_bindings WHERE id=ANY($3::text[]))", [JSON.stringify([{ id: "fixture-model", name: "Fixture model" }]), company.id, bindings]);
+    await db.query("UPDATE agent_runtime_bindings SET config_json=config_json||$1::jsonb WHERE id=ANY($2::text[])", [JSON.stringify({ binary_path: binary, model: "fixture-model" }), bindings]);
+    const configured = await page.request.put(`${API_BASE}/v1/runtime/bindings/${source.binding.id}/experience`, { headers, data: {
+      enabled: true, analyst_binding_id: reviewer.binding.id, reuse_for_new_tasks: true,
+    } });
+    expect(configured.ok()).toBe(true);
+    const revision = randomUUID();
+    // Seed a reviewed learning result, not provisioning, policy lookup or send.
+    // The external CLI fixture replaces only provider execution.
+    await db.query("UPDATE experience_policy SET next_check_at=NOW()+INTERVAL '1 day',lease_token=NULL,lease_until=NULL WHERE binding_id=$1", [source.binding.id]);
+    await db.query("INSERT INTO experience_revision(id,binding_id,workspace_id,policy_generation,source_digest,source_references,analysis,instruction,disposition,validation) SELECT $1,binding_id,workspace_id,generation,$1,'[]','Reviewed outcome','Verify before reporting completion.','active',$3::jsonb FROM experience_policy WHERE binding_id=$2", [revision, source.binding.id, JSON.stringify({ review: "passed", team: { review: "passed", config: { order: "parallel", members: [{ name: "reviewer", prompt: "Check the result." }] } } })]);
+    await db.query("UPDATE experience_policy SET active_revision_id=$2 WHERE binding_id=$1", [source.binding.id, revision]);
+    await page.route("**/api/drivers/availability", (route) => route.fulfill({ json: { drivers: [{ driverId: "codex_terminal", label: "Codex", status: "available", available: true }] } }));
+    let child: { binding: { id: string; model?: string } } | undefined;
+    await page.route("**/api/agents/provision", async (route) => {
+      expect(route.request().postDataJSON().inherit_learning).toBe(true);
+      const response = await route.fetch();
+      expect(response.status()).toBe(201);
+      child = await response.json();
+      bindings.push(child!.binding.id);
+      await db.query("UPDATE agent_runtime_bindings SET config_json=config_json||$1::jsonb WHERE id=$2", [JSON.stringify({ binary_path: binary }), child!.binding.id]);
+      await route.fulfill({ response });
+    });
+    await gotoDashboard(page);
+    await page.getByRole("button", { name: "Select company" }).click();
+    await page.locator(".company-dropdown-item").filter({ hasText: company.name }).locator(".company-dropdown-item-name").click();
+    await page.getByRole("button", { name: "New task", exact: true }).click();
+    await page.getByLabel("Task instructions").fill("Inspect the workspace");
+    await page.getByRole("button", { name: "Start task", exact: true }).click();
+    const session = page.getByRole("region", { name: "Agent session" });
+    await expect(session.getByRole("button", { name: "Allow once" })).toBeVisible({ timeout: 30_000 });
+    await session.getByRole("button", { name: "Allow once" }).click();
+    await expect(session.getByRole("status")).toHaveText("ready");
+    expect(child!.binding.model).toBe("fixture-model");
+    const shared = await page.request.get(`${API_BASE}/v1/runtime/bindings/${child!.binding.id}/experience`, { headers });
+    expect((await shared.json()).policy).toMatchObject({ binding_id: source.binding.id, active_revision_id: revision, reuse_for_new_tasks: true });
+    const received = JSON.stringify(JSON.parse(await readFile(path.join(directory, ".fixture-native.json"), "utf8")));
+    expect(received).toContain(`[choruz-experience revision=${revision}]`);
+    expect(received).toContain("Verify before reporting completion.");
+    expect(received).toContain(`[choruz-team revision=${revision}]`);
+    expect(received).toContain("Inspect the workspace");
+    expect((await db.query("SELECT COUNT(*)::int AS copies FROM experience_policy WHERE binding_id=$1", [child!.binding.id])).rows[0].copies).toBe(0);
+  } finally {
+    for (const id of bindings) await page.request.post(`${API_BASE}/v1/runtime/bindings/${id}/session/commands`, { headers, data: { action: "close" } }).catch(() => {});
+    await deleteCompany(page, token, company.id);
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("workbench hides collaboration and starts a real task through the existing runtime", async ({ page }, testInfo) => {
+  test.setTimeout(90_000);
+  const { token, principal } = await login(page);
+  const company = await createCompany(page, token, principal.id, uniqueName("workbench"));
+  const directory = await mkdtemp(path.join(tmpdir(), "choruz-workbench-"));
+  try {
+    const group = await createGroup(page, token, principal.id, uniqueName("background"), [], company.id);
+    const binary = path.join(directory, "codex");
+    await writeFile(binary, await readFile(path.resolve("../../crates/choruz-host-runtime/tests/fixtures/structured-cli.py")), { mode: 0o700 });
+    await page.route("**/api/drivers/availability", (route) => route.fulfill({ json: { drivers: [{ driverId: "codex_terminal", label: "Codex", status: "available", available: true }] } }));
+    let created: { binding: { id: string }; workspace_path: string; conversation: { id: string } } | undefined;
+    let creates = 0;
+    let allowReady = false;
+    await page.route(/\/api\/v1\/runtime\/bindings\/[^/]+\/session(?:\?|$)/, async (route) => {
+      const response = await route.fetch();
+      const snapshot = await response.json();
+      await route.fulfill({ response, json: allowReady ? snapshot : { ...snapshot, status: "starting" } });
+    });
+    await page.route("**/api/v1/bootstrap*", (route) => creates > 0
+      ? route.fulfill({ status: 503, json: { error: "temporary bootstrap failure" } })
+      : route.continue());
+    await page.route("**/api/agents/provision", async (route) => {
+      creates++;
+      const response = await route.fetch();
+      expect(response.status()).toBe(201);
+      created = await response.json();
+      const db = await postgresQueryClient();
+      await db.query("UPDATE agent_runtime_bindings SET config_json = (config_json - 'model') || $1::jsonb WHERE id=$2", [JSON.stringify({ binary_path: binary }), created!.binding.id]);
+      if (creates === 1) { await route.abort("failed"); return; }
+      await route.fulfill({ response });
+    });
+    await page.goto(`${WEB_BASE}/dashboard`);
+    await page.evaluate(({ companyId, groupId }) => {
+      localStorage.setItem("choruz_active_conv", groupId);
+      localStorage.setItem(`choruz_active_company:${companyId.principal}`, companyId.id);
+    }, { companyId: { id: company.id, principal: principal.id }, groupId: group.id });
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "What would you like to work on?" })).toBeVisible();
+    await expect(page.locator(`[data-conversation-id="${group.id}"]`)).toHaveCount(0);
+    await page.screenshot({ path: testInfo.outputPath("workbench-home.png") });
+    await expect(page.getByRole("button", { name: "Background collaboration", exact: true })).toHaveCount(0);
+    await page.getByRole("button", { name: "Actions menu", exact: true }).click();
+    await page.getByRole("button", { name: "Background collaboration", exact: true }).click();
+    const section = page.getByRole("group", { name: "Group Conversations", exact: true });
+    const expand = section.getByRole("button", { name: "Group Conversations", exact: true });
+    if (await expand.getAttribute("aria-expanded") !== "true") await expand.click();
+    await expect(page.locator(`[data-conversation-id="${group.id}"]`)).toBeVisible();
+    await page.locator(`[data-conversation-id="${group.id}"]`).click();
+    await page.getByRole("button", { name: "Actions menu", exact: true }).click();
+    await page.getByRole("button", { name: "Hide background collaboration", exact: true }).click();
+    const refreshed = page.waitForResponse((response) => response.url().includes("/api/v1/bootstrap") && response.status() === 200);
+    await createGroup(page, token, principal.id, uniqueName("new-background"), [], company.id);
+    await (await refreshed).finished();
+    await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+    await expect(page.getByRole("group", { name: "Group Conversations", exact: true })).toHaveCount(0);
+    await page.getByRole("button", { name: "New task", exact: true }).click();
+    await page.getByLabel("Task instructions").fill("Inspect the workspace");
+    await page.getByRole("button", { name: "Start task", exact: true }).click();
+    await expect(page.getByRole("alert").filter({ hasText: /fetch|network/i })).toBeVisible();
+    const firstBinding = created!.binding.id;
+    await expect(page.getByLabel("Task instructions")).toHaveValue("Inspect the workspace");
+    await page.getByRole("button", { name: "Start task", exact: true }).click();
+    const session = page.getByRole("region", { name: "Agent session" });
+    await expect(session.getByLabel("Message Agent")).toHaveValue("Inspect the workspace");
+    await session.getByLabel("Message Agent").fill("Inspect the workspace with my revised instructions");
+    await page.unroute("**/api/v1/bootstrap*");
+    await page.reload();
+    await expect(session.getByLabel("Message Agent")).toHaveValue("Inspect the workspace with my revised instructions");
+    allowReady = true;
+    await expect(session.getByRole("button", { name: "Allow once" })).toBeVisible({ timeout: 30_000 });
+    await expect(session.locator(".agent-session-item.is-user")).toContainText("Inspect the workspace with my revised instructions");
+    await page.unroute("**/api/v1/bootstrap*");
+    expect(created!.binding.id).toBe(firstBinding);
+    await session.getByRole("button", { name: "Allow once" }).click();
+    await expect(session.getByText("Verified workspace on selected device", { exact: true })).toBeVisible();
+    expect(creates).toBe(2);
+    expect(await readFile(path.join(created!.workspace_path, "approved-on-device"), "utf8")).toBe(created!.workspace_path);
+    await page.getByRole("button", { name: "New task", exact: true }).click();
+    await page.locator(`[data-conversation-id="${created!.conversation.id}"]`).click();
+    await expect(session.getByText("Verified workspace on selected device", { exact: true })).toHaveCount(1);
+    await page.screenshot({ path: testInfo.outputPath("workbench-task.png") });
+    await page.getByRole("button", { name: "New task", exact: true }).click();
+    await page.getByLabel("Task instructions").fill("Keep this draft");
+    await page.reload();
+    await expect(page.getByLabel("Task instructions")).toHaveValue("Keep this draft");
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect.poll(() => page.locator(".chat-sidebar").evaluate(element => element.getBoundingClientRect().right)).toBeLessThanOrEqual(0);
+    await expect(page.getByRole("button", { name: "Start task", exact: true })).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    await page.screenshot({ path: testInfo.outputPath("workbench-mobile.png") });
+  } finally {
+    try {
+      if (!page.isClosed()) await page.unrouteAll({ behavior: "wait" });
+      await deleteCompany(page, token, company.id);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  }
+});
+
+test("account removal remains pending while its device is offline",async({page})=>{
+  const {token,principal}=await login(page);
+  const company=await createCompany(page,token,principal.id,uniqueName("offline-removal"));
+  const headers={Authorization:`Bearer ${token}`};
+  try{
+    const pairing=await page.request.post(`${API_BASE}/v1/companies/${company.id}/runtime-host-pairings`,{headers});
+    expect(pairing.ok(),await pairing.text()).toBe(true);
+    const {code}=await pairing.json();
+    const joined=await page.request.post(`${API_BASE}/v1/runtime-host-pairings/redeem`,{data:{code,name:"Offline device"}});
+    expect(joined.ok(),await joined.text()).toBe(true);
+    const {host}=await joined.json();
+    const account=randomUUID();
+    const db=await postgresQueryClient();
+    await db.query("INSERT INTO harness_account(id,company_id,runtime_host_id,driver_type,name,profile_kind,status) VALUES($1,$2,$3,'codex_terminal','offline-default','default','active')",[account,company.id,host.id]);
+    const removed=await page.request.delete(`${WEB_BASE}/api/harness-accounts/${account}?company_id=${company.id}`);
+    expect(removed.status(),await removed.text()).toBe(202);
+    expect((await removed.json()).removal_pending).toBe(true);
+    const row=(await db.query("SELECT disabled_at,removal_requested_at,removal_completed_at FROM harness_account WHERE id=$1",[account])).rows[0];
+    expect(row.disabled_at).toBeTruthy();
+    expect(row.removal_requested_at).toBeTruthy();
+    expect(row.removal_completed_at).toBeNull();
+    const visible=await page.request.get(`${WEB_BASE}/api/harness-accounts?company_id=${company.id}&runtime_host_id=${host.id}`);
+    expect((await visible.json()).accounts.find((item:{id:string})=>item.id===account).removalPending).toBe(true);
+  }finally{await deleteCompany(page,token,company.id);}
+});
+
+runtimeTest("removing a remote account stops its native process and preserves another account", async ({ page,device }) => {
+  test.setTimeout(90_000);
+  const {home,company,host,headers}=device;
+  const original=path.join(home,"structured-cli.py");
+  const binary=path.join(home,"account-cli");
+  await writeFile(original,await readFile(path.resolve("../../crates/choruz-host-runtime/tests/fixtures/structured-cli.py")),{mode:0o700});
+  const wrapper=`#!/bin/sh\nif [ "$1" = "exec" ]; then\n  printf '%s' "$$" > "$PWD/headless.pid"\n  sleep 120 &\n  printf '%s' "$!" > "$PWD/descendant.pid"\n  wait\nelse\n  printf '%s' "$$" > "$PWD/native.pid"\n  exec "${original}" "$@"\nfi\n`;
+  await writeFile(binary,wrapper,{mode:0o700});
+  await writeFile(path.join(home,"bin","codex"),wrapper,{mode:0o700});
+  const alive=(pid:number)=>{try{process.kill(pid,0);return true;}catch(error){if((error as NodeJS.ErrnoException).code==="ESRCH")return false;throw error;}};
+  const db=await postgresQueryClient();
+  const agents:{account:string;binding:string;workspace:string;pid:number;agent:string;name:string}[]=[];
+  const extraPids:number[]=[];
+  try{
+    for(const kind of ["default","isolated"]){
+      const account=randomUUID();
+      const profile=kind==="default"?path.join(home,".codex"):path.join(home,"accounts",account,"codex");
+      await mkdir(profile,{recursive:true});
+      await writeFile(path.join(profile,"auth.json"),JSON.stringify({fixture:kind}));
+      await db.query("INSERT INTO harness_account(id,company_id,runtime_host_id,driver_type,name,profile_kind,status) VALUES($1,$2,$3,'codex_terminal',$4,$4,'active')",[account,company.id,host.id,kind]);
+      const response=await page.request.post(`${WEB_BASE}/api/agents/provision`,{data:{name:uniqueName(`retire-${kind}`),instructions:"Account lifecycle acceptance.",driver_type:"codex_terminal",workspace_id:company.id,runtime_host_id:host.id,harness_account_id:account}});
+      expect(response.status(),await response.text()).toBe(201);
+      const created=await response.json();
+      await db.query("UPDATE agent_runtime_bindings SET config_json=(config_json - 'model') || $2::jsonb WHERE id=$1",[created.binding.id,JSON.stringify({binary_path:binary})]);
+      const started=await page.request.post(`${API_BASE}/v1/runtime/bindings/${created.binding.id}/session`,{headers});
+      expect(started.ok(),await started.text()).toBe(true);
+      await expect.poll(()=>readFile(path.join(created.workspace_path,"native.pid"),"utf8").catch(()=>"")).toMatch(/^\d+$/);
+      const pid=Number(await readFile(path.join(created.workspace_path,"native.pid"),"utf8"));
+      agents.push({account,binding:created.binding.id,workspace:created.workspace_path,pid,agent:created.agent.id,name:created.agent.name});
+      await expect.poll(async()=>{const state=await page.request.get(`${API_BASE}/v1/runtime/bindings/${created.binding.id}/session`,{headers});return state.ok()?(await state.json()).status:null;}).toBe("ready");
+    }
+    const [removed,retained]=agents;
+    expect(alive(removed.pid)).toBe(true);
+    expect(alive(retained.pid)).toBe(true);
+    const group=await createGroup(page,device.session.token,device.session.principal.id,uniqueName("account-headless"),[removed.agent],company.id);
+    await sendMessage(page,device.session.token,device.session.principal.id,group.id,`@${removed.name} Run a long task.`);
+    for(const file of ["headless.pid","descendant.pid"]){
+      await expect.poll(()=>readFile(path.join(removed.workspace,file),"utf8").catch(()=>""),{timeout:15000}).toMatch(/^\d+$/);
+      extraPids.push(Number(await readFile(path.join(removed.workspace,file),"utf8")));
+    }
+    const response=await page.request.delete(`${WEB_BASE}/api/harness-accounts/${removed.account}?company_id=${company.id}`);
+    expect(response.ok(),await response.text()).toBe(true);
+    await expect.poll(()=>alive(removed.pid)).toBe(false);
+    for(const pid of extraPids)await expect.poll(()=>alive(pid)).toBe(false);
+    expect(alive(retained.pid)).toBe(true);
+    await expect.poll(async()=> (await db.query("SELECT removal_completed_at FROM harness_account WHERE id=$1",[removed.account])).rows[0].removal_completed_at).toBeTruthy();
+    const rejected=await page.request.post(`${API_BASE}/v1/runtime/bindings/${removed.binding}/session`,{headers});
+    expect(rejected.status()).toBe(403);
+    const other=await page.request.get(`${API_BASE}/v1/runtime/bindings/${retained.binding}/session`,{headers});
+    expect(other.ok(),await other.text()).toBe(true);
+    expect((await other.json()).status).toBe("ready");
+    expect(JSON.parse(await readFile(path.join(home,".codex","auth.json"),"utf8"))).toEqual({fixture:"default"});
+  } finally {
+    for(const pid of extraPids){if(alive(pid))process.kill(pid,"SIGKILL");await expect.poll(()=>alive(pid)).toBe(false);}
+    for(const agent of agents){
+      if(alive(agent.pid))process.kill(agent.pid,"SIGKILL");
+      await expect.poll(()=>alive(agent.pid)).toBe(false);
+    }
+  }
+});
 
 runtimeTest("background experience follows the selected remote Agent and applies only to later turns", async ({ page, device }) => {
   test.setTimeout(180_000);
@@ -24,10 +291,24 @@ runtimeTest("background experience follows the selected remote Agent and applies
     const agent = await response.json();
     const db = await postgresQueryClient();
     await db.query("UPDATE harness_account SET models_json=$1::jsonb WHERE company_id=$2 AND id=(SELECT config_json->>'harness_account_id' FROM agent_runtime_bindings WHERE id=$3)", [JSON.stringify([{ id: "learning-fixture", name: "Learning fixture" }]), company.id, agent.binding.id]);
-    await db.query("UPDATE agent_runtime_bindings SET config_json=config_json || $1::jsonb WHERE id=$2", [JSON.stringify({ binary_path: binary, model: "learning-fixture" }),agent.binding.id]);
+    await db.query("UPDATE agent_runtime_bindings SET config_json=(config_json-'model') || $1::jsonb WHERE id=$2", [JSON.stringify({ binary_path: binary }),agent.binding.id]);
     agents.push(agent);
   }
   const [target, analyst] = agents;
+  const exec = promisify(execFile);
+  const root = path.resolve("../..");
+  await exec("cargo", ["build", "-p", "choruz-cli"], { cwd: root, timeout: 120_000 });
+  const settingsFile = path.join(home, "learning-settings.json");
+  await writeFile(settingsFile, JSON.stringify({ enabled: false, analyst_binding_id: analyst.binding.id }));
+  const runCli = async (...args: string[]) => JSON.parse((await exec(path.join(root, "target/debug/choruz"), args, {
+    timeout: 30_000, env: { ...process.env, CHORUZ_API_BASE_URL: API_BASE, CHORUZ_SESSION_TOKEN: headers.Authorization.replace("Bearer ", "") },
+  })).stdout);
+  await runCli("learning", "configure", target.binding.id, settingsFile);
+  const configured = await runCli("learning", "show", target.binding.id);
+  expect(configured.policy).toMatchObject({ enabled: false, analyst_binding_id: analyst.binding.id });
+  const persisted = await page.request.get(`${API_BASE}/v1/runtime/bindings/${target.binding.id}/experience`, { headers });
+  expect(persisted.ok()).toBe(true);
+  expect((await persisted.json()).policy).toEqual(configured.policy);
   await gotoDashboard(page);
   await page.getByRole("button", { name: "Select company" }).click();
   await page.locator(".company-dropdown-item").filter({ hasText: company.name }).locator(".company-dropdown-item-name").click();
@@ -46,6 +327,10 @@ runtimeTest("background experience follows the selected remote Agent and applies
   await dialog.getByLabel("Analysis Agent").selectOption(analyst.binding.id);
   await dialog.getByLabel("Enable background learning").check();
   await dialog.getByLabel("Evaluate and optimize against a fixed suite").check();
+  await expect(dialog.getByLabel("Task model", { exact: true })).toHaveValue("");
+  await expect(dialog.getByLabel("Analysis model", { exact: true })).toHaveValue("");
+  await dialog.getByLabel("Task model", { exact: true }).fill("learning-fixture");
+  await dialog.getByLabel("Analysis model", { exact: true }).fill("learning-fixture");
   await dialog.getByLabel("Suite name").fill("Verification format");
   for (let i = 0; i < 3; i++) {
     await dialog.getByLabel("Task input", { exact: true }).nth(i).fill(`Check independent example ${i}`);
@@ -125,12 +410,33 @@ runtimeTest("background experience follows the selected remote Agent and applies
   revision = (await status()).policy.active_revision_id;
   const selected = (await status()).revisions.find((row: { id: string }) => row.id === revision);
   expect(selected.validation.team.config.members.map((member: { name: string }) => member.name)).toEqual(["derive", "check"]);
+  const turnFile = path.join(home, "native-turn.json");
+  await writeFile(turnFile, JSON.stringify({ input: "Inspect the next native workspace change." }));
+  const prepared = await runCli("learning", "prepare", target.binding.id, turnFile);
+  expect(prepared.revision_id).toBe(revision);
+  expect(prepared.prompt).toContain(`[choruz-team revision=${revision}]`);
+  expect(prepared.prompt).toContain("Plan task-specific observable checks");
+  // Replace only the native model process, not CLI authentication, host dispatch
+  // or revision selection. The external consumer receives the prepared input.
+  await exec(cli, ["--print", "--dangerously-skip-permissions", prepared.prompt], { cwd: target.workspace_path });
+  expect(JSON.parse(await readFile(path.join(target.workspace_path, "headless-review-input.json"), "utf8")).prompt).toBe(prepared.prompt);
   await send("Inspect the next workspace change.");
   await expect(session.getByText(`Independent check plan · ${revision.slice(0,8)}`, { exact: true })).toHaveCount(0);
   await expect(session.getByText(`[choruz-team revision=${revision}]`, { exact: false })).toBeVisible();
   const reviewedNative = JSON.parse(await readFile(path.join(target.workspace_path, ".fixture-native.json"), "utf8"));
   expect(JSON.stringify(reviewedNative)).toContain(`[choruz-team revision=${revision}]`);
   expect(JSON.stringify(reviewedNative)).toContain("Plan task-specific observable checks for the task.");
+  await session.getByLabel("Message Agent").fill("wait");
+  const cancelledSend = page.waitForResponse((response) =>
+    response.url().endsWith(`/runtime/bindings/${target.binding.id}/session/commands`)
+    && response.request().postDataJSON().action === "send");
+  await session.getByRole("button", { name: "Send", exact: true }).click();
+  await expect(session.getByRole("status")).toHaveText("running");
+  await expect(session.getByRole("button", { name: "Stop", exact: true })).toBeEnabled();
+  await session.getByRole("button", { name: "Stop", exact: true }).click();
+  expect((await cancelledSend).status()).toBe(409);
+  await expect(session.getByRole("status")).toHaveText("ready");
+  expect(JSON.parse(await readFile(path.join(target.workspace_path, ".fixture-native.json"), "utf8"))).toEqual(reviewedNative);
   await writeFile(path.join(home, "bin", "claude"), await readFile(cli), { mode: 0o700 });
   const group = await createGroup(page, device.session.token, device.session.principal.id, uniqueName("reviewed-group"), [target.agent.id], company.id);
   await sendMessage(page, device.session.token, device.session.principal.id, group.id, `@${target.agent.name} Inspect the next group task.`);
@@ -141,6 +447,8 @@ runtimeTest("background experience follows the selected remote Agent and applies
   await expect(dialog.getByLabel("Enable background learning")).not.toBeChecked();
   await dialog.getByRole("button", { name: "Save settings", exact: true }).click();
   await expect.poll(async () => (await status()).policy.enabled).toBe(false);
+  const disabledPreparation = await runCli("learning", "prepare", target.binding.id, turnFile);
+  expect(disabledPreparation).toEqual({ prompt: "Inspect the next native workspace change.", revision_id: null });
   const decisions = dialog.getByRole("region", { name: "Fast decisions", exact: true });
   await expect(decisions.getByRole("checkbox", { name: "Allow this Agent’s task evidence to be sent to TypeSafe" })).not.toBeChecked();
   await decisions.getByRole("checkbox", { name: "Allow this Agent’s task evidence to be sent to TypeSafe" }).check();
@@ -157,11 +465,14 @@ runtimeTest("background experience follows the selected remote Agent and applies
   await confidence.fill("0.9");
   await decisions.getByRole("button", { name: "Save decision settings", exact: true }).click();
   await expect(decisions.getByRole("status")).toHaveText("Decision settings saved.");
-  await expect.poll(async () => (await status()).policy.decision_settings).toEqual({ model: "test-decision-model", minimum_confidence: 0.9, classify: true, supervise: true, assist_turns: false, builder_binding_id: analyst.binding.id });
+  await expect.poll(async () => (await status()).policy.decision_settings).toEqual({ model: "test-decision-model", minimum_confidence: 0.9, classify: true, supervise: true, assist_turns: false, complete_turns: false, builder_binding_id: analyst.binding.id });
   // Keep provider calls out of this UI contract; learning remains disabled.
   await decisions.getByLabel("Assist later Agent turns with the selected program").check();
   await saveDecisions.click();
   await expect.poll(async () => (await status()).policy.decision_settings.assist_turns).toBe(true);
+  await decisions.getByLabel("Automatically complete applicable turns with the evaluated program").check();
+  await saveDecisions.click();
+  await expect.poll(async () => (await status()).policy.decision_settings.complete_turns).toBe(true);
   await decisions.getByRole("checkbox", { name: "Allow this Agent’s task evidence to be sent to TypeSafe" }).uncheck();
   await decisions.getByRole("button", { name: "Save decision settings", exact: true }).click();
   await expect.poll(async () => (await status()).policy.decision_settings).toBeNull();
@@ -296,10 +607,10 @@ for (const driver of ["claude_terminal", "codex_terminal"]) {
 
 runtimeTest("remote terminal activity records outcomes and byte counts without content", async ({ page, device }) => {
   const { home, company, host, headers, session } = device;
-  await writeFile(path.join(home, "grok-target"), '#!/bin/sh\nexec /bin/cat\n', { mode: 0o700 });
+  await writeFile(path.join(home, "muse-target"), '#!/bin/sh\nexec /bin/cat\n', { mode: 0o700 });
   const response = await page.request.post(`${WEB_BASE}/api/agents/provision`, { data: {
     name: uniqueName("terminal-activity"), instructions: "Terminal transport fixture.",
-    driver_type: "grok_terminal", workspace_id: company.id, runtime_host_id: host.id,
+    driver_type: "muse_terminal", workspace_id: company.id, runtime_host_id: host.id,
   } });
   expect(response.status(), await response.text()).toBe(201);
   const bindingId = (await response.json()).binding.id;
@@ -355,13 +666,13 @@ runtimeTest("remote terminal activity records outcomes and byte counts without c
 runtimeTest("remote terminals resolve the target executable and preserve explicit target paths", async ({ page, device }) => {
   const { home, company, host, headers } = device;
   const script = (marker: string) => `#!/bin/sh\nprintf '%s' '${marker}' > "$PWD/observed-binary"\nexec /bin/cat\n`;
-  await writeFile(path.join(home, "bin", "grok"), script("wrong-path-command"), { mode: 0o700 });
-  await writeFile(path.join(home, "grok-target"), script("target-environment"), { mode: 0o700 });
-  const explicit = path.join(home, "grok-explicit");
+  await writeFile(path.join(home, "bin", "muse"), script("wrong-path-command"), { mode: 0o700 });
+  await writeFile(path.join(home, "muse-target"), script("target-environment"), { mode: 0o700 });
+  const explicit = path.join(home, "muse-explicit");
   await writeFile(explicit, script("explicit-target"), { mode: 0o700 });
   const db = await postgresQueryClient();
   for (const mode of ["automatic", "explicit", "missing"]) {
-    const response = await page.request.post(`${WEB_BASE}/api/agents/provision`, { data: { name: uniqueName(`binary-${mode}`), instructions: "Verify the target executable.", driver_type: "grok_terminal", workspace_id: company.id, runtime_host_id: host.id } });
+    const response = await page.request.post(`${WEB_BASE}/api/agents/provision`, { data: { name: uniqueName(`binary-${mode}`), instructions: "Verify the target executable.", driver_type: "muse_terminal", workspace_id: company.id, runtime_host_id: host.id } });
     expect(response.status(), await response.text()).toBe(201);
     const created = await response.json();
     const stored = await db.query<{ config_json: Record<string, unknown> }>("SELECT config_json FROM agent_runtime_bindings WHERE id = $1", [created.binding.id]);
@@ -386,13 +697,19 @@ runtimeTest("remote terminals resolve the target executable and preserve explici
   const sessionId = randomUUID();
   await writeFile(path.join(catalog, "summary.json"), JSON.stringify({ info: { id: sessionId, cwd: workspace, title: "Imported target" } }));
   const imported = await page.request.post(`${API_BASE}/v1/workspace-sessions/import`, { headers, data: { company_id: company.id, runtime_host_id: host.id, workspace_path: workspace, sessions: [{ harness: "grok", native_session_id: sessionId, workspace_path: workspace }] } });
-  expect(imported.ok(), await imported.text()).toBeTruthy();
-  const bindingId = (await imported.json()).imported[0].binding_id;
-  const binding = await db.query<{ config_json: Record<string, unknown> }>("SELECT config_json FROM agent_runtime_bindings WHERE id = $1", [bindingId]);
-  expect(binding.rows[0].config_json.binary_path).toBeUndefined();
-  const ensured = await page.request.post(`${API_BASE}/v1/terminals/${bindingId}/ensure`, { headers });
-  expect(ensured.ok(), await ensured.text()).toBeTruthy();
-  await expect.poll(() => readFile(path.join(workspace, "observed-binary"), "utf8").catch(() => "")).toBe("target-environment");
+  if (process.env.CHORUZ_PLUGINS?.split(",").map(id => id.trim()).includes("grok")) {
+    await writeFile(path.join(home, "grok-target"), script("target-environment"), { mode: 0o700 });
+    expect(imported.ok(), await imported.text()).toBeTruthy();
+    const bindingId = (await imported.json()).imported[0].binding_id;
+    const binding = await db.query<{ config_json: Record<string, unknown> }>("SELECT config_json FROM agent_runtime_bindings WHERE id = $1", [bindingId]);
+    expect(binding.rows[0].config_json.binary_path).toBeUndefined();
+    const ensured = await page.request.post(`${API_BASE}/v1/terminals/${bindingId}/ensure`, { headers });
+    expect(ensured.ok(), await ensured.text()).toBeTruthy();
+    await expect.poll(() => readFile(path.join(workspace, "observed-binary"), "utf8").catch(() => "")).toBe("target-environment");
+  } else {
+    expect(imported.status(), await imported.text()).toBe(404);
+    await expect(readFile(path.join(workspace, "observed-binary"))).rejects.toThrow();
+  }
 });
 
 runtimeTest("remote Codex terminal uses the selected account on its own device", async ({ page, device }) => {

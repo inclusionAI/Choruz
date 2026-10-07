@@ -9,8 +9,11 @@ use std::{
     sync::Arc,
 };
 
-use choruz_store::{ConversationEventRow, EventStore, OutboxRow};
+use choruz_store::ConversationEventRow;
+#[cfg(feature = "postgres")]
+use choruz_store::{EventStore, OutboxRow};
 use sha2::{Digest, Sha256};
+#[cfg(feature = "postgres")]
 use tokio::sync::mpsc;
 use tracing;
 use uuid::Uuid;
@@ -23,6 +26,7 @@ use crate::models::{
 use crate::policy::evaluate_trigger_with_candidates;
 use crate::workflow::parse_workflow_routing_event;
 
+#[cfg(feature = "postgres")]
 const OUTBOX_DEAD_LETTER_AFTER_ATTEMPTS: i32 = 5;
 
 // ---------------------------------------------------------------------------
@@ -1519,6 +1523,7 @@ fn sanitize_roster_display_name(name: &str) -> String {
 
 /// Configuration for the router loop.
 #[derive(Debug, Clone)]
+#[cfg(feature = "postgres")]
 pub struct RouterConfig {
     /// Maximum consecutive errors before the loop pauses.
     pub max_consecutive_errors: u32,
@@ -1526,6 +1531,7 @@ pub struct RouterConfig {
     pub error_pause: std::time::Duration,
 }
 
+#[cfg(feature = "postgres")]
 impl Default for RouterConfig {
     fn default() -> Self {
         Self {
@@ -1539,6 +1545,7 @@ impl Default for RouterConfig {
 ///
 /// This function blocks until the receiver is closed or the cancellation
 /// token is triggered.
+#[cfg(feature = "postgres")]
 pub async fn run_router_loop<M, S>(
     mut rx: mpsc::Receiver<OutboxRow>,
     store: EventStore,
@@ -1685,10 +1692,12 @@ pub async fn run_router_loop<M, S>(
     tracing::info!("Router loop stopped (channel closed)");
 }
 
+#[cfg(feature = "postgres")]
 fn should_dead_letter_outbox(attempt_count: i32) -> bool {
     attempt_count >= OUTBOX_DEAD_LETTER_AFTER_ATTEMPTS
 }
 
+#[cfg(feature = "postgres")]
 async fn dead_letter_outbox_entry(
     store: &EventStore,
     outbox: &OutboxRow,
@@ -1759,6 +1768,7 @@ async fn dead_letter_outbox_entry(
 
 /// Parse an outbox row back into a ConversationEventRow by looking it up
 /// in the event store.
+#[cfg(feature = "postgres")]
 async fn parse_outbox_event(
     store: &EventStore,
     outbox: &OutboxRow,

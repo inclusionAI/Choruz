@@ -25,6 +25,7 @@
 pub mod error;
 pub mod models;
 pub mod retry;
+#[cfg(feature = "postgres")]
 pub mod store;
 
 // Re-export the most commonly used types at crate root.
@@ -33,4 +34,5 @@ pub use models::*;
 pub use retry::{
     DEFAULT_MAX_ATTEMPTS, MAX_BACKOFF_SECS, exponential_backoff_secs, is_exhausted, next_retry_at,
 };
+#[cfg(feature = "postgres")]
 pub use store::{PgSessionStore, runtime_host_metadata};

@@ -13,6 +13,7 @@ pub enum DriverType {
     CodexExec,
     CodexAppServer,
     CodexTerminal,
+    MuseTerminal,
     PiTerminal,
     GrokTerminal,
     #[serde(rename = "opencode_terminal")]
@@ -35,6 +36,7 @@ impl DriverType {
             Self::CodexExec => "codex_exec",
             Self::CodexAppServer => "codex_app_server",
             Self::CodexTerminal => "codex_terminal",
+            Self::MuseTerminal => "muse_terminal",
             Self::PiTerminal => "pi_terminal",
             Self::GrokTerminal => "grok_terminal",
             Self::OpenCodeTerminal => "opencode_terminal",
@@ -55,6 +57,7 @@ impl std::str::FromStr for DriverType {
             "codex_exec" => Ok(Self::CodexExec),
             "codex_app_server" => Ok(Self::CodexAppServer),
             "codex_terminal" => Ok(Self::CodexTerminal),
+            "muse_terminal" => Ok(Self::MuseTerminal),
             "pi_terminal" => Ok(Self::PiTerminal),
             "grok_terminal" => Ok(Self::GrokTerminal),
             "opencode_terminal" => Ok(Self::OpenCodeTerminal),

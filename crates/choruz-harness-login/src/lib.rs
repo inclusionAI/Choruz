@@ -79,9 +79,16 @@ pub trait LoginSink: Send + Sync {
 /// The executable that runs the sign-in: the `CHORUZ_<HARNESS>_BINARY`
 /// override, else the Harness's default command name.
 pub fn login_binary(driver: HeadlessDriver) -> String {
+    if driver == HeadlessDriver::Muse {
+        return choruz_agent_runtime::executable::terminal_binary(
+            &choruz_agent_runtime::DriverType::MuseTerminal,
+            None,
+        );
+    }
     let variable = match driver {
         HeadlessDriver::Claude => "CHORUZ_CLAUDE_BINARY",
         HeadlessDriver::Codex => "CHORUZ_CODEX_BINARY",
+        HeadlessDriver::Muse => "CHORUZ_MUSE_BINARY",
         HeadlessDriver::Pi => "CHORUZ_PI_BINARY",
         HeadlessDriver::Grok => "CHORUZ_GROK_BINARY",
         HeadlessDriver::OpenCode => "CHORUZ_OPENCODE_BINARY",
@@ -356,6 +363,8 @@ async fn codex_login<S: LoginSink>(
     sink: &S,
     timeout: Duration,
 ) -> Result<LoginOutcome, String> {
+    let account_job = choruz_agent_runtime::process_scope::Job::begin(Some(&job.account_id))
+        .map_err(str::to_owned)?;
     let mut command = Command::new(login_binary(HeadlessDriver::Codex));
     command
         .arg("app-server")
@@ -364,9 +373,14 @@ async fn codex_login<S: LoginSink>(
         .stderr(std::process::Stdio::null())
         .kill_on_drop(true);
     apply_account_profile(&mut command, job)?;
+    #[cfg(unix)]
+    command.process_group(0);
     let mut child = command
         .spawn()
         .map_err(|error| format!("start Codex app server: {error}"))?;
+    let container = child.id().map(|pid| {
+        choruz_agent_runtime::process::ProcessContainer::new(format!("codex-login-{pid}"), pid)
+    });
     let mut stdin = child
         .stdin
         .take()
@@ -376,44 +390,59 @@ async fn codex_login<S: LoginSink>(
         .take()
         .ok_or("Codex app server stdout unavailable")?;
     let mut reader = BufReader::new(stdout).lines();
-    codex_initialize(&mut stdin, &mut reader).await?;
-    write_json_line(&mut stdin, &serde_json::json!({"jsonrpc":"2.0","id":1,"method":"account/login/start","params":{"type":"chatgpt","useHostedLoginSuccessPage":true,"appBrand":"codex"}})).await?;
-    let start = wait_for_rpc(&mut reader, 1).await?;
-    let url = start
-        .get("authUrl")
-        .and_then(serde_json::Value::as_str)
-        .ok_or("Codex did not return an authorization URL")?;
-    let login_id = start
-        .get("loginId")
-        .and_then(serde_json::Value::as_str)
-        .ok_or("Codex did not return a login id")?;
-    sink.publish(url, None).await?;
+    let login = async {
+        codex_initialize(&mut stdin, &mut reader).await?;
+        write_json_line(&mut stdin, &serde_json::json!({"jsonrpc":"2.0","id":1,"method":"account/login/start","params":{"type":"chatgpt","useHostedLoginSuccessPage":true,"appBrand":"codex"}})).await?;
+        let start = wait_for_rpc(&mut reader, 1).await?;
+        let url = start
+            .get("authUrl")
+            .and_then(serde_json::Value::as_str)
+            .ok_or("Codex did not return an authorization URL")?;
+        let login_id = start
+            .get("loginId")
+            .and_then(serde_json::Value::as_str)
+            .ok_or("Codex did not return a login id")?;
+        sink.publish(url, None).await?;
 
-    tokio::time::timeout(
-        timeout,
-        wait_for_codex_login(&mut reader, sink, url, login_id),
-    )
-    .await
-    .map_err(|_| "Codex login timed out".to_owned())??;
-
-    write_json_line(&mut stdin, &serde_json::json!({"jsonrpc":"2.0","id":10,"method":"account/read","params":{"refreshToken":true}})).await?;
-    let account = tokio::time::timeout(POST_AUTH_SNAPSHOT_TIMEOUT, wait_for_rpc(&mut reader, 10))
+        tokio::time::timeout(
+            timeout,
+            wait_for_codex_login(&mut reader, sink, url, login_id),
+        )
         .await
-        .map_err(|_| "Codex account identity was not ready after login".to_owned())??;
-    let identity = codex_identity_probe(&account)?;
-    sink.complete_authentication(&identity).await?;
+        .map_err(|_| "Codex login timed out".to_owned())??;
 
-    let snapshot = tokio::time::timeout(POST_AUTH_SNAPSHOT_TIMEOUT, async {
-        let probe = codex_snapshot(&mut stdin, &mut reader, &account).await?;
-        sink.publish_snapshot(&probe).await
-    })
-    .await;
-    let snapshot_error = match snapshot {
-        Ok(Ok(())) => None,
-        Ok(Err(error)) => Some(error),
-        Err(_) => Some("Codex account model and usage snapshot timed out".to_owned()),
+        write_json_line(&mut stdin, &serde_json::json!({"jsonrpc":"2.0","id":10,"method":"account/read","params":{"refreshToken":true}})).await?;
+        let account =
+            tokio::time::timeout(POST_AUTH_SNAPSHOT_TIMEOUT, wait_for_rpc(&mut reader, 10))
+                .await
+                .map_err(|_| "Codex account identity was not ready after login".to_owned())??;
+        let identity = codex_identity_probe(&account)?;
+        sink.complete_authentication(&identity).await?;
+
+        let snapshot = tokio::time::timeout(POST_AUTH_SNAPSHOT_TIMEOUT, async {
+            let probe = codex_snapshot(&mut stdin, &mut reader, &account).await?;
+            sink.publish_snapshot(&probe).await
+        })
+        .await;
+        let snapshot_error = match snapshot {
+            Ok(Ok(())) => None,
+            Ok(Err(error)) => Some(error),
+            Err(_) => Some("Codex account model and usage snapshot timed out".to_owned()),
+        };
+        Ok(LoginOutcome { snapshot_error })
     };
-    Ok(LoginOutcome { snapshot_error })
+    let outcome = tokio::select! {
+        result=login=>result,
+        _=account_job.cancelled()=>Err("Harness account was removed".into()),
+    };
+    if let Some(container) = &container {
+        container.kill_all();
+    }
+    child
+        .wait()
+        .await
+        .map_err(|error| format!("reap Codex sign-in: {error}"))?;
+    outcome
 }
 
 async fn wait_for_codex_login<S: LoginSink>(

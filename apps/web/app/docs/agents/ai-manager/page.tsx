@@ -54,11 +54,12 @@ Pi Agent for the reviewer."`}</code></pre>
       <ul>
         <li><strong>Claude Code</strong> (<code>claude_terminal</code>) — Best for complex multi-step tasks</li>
         <li><strong>Codex</strong> (<code>codex_terminal</code>) — Good for code-focused tasks</li>
+        <li><strong>Muse Code</strong> (<code>muse_terminal</code>)</li>
         <li><strong>Pi Agent</strong> (<code>pi_terminal</code>)</li>
         <li><strong>Grok Build</strong> (<code>grok_terminal</code>)</li>
         <li><strong>OpenCode</strong> (<code>opencode_terminal</code>)</li>
       </ul>
-      <p>The AI Manager can create agents with any enabled driver, regardless of its own driver. Pi and OpenCode require the corresponding <code>pi</code> or <code>opencode</code> plugin in <code>CHORUZ_PLUGINS</code>.</p>
+      <p>The AI Manager can create agents with any enabled driver, regardless of its own driver. Pi, OpenCode and Grok require the corresponding <code>pi</code>, <code>opencode</code> or <code>grok</code> plugin in <code>CHORUZ_PLUGINS</code>.</p>
 
       <div className="docs-pager">
         <Link href="/docs/agents/sub-agents">

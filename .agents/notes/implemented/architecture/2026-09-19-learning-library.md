@@ -8,7 +8,7 @@ Analysis report contracts and fixed prompts share a module with native process m
 
 ## Decision
 
-`choruz-learning` owns report validation and fixed analysis, review and evaluation prompts. Its asynchronous `Runner` separates those procedures from native execution. Host runtime provides `CliRunner`; gateway workers retain source collection, scheduling, database leases and activation. Direct consumers use the owning package without a re-export shim.
+`choruz-learning` owns report validation, fixed prompts and the analysis, task-admission and evaluation workflows. Its asynchronous adapters separate those procedures from evidence storage and native execution. Its optional [native CLI adapter](2026-09-28-portable-learning-cli.md) supplies `CliRunner`; host runtime provides the host evaluation adapter. Gateway workers retain authorization, source collection, scheduling, database leases and activation. `choruz-evaluation::dataset` owns curation and objective partitions independently of storage. Direct consumers use the owning package without a re-export shim; the gateway calls the same implementation rather than keeping a platform-specific learning algorithm.
 
 Learning prompts are package assets. Native instruction fragments and the shared structured CLI fixture belong to host runtime. Web provisioning and tests read the same files rather than copying them. CI selects Rust owners through package dependencies and explicitly maps host assets and the shared fixture to their browser consumers.
 

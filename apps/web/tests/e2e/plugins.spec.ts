@@ -15,7 +15,7 @@ test("Host manifests and Client contributions agree", async ({ page }) => {
   expect(response.ok()).toBeTruthy();
   const snapshot = await response.json() as { plugins: Array<{ id: string; version: string }> };
   expect(snapshot.plugins.map((plugin) => plugin.id)).toEqual(
-    ["kanban", "pixel-world", "workspace-git", "remote-ssh", "remote-control", "agent-skills", "mathcode", "pi", "opencode"].filter((id) => configuredPluginIds.has(id)),
+    ["kanban", "pixel-world", "workspace-git", "remote-ssh", "remote-control", "agent-skills", "mathcode", "pi", "opencode", "grok"].filter((id) => configuredPluginIds.has(id)),
   );
   expect(snapshot.plugins.every((plugin) => plugin.version === "1")).toBeTruthy();
 
@@ -76,7 +76,9 @@ test("Host manifests and Client contributions agree", async ({ page }) => {
   }
   await createAgentAction.click();
   const driverSelect = page.getByLabel("Driver", { exact: true });
-  for (const plugin of ["pi", "opencode"]) {
+  await expect(driverSelect.locator('option[value="muse_terminal"]')).toHaveText("Muse Code");
+  await expect(driverSelect.locator('option[value="codex_terminal"]')).toHaveText("Codex");
+  for (const plugin of ["pi", "opencode", "grok"]) {
     const enabled = configuredPluginIds.has(plugin);
     await expect(driverSelect.locator(`option[value="${plugin}_terminal"]`)).toHaveCount(enabled ? 1 : 0);
     const name = `${plugin}-plugin-${Date.now()}`;
@@ -91,7 +93,7 @@ test("Host manifests and Client contributions agree", async ({ page }) => {
 
     const scan = await page.request.post(`${API_BASE}/v1/workspace-sessions/scan`, {
       headers: { Authorization: `Bearer ${token}` },
-      data: { workspace_path: enabled ? provisioned.workspace_path : "/does-not-exist-optional-plugin", harnesses: [plugin === "pi" ? "pi" : "open_code"] },
+      data: { workspace_path: enabled ? provisioned.workspace_path : "/does-not-exist-optional-plugin", harnesses: [plugin === "opencode" ? "open_code" : plugin] },
     });
     expect(scan.status(), await scan.text()).toBe(enabled ? 200 : 404);
     if (enabled) expect(await scan.json()).toMatchObject({ workspace_path: provisioned.workspace_path, sessions: [] });
@@ -99,7 +101,7 @@ test("Host manifests and Client contributions agree", async ({ page }) => {
     if (!enabled) {
       const imported = await page.request.post(`${API_BASE}/v1/workspace-sessions/import`, {
         headers: { Authorization: `Bearer ${token}` },
-        data: { company_id: "unused", workspace_path: "/unused", sessions: [{ harness: plugin === "pi" ? "pi" : "open_code", native_session_id: "unused" }] },
+        data: { company_id: "unused", workspace_path: "/unused", sessions: [{ harness: plugin === "opencode" ? "open_code" : plugin, native_session_id: "unused" }] },
       });
       expect(imported.status()).toBe(404);
       expect(await imported.text()).toContain(`plugin '${plugin}' is disabled`);
@@ -116,14 +118,14 @@ test("Host manifests and Client contributions agree", async ({ page }) => {
   await page.getByRole("button", { name: "Actions menu" }).click();
   await page.getByRole("button", { name: "New Group", exact: true }).click();
   await page.getByRole("combobox", { name: "Start with", exact: true }).selectOption({ label: "Software Development Team" });
-  for (const plugin of ["pi", "opencode"]) {
+  for (const plugin of ["pi", "opencode", "grok"]) {
     await expect(page.getByRole("combobox", { name: "Group default driver", exact: true }).locator(`option[value="${plugin}_terminal"]`)).toHaveCount(configuredPluginIds.has(plugin) ? 1 : 0);
   }
   await page.getByRole("button", { name: "Close", exact: true }).click();
   if (configuredPluginIds.has("remote-control")) {
     await page.getByRole("button", { name: "Actions menu" }).click();
     await page.getByRole("button", { name: "Import Sessions", exact: true }).click();
-    for (const [plugin, label] of [["pi", "Pi"], ["opencode", "OpenCode"]]) {
+    for (const [plugin, label] of [["pi", "Pi"], ["opencode", "OpenCode"], ["grok", "Grok"]]) {
       await expect(page.getByRole("checkbox", { name: label, exact: true })).toHaveCount(configuredPluginIds.has(plugin) ? 1 : 0);
     }
     await page.getByRole("button", { name: "Close", exact: true }).click();

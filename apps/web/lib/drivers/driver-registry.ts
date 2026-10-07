@@ -1,6 +1,7 @@
 export const DRIVER_IDS = [
   "claude_terminal",
   "codex_terminal",
+  "muse_terminal",
   "pi_terminal",
   "grok_terminal",
   "opencode_terminal",
@@ -14,6 +15,7 @@ export type DriverId = (typeof DRIVER_IDS)[number];
 export type DriverBinaryEnvVar =
   | "CHORUZ_CLAUDE_BINARY"
   | "CHORUZ_CODEX_BINARY"
+  | "CHORUZ_MUSE_BINARY"
   | "CHORUZ_PI_BINARY"
   | "CHORUZ_GROK_BINARY"
   | "CHORUZ_OPENCODE_BINARY"
@@ -32,6 +34,7 @@ const CODEX_BINARY: DriverBinaryDefinition = {
 export const DRIVER_BINARIES: Record<DriverId | "codex_app_server", DriverBinaryDefinition | undefined> = {
   claude_terminal: { envVar: "CHORUZ_CLAUDE_BINARY", runtimeEnvVar: "CHORUZ_CLAUDE_CLI_PATH", defaultBinary: "claude" },
   codex_terminal: CODEX_BINARY,
+  muse_terminal: { envVar: "CHORUZ_MUSE_BINARY", runtimeEnvVar: "CHORUZ_MUSE_CLI_PATH", defaultBinary: "muse" },
   codex_exec: CODEX_BINARY,
   codex_app_server: CODEX_BINARY,
   pi_terminal: { envVar: "CHORUZ_PI_BINARY", runtimeEnvVar: "CHORUZ_PI_CLI_PATH", defaultBinary: "pi" },
@@ -56,12 +59,14 @@ export function resolveDriverBinary(
 export const LOCAL_TERMINAL_DRIVER_IDS: DriverId[] = [
   "claude_terminal",
   "codex_terminal",
+  "muse_terminal",
   "pi_terminal",
   "grok_terminal",
   "opencode_terminal",
 ];
 
 export const DRIVER_PLUGIN_IDS: Partial<Record<DriverId, string>> = {
+  grok_terminal: "grok",
   pi_terminal: "pi",
   opencode_terminal: "opencode",
   mathcode_terminal: "mathcode",
@@ -89,6 +94,7 @@ export function isTerminalDriver(driverType: string): boolean {
 const DRIVER_LABELS: Record<DriverId, string> = {
   claude_terminal: "Claude Code",
   codex_terminal: "Codex",
+  muse_terminal: "Muse Code",
   codex_exec: "Codex",
   pi_terminal: "Pi Agent",
   grok_terminal: "Grok Build",

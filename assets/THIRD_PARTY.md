@@ -2,6 +2,13 @@
 
 This reference lists third-party artwork distributed in the Choruz repository. Source code dependencies remain governed by their package manifests and lockfiles.
 
+## Interface fonts
+
+Instrument Sans and Azeret Mono are bundled from the pinned `@fontsource-variable`
+packages in the web manifest and lockfile. Both use SIL Open Font License 1.1.
+Their copyright and license texts ship in `apps/web/public/fonts/` as
+`instrument-sans-OFL.txt` and `azeret-mono-OFL.txt`.
+
 ## Ninja Adventure asset pack
 
 The following files are byte-for-byte copies from Pixel-boy and AAA's Ninja Adventure repository at commit `6ac78232d5aedcc85ce5f27d060ea92366f7c24a`:

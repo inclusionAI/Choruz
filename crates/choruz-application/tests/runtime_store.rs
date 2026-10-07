@@ -558,7 +558,7 @@ async fn terminal_session_anchor_preserves_unrelated_config_and_validates_bindin
                 binding_id: binding.id.clone(),
                 conversation_id: binding.conversation_id.clone(),
                 agent_principal_id: binding.agent_principal_id.clone(),
-                company_id: "company-acme".into(),
+                company_id: "ws-acme".into(),
                 driver_type: binding.driver_type.as_str().into(),
                 workspace_id: "ws-acme".into(),
                 workspace_path: binding.workspace_path.clone(),
@@ -586,6 +586,24 @@ async fn terminal_session_anchor_preserves_unrelated_config_and_validates_bindin
         None
     );
 
+    let client = store.connect().await.unwrap();
+    client.execute(
+        "UPDATE agent_runtime_bindings SET config_json=(config_json-'terminal_session')||'{\"terminal_generation\":1}'::jsonb WHERE id=$1",
+        &[&binding.id],
+    ).await.unwrap();
+    let reset = store.get_binding(&binding.id).await.unwrap();
+    assert!(reset.valid_terminal_session_id().is_none());
+    let retained = store.retained_native_sources(&reset).await.unwrap();
+    assert_eq!(
+        retained.len(),
+        1,
+        "reset must not discard retained learning evidence"
+    );
+    assert_eq!(
+        retained[0].session_id,
+        "00000000-0000-0000-0000-000000000001"
+    );
+
     let rebound = store
         .rebind_workspace(
             &binding.id,
@@ -597,6 +615,14 @@ async fn terminal_session_anchor_preserves_unrelated_config_and_validates_bindin
     assert!(rebound.config_json.get("terminal_session").is_none());
     assert_eq!(rebound.config_json["binary_path"], "codex");
     assert_eq!(rebound.valid_terminal_session_id(), None);
+    assert!(
+        store
+            .retained_native_sources(&rebound)
+            .await
+            .unwrap()
+            .is_empty(),
+        "a different workspace must not inherit historical private sources"
+    );
 
     let stale_capture = store
         .write_terminal_session_anchor(
@@ -623,6 +649,100 @@ async fn terminal_session_anchor_preserves_unrelated_config_and_validates_bindin
     assert!(
         stale_capture.is_err(),
         "delayed captures from the old binding context must not resurrect anchors"
+    );
+}
+
+#[tokio::test]
+async fn model_selection_is_atomic_and_ignores_only_capture_metadata() {
+    let database = TestDatabase::create().await;
+    seed_prerequisites(
+        &database.database_url,
+        &["model-target", "model-analyst"],
+        &["model-target-conv", "model-analyst-conv"],
+    )
+    .await;
+    let store = RuntimeStore::new(&database.database_url);
+    let mut bindings = Vec::new();
+    for (agent, conversation) in [
+        ("model-target", "model-target-conv"),
+        ("model-analyst", "model-analyst-conv"),
+    ] {
+        bindings.push(
+            store
+                .create_binding(CreateBindingInput {
+                    conversation_id: conversation.into(),
+                    agent_principal_id: agent.into(),
+                    driver_type: DriverType::CodexTerminal,
+                    workspace_path: "/tmp/model-selection".into(),
+                    git_worktree_path: None,
+                    config_json: json!({}),
+                    audit_actor: None,
+                })
+                .await
+                .unwrap(),
+        );
+    }
+    let mut target = bindings[0].clone();
+    target.config_json["agent_workspace_id"] = json!("ws-acme");
+    target.config_json["conversation_workspace_id"] = json!("ws-acme");
+    let client = store.connect().await.unwrap();
+    client.execute("UPDATE agent_runtime_bindings SET config_json=config_json||'{\"terminal_session\":{\"session_id\":\"captured\",\"binding_generation\":0},\"terminal_capture\":{\"nonce\":\"changed\"}}'::jsonb,updated_at=NOW() WHERE id=$1", &[&target.id]).await.unwrap();
+    client
+        .execute(
+            "UPDATE agent_runtime_bindings SET state='running' WHERE id=$1",
+            &[&bindings[1].id],
+        )
+        .await
+        .unwrap();
+    assert!(
+        store
+            .select_binding_models(&[(&target, "task-model"), (&bindings[1], "analysis-model")])
+            .await
+            .is_err()
+    );
+    assert!(
+        store
+            .get_binding(&target.id)
+            .await
+            .unwrap()
+            .config_json
+            .get("model")
+            .is_none(),
+        "a busy analyst must roll back both model selections"
+    );
+    client
+        .execute(
+            "UPDATE agent_runtime_bindings SET state='idle' WHERE id=$1",
+            &[&bindings[1].id],
+        )
+        .await
+        .unwrap();
+    store
+        .select_binding_models(&[(&target, "task-model"), (&bindings[1], "analysis-model")])
+        .await
+        .unwrap();
+    let selected = store.get_binding(&target.id).await.unwrap();
+    assert_eq!(selected.config_json["model"], "task-model");
+    assert_eq!(
+        selected.config_json["terminal_session"]["session_id"], "captured",
+        "changing a model preserves captured session identity"
+    );
+    assert_eq!(selected.terminal_generation(), target.terminal_generation());
+    assert_eq!(
+        store
+            .get_binding(&bindings[1].id)
+            .await
+            .unwrap()
+            .config_json["model"],
+        "analysis-model"
+    );
+    client.execute("UPDATE agent_runtime_bindings SET config_json=config_json||'{\"runtime_host_id\":\"different-device\"}'::jsonb WHERE id=$1", &[&selected.id]).await.unwrap();
+    assert!(
+        store
+            .select_binding_models(&[(&selected, "another-model")])
+            .await
+            .is_err(),
+        "unrelated capture changes are tolerated, changed identity is not"
     );
 }
 

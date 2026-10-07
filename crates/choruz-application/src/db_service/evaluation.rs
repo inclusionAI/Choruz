@@ -68,7 +68,7 @@ impl DbService {
             if suite.name
                 != format!(
                     "Observed objectives {}",
-                    super::trace_cases::corpus_version(&current)
+                    choruz_evaluation::dataset::corpus_version(&current)
                 )
             {
                 return Err(AppError::Conflict("Dataset changed before queueing".into()));

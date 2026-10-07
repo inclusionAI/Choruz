@@ -8,9 +8,10 @@ use choruz_harness_login::{AccountProfile, login_binary, probe_account};
 use serde_json::{Value, json};
 use tokio::process::Command;
 
-const DRIVERS: [&str; 7] = [
+const DRIVERS: [&str; 8] = [
     "claude_terminal",
     "codex_terminal",
+    "muse_terminal",
     "codex_exec",
     "pi_terminal",
     "grok_terminal",
@@ -42,6 +43,7 @@ pub async fn inspect(driver_type: Option<&str>) -> Result<Value, AppError> {
             HeadlessDriver::Pi => output(driver, &["--list-models"]).await,
             HeadlessDriver::Grok | HeadlessDriver::OpenCode => output(driver, &["models"]).await,
             HeadlessDriver::MathCode => Ok(json!({"models": []})),
+            HeadlessDriver::Muse => Ok(json!({"models": []})),
         };
     }
     let mut tasks = tokio::task::JoinSet::new();

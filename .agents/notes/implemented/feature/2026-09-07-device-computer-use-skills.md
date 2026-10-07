@@ -8,6 +8,10 @@ An operator installs BrowserSkill and Cua for a device user, but an isolated Cla
 
 ## Decision
 
+Setup and diagnostics are owned by `choruz-computer-use`; see the
+[package boundary decision](../architecture/2026-09-28-portable-device-tools.md).
+This note retains the account-isolation and consent decisions.
+
 The shared Agent runtime prepares the two installed skill directories when it prepares an isolated account for execution. Device-local launch paths use this owner, including the host link and headless connector. The read-only account resolver stays separate so scans and authentication probes do not create files. The child PATH appends the existing user-local binary directory without overriding inherited binaries.
 
 Explicit setup lives on the selected device through the same host request dispatcher. Harness Accounts exposes installation, diagnostics and skill-provisioning switches. A background installation outlives the requesting panel, but not the owning process. The implementation invokes upstream installers at fixed HTTPS URLs; it accepts no caller-provided commands and contains no Hermes implementation. Browser connection and OS consent remain separate checks, not inferred from installation success.

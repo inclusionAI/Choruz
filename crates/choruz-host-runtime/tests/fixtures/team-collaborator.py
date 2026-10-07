@@ -15,6 +15,13 @@ name = data["member"]
 ready = directory / f"{name}.pending"
 ready.write_text(str(os.getpid()))
 ready.replace(directory / name)
+if request["mode"] == "gate":
+    deadline = time.monotonic() + 10
+    while not (directory / "release").exists():
+        assert time.monotonic() < deadline, "test did not release collaborator"
+        time.sleep(0.01)
+if request["mode"] == "error":
+    sys.exit(1)
 if request["order"] == "parallel":
     assert data["prior_findings"] == []
     deadline = time.monotonic() + 5

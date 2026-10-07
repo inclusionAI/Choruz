@@ -6,6 +6,7 @@ import type { DirEntry } from "../../lib/api/choruz-types";
 import { fetchHomeDirectory, listDirectory, usePathSuggestions } from "../../hooks/use-path-suggestions";
 import { Modal } from "../ui/modal";
 import { FileText } from "lucide-react";
+import { nativeFolderPicker } from "../../lib/desktop";
 
 interface FolderPickerModalProps {
   initialPath?: string;
@@ -41,6 +42,7 @@ export function FolderPickerModal({
   const [error, setError] = useState<string | null>(null);
   const [selectedEntry, setSelectedEntry] = useState<string | null>(null);
   const [pathInput, setPathInput] = useState("");
+  const chooseNativeFolder = !fileExtension && nativeFolderPicker(runtimeHostId);
   const {
     suggestions: pathSuggestions,
     open: showSuggestions,
@@ -241,6 +243,14 @@ export function FolderPickerModal({
       layout="flush"
       className="folder-picker-modal"
     >
+      {chooseNativeFolder && <button type="button" className="btn btn-secondary" disabled={selectionPending} onClick={async () => {
+        setSelectionPending(true);
+        try {
+          const selected = await chooseNativeFolder();
+          if (selected) { await onSelect(selected); onClose(); }
+        } catch (failure) { setError(failure instanceof Error ? failure.message : "Could not select a folder."); }
+        finally { setSelectionPending(false); }
+      }}>Choose in Finder</button>}
       {/* Breadcrumb */}
       <div className="folder-picker-breadcrumb">
         {breadcrumbs.map((seg, i) => (

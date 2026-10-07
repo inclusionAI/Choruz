@@ -1,8 +1,42 @@
 use choruz_common::AppError;
-use choruz_evaluation::evaluation::OutputCheck;
-use choruz_learning::{Runner, evaluate, judge, review};
+use choruz_evaluation::evaluation::{
+    EvaluationCandidate, EvaluationCase, EvaluationSplit, JudgeResult, OutputCheck,
+};
+use choruz_learning::{
+    Runner, evaluate, judge, review,
+    workflow::{EvaluationExecutor, ExecutionOutput, evaluate_task},
+};
 
 struct Fixture;
+
+impl EvaluationExecutor for Fixture {
+    async fn prepare(&self, _: &EvaluationCandidate, _: &str) -> Result<String, AppError> {
+        unreachable!("This example evaluates one agent, not a team")
+    }
+
+    async fn execute(
+        &self,
+        candidate: &EvaluationCandidate,
+        case: &EvaluationCase,
+        preflight: &str,
+    ) -> Result<ExecutionOutput, AppError> {
+        Ok(ExecutionOutput {
+            output: evaluate(
+                self,
+                case.input.clone(),
+                candidate.instruction.clone(),
+                preflight.into(),
+            )
+            .await?,
+            replay: None,
+            checks_passed: true,
+        })
+    }
+
+    async fn judge(&self, case: &EvaluationCase, output: &str) -> Result<JudgeResult, AppError> {
+        judge(self, case.input.clone(), case.check.clone(), output.into()).await
+    }
+}
 
 impl Runner for Fixture {
     async fn run(
@@ -38,25 +72,29 @@ async fn main() -> Result<(), AppError> {
     )
     .await?;
     assert!(reviewed.accepted);
-    let task = "Add 7 and 8".to_owned();
-    let answer = evaluate(
+    let assessment = evaluate_task(
         &Fixture,
-        task.clone(),
-        "PRIVATE_GUIDANCE: check arithmetic".into(),
-        String::new(),
-    )
-    .await?;
-    let assessment = judge(
-        &Fixture,
-        task,
-        OutputCheck::Judge {
-            expected: "15".into(),
-            rubric: "Return the correct sum".into(),
+        &EvaluationCandidate {
+            revision_id: None,
+            instruction: "PRIVATE_GUIDANCE: check arithmetic".into(),
+            team: None,
         },
-        answer,
+        &EvaluationCase {
+            id: "addition".into(),
+            split: EvaluationSplit::Test,
+            input: "Add 7 and 8".into(),
+            source: None,
+            environment: None,
+            check: OutputCheck::Judge {
+                expected: "15".into(),
+                rubric: "Return the correct sum".into(),
+            },
+        },
     )
     .await?;
-    assert_eq!(assessment.score(), Some(1.0));
+    assert_eq!(assessment["status"], "completed");
+    assert_eq!(assessment["score"], 1.0);
+    assert_eq!(assessment["output"], "15");
     println!(
         "Reviewed evidence and graded a separate task without leaking candidate guidance to its judge."
     );

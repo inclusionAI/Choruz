@@ -5,6 +5,7 @@ use choruz_decision::{
     programs::{Element, Observation, Operation},
     workflow::{self, Browser, Snapshot, Workflow},
 };
+use choruz_learning::native_cli::CliRunner;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
@@ -173,7 +174,7 @@ fn same_page(before: &Snapshot, after: &Snapshot) -> bool {
 }
 
 async fn command(binary: PathBuf, args: &[&str]) -> Result<Value> {
-    let bytes = crate::computer_use::run_command(binary, args, 20, false)
+    let bytes = choruz_computer_use::run_command(binary, args, 20, false)
         .await
         .map_err(|error| {
             tracing::warn!(operation = args.first().copied(), %error, "Browser command failed");
@@ -361,7 +362,7 @@ pub async fn run(
             "Browser assistance requires the authorized binding's Harness".into(),
         ));
     }
-    let assistant = BrowserAssistant(assistant.map(crate::learning_runner::CliRunner));
+    let assistant = BrowserAssistant(assistant.map(|spec| CliRunner(spec.into())));
     let started = Instant::now();
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
@@ -380,7 +381,7 @@ pub async fn run(
             .values
             .extend(assistant.text(&request.text_requests).await?);
     }
-    let binary = crate::computer_use::binary(crate::computer_use::Tool::Browser);
+    let binary = choruz_computer_use::binary(choruz_computer_use::Tool::Browser);
     let (mut sender, receiver) = tokio::sync::oneshot::channel();
     tokio::spawn(async move {
         let result = async {
@@ -410,7 +411,7 @@ pub async fn run(
     Ok(report)
 }
 
-struct BrowserAssistant(Option<crate::learning_runner::CliRunner>);
+struct BrowserAssistant(Option<CliRunner>);
 
 impl BrowserAssistant {
     async fn text(&self, requests: &BTreeMap<String, String>) -> Result<BTreeMap<String, String>> {

@@ -15,7 +15,9 @@ The authenticated gateway and principal identify each queue. Delivery captures
 the current transport at trace initialization, so switching a remote dashboard
 cannot redirect a previous device's pending batch. Tokens remain in memory.
 
-`DbService::record_telemetry` owns batch validation and one database transaction.
+`DbService::record_telemetry` calls `choruz-activity` for batch validation and owns
+one database transaction. The [activity library](2026-09-28-portable-activity.md)
+owns the portable contract; this note owns acknowledgement and durability.
 `telemetry_event` deduplicates by authenticated workspace, principal and event ID.
 Client occurrence time and server receipt time remain distinct. HTTP 204 means
 the entire batch committed; only then does the browser remove those IDs.

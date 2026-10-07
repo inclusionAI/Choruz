@@ -4,10 +4,12 @@
 //! `(conversation_id, seq)`.  Each row represents a single event in a
 //! conversation (message, reply, reaction, edit, system, etc.).
 
+#[cfg(feature = "postgres")]
 use choruz_common::{AppError, AppResult};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "postgres")]
 use crate::EventStore;
 
 /// Input struct for inserting a new conversation event.
@@ -108,6 +110,7 @@ pub struct ConversationEventRow {
     pub created_at: DateTime<Utc>,
 }
 
+#[cfg(feature = "postgres")]
 impl EventStore {
     /// Insert a new conversation event.
     ///
@@ -280,6 +283,29 @@ impl EventStore {
         limit: i64,
         since_seq: Option<i64>,
     ) -> AppResult<Vec<ConversationEventRow>> {
+        self.list_feedback_events(conversation_id, limit, since_seq, false, None)
+            .await
+    }
+
+    pub async fn list_learning_feedback(
+        &self,
+        conversation_id: &str,
+        limit: i64,
+        since_seq: Option<i64>,
+        sender: Option<&str>,
+    ) -> AppResult<Vec<ConversationEventRow>> {
+        self.list_feedback_events(conversation_id, limit, since_seq, true, sender)
+            .await
+    }
+
+    async fn list_feedback_events(
+        &self,
+        conversation_id: &str,
+        limit: i64,
+        since_seq: Option<i64>,
+        include_decisions: bool,
+        sender: Option<&str>,
+    ) -> AppResult<Vec<ConversationEventRow>> {
         let client = self.connect().await?;
         let rows = if let Some(since) = since_seq {
             client
@@ -289,11 +315,12 @@ impl EventStore {
                             reply_event_id, created_at
                      FROM conversation_events
                      WHERE conversation_id = $1
-                       AND event_type IN ('message', 'message.created', 'reply')
+                       AND (event_type IN ('message', 'message.created', 'reply') OR ($4 AND event_type='runtime.decision'))
                        AND seq > $3
+                       AND ($5::text IS NULL OR sender_id=$5)
                      ORDER BY seq ASC
                      LIMIT $2",
-                    &[&conversation_id, &limit, &since],
+                    &[&conversation_id, &limit, &since,&include_decisions,&sender],
                 )
                 .await
         } else {
@@ -304,10 +331,11 @@ impl EventStore {
                             reply_event_id, created_at
                      FROM conversation_events
                      WHERE conversation_id = $1
-                       AND event_type IN ('message', 'message.created', 'reply')
+                       AND (event_type IN ('message', 'message.created', 'reply') OR ($3 AND event_type='runtime.decision'))
+                       AND ($4::text IS NULL OR sender_id=$4)
                      ORDER BY seq DESC
                      LIMIT $2",
-                    &[&conversation_id, &limit],
+                    &[&conversation_id, &limit,&include_decisions,&sender],
                 )
                 .await
         }
@@ -340,6 +368,7 @@ impl EventStore {
     }
 }
 
+#[cfg(feature = "postgres")]
 fn row_to_event(row: tokio_postgres::Row) -> ConversationEventRow {
     ConversationEventRow {
         conversation_id: row.get("conversation_id"),
@@ -357,6 +386,7 @@ fn row_to_event(row: tokio_postgres::Row) -> ConversationEventRow {
     }
 }
 
+#[cfg(feature = "postgres")]
 impl EventStore {
     /// Resolve the canonical thread root for a threaded reply. Shared by both the
     /// write paths (DbService::send_message and the agent outbox's

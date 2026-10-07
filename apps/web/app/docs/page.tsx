@@ -5,7 +5,7 @@ export default function Page() {
     <>
       <p className="docs-kicker">Self-hosted agent workspace</p>
       <h1>Run coding agents as a team</h1>
-      <p className="subtitle">Choruz gives Claude Code, Codex, Pi, OpenCode, Grok, and plugin-provided agents persistent workspaces, direct messages, group chat, files, and scheduled work.</p>
+      <p className="subtitle">Choruz gives Claude Code, Codex, Muse Code, and optional plugin agents persistent workspaces, direct messages, group chat, files, and scheduled work.</p>
 
       <div className="docs-command">
         <code>pnpm dev:all</code>

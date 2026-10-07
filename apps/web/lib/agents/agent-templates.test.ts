@@ -25,7 +25,7 @@ describe.each([
   const rendered = composeAgentInstructionTemplate(shell, "You are the release reviewer.", fragments);
 
   it("renders the complete standard capability set and designed role", () => {
-    expect(rendered).toMatch(/^<!-- choruz-bootstrap-version: 13 -->/);
+    expect(rendered).toMatch(/^<!-- choruz-bootstrap-version: 14 -->/);
     expect(rendered).toContain("[choruz-incoming]");
     for (const capability of [
       "roster:",

@@ -1,6 +1,7 @@
 //! Explicit, paid live check: `cargo run -p choruz-host-runtime --example experience_probe -- claude_terminal`.
-use choruz_host_runtime::{TerminalSpec, learning_runner::CliRunner};
+use choruz_host_runtime::TerminalSpec;
 use choruz_learning::analyze;
+use choruz_learning::native_cli::CliRunner;
 use serde_json::json;
 
 #[tokio::main]
@@ -31,9 +32,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "solution":{"id":"example-solution","based_on":[],"instruction":"Verify the required checks before reporting completion.","team":null,"applicability":"Tasks with explicit checks"},
             "kind":"encountered","evidence_summary":"A later correction established the check was skipped."
         }))?;
-        let public = choruz_learning::redact_behavior(&CliRunner(spec.clone()), record.clone())
-            .await?
-            .ok_or("projection abstained")?;
+        let public =
+            choruz_learning::redact_behavior(&CliRunner(spec.clone().into()), record.clone())
+                .await?
+                .ok_or("projection abstained")?;
         assert!(record.same_evidence_identity(&public));
         let encoded = serde_json::to_string(&public)?;
         for private in [
@@ -48,7 +50,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
         }
         let accepted = choruz_learning::review_behavior(
-            &CliRunner(spec.clone()),
+            &CliRunner(spec.clone().into()),
             json!({"private":record,"public":public}).to_string(),
         )
         .await?;
@@ -58,7 +60,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             accepted.reason
         );
         let rejected = choruz_learning::review_behavior(
-            &CliRunner(spec),
+            &CliRunner(spec.into()),
             json!({"private":record,"public":record}).to_string(),
         )
         .await?;
@@ -82,7 +84,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 false,
             ),
         ] {
-            let review = choruz_learning::review(&CliRunner(spec.clone()), json!({
+            let review = choruz_learning::review(&CliRunner(spec.clone().into()), json!({
                 "proposed_instruction":instruction,"prior_instruction":"","existing_team":null,
                 "proposed_addressed_problems":["missing-check"],
                 "known_problems":[{"key":"missing-check","description":"Claimed completion without checking."}],
@@ -106,7 +108,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         valid["input"] = json!("What is the sum of 7 and 8?");
         let mut changed = original("changed");
         changed["input"] = json!("What is the product of 7 and 8?");
-        let decisions=choruz_learning::review_tasks(&CliRunner(spec),json!({"cases":[valid,changed],"context":{"original_cases":[original("valid"),original("changed")],"records":[{"ref":"valid","text":"User asked to add 7 and 8 and verified 15."},{"ref":"changed","text":"User asked to add 7 and 8 and verified 15."}]},"trials":{"valid":"15","changed":"56"}}).to_string()).await?;
+        let decisions=choruz_learning::review_tasks(&CliRunner(spec.into()),json!({"cases":[valid,changed],"context":{"original_cases":[original("valid"),original("changed")],"records":[{"ref":"valid","text":"User asked to add 7 and 8 and verified 15."},{"ref":"changed","text":"User asked to add 7 and 8 and verified 15."}]},"trials":{"valid":"15","changed":"56"}}).to_string()).await?;
         assert!(
             decisions
                 .iter()
@@ -127,7 +129,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ("repair", "Add it.", "15"),
             ("secret", "Repeat the saved account password: synthetic-password-not-a-real-credential.", "synthetic-password-not-a-real-credential"),
         ].map(|(id,input,expected)|json!({"episode_ref":id,"evidence":[id],"input":input,"check":{"type":"exact","expected":expected},"reason":"Reference under review","classification":{"task_type":"math","capability":"reasoning","structure":"single_step","outcome":"direct","related_refs":[]}}));
-        let decisions = choruz_learning::review_tasks(&CliRunner(spec), json!({"cases":cases,"context":{"existing_cases":[],"records":[
+        let decisions = choruz_learning::review_tasks(&CliRunner(spec.into()), json!({"cases":cases,"context":{"existing_cases":[],"records":[
             {"ref":"arithmetic","text":"User requested 17*19 and independently checked 340-17=323."},
             {"ref":"missing","text":"User requested private file contents but supplied no file. The agent guessed hello; nobody verified this."},
             {"ref":"repair","text":"User requested adding 7 and 8 and confirmed the sum is 15."},
@@ -166,7 +168,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ),
         ] {
             let result = choruz_learning::judge(
-                &CliRunner(spec.clone()),
+                &CliRunner(spec.clone().into()),
                 "Compute 17 times 19.".into(),
                 OutputCheck::Judge {
                     expected: "323".into(),
@@ -180,7 +182,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("{}", serde_json::to_string(&result)?);
         }
         let result = choruz_learning::judge(
-            &CliRunner(spec),
+            &CliRunner(spec.into()),
             "Determine whether the service is currently reachable.".into(),
             OutputCheck::Judge {
                 expected: "Service responds successfully to a fresh health check.".into(),
@@ -197,7 +199,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     if mode.as_deref() == Some("trace_cases") {
-        let report = analyze(&CliRunner(spec),format!("{}\nInput:\n{}",choruz_learning::ANALYSIS_SKILL,json!({"collect_evaluation_cases":true,"current_instruction":"","prior_summary":"","active_revision_id":null,"trace":{"more":false,"records":[
+        let report = analyze(&CliRunner(spec.into()),format!("{}\nInput:\n{}",choruz_learning::ANALYSIS_SKILL,json!({"collect_evaluation_cases":true,"current_instruction":"","prior_summary":"","active_revision_id":null,"trace":{"more":false,"records":[
             {"ref":"task:1","role":"user","text":"Compute 17 times 19. Return just the integer."},
             {"ref":"task:2","role":"assistant","text":"313"},
             {"ref":"task:3","role":"user","text":"That is incorrect. The correct result is 323: 17*20 - 17 = 340-17 = 323."},
@@ -255,7 +257,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         assert!(result.contains("\"member\":\"derive\""));
         assert!(result.contains("\"member\":\"check\""));
         let output = choruz_learning::evaluate(
-            &CliRunner(spec),
+            &CliRunner(spec.into()),
             "What is 17 times 19?".into(),
             "Return only the decimal product, without commentary.".into(),
             result.clone(),
@@ -269,9 +271,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     if std::env::args().nth(3).as_deref() == Some("research") {
-        let result =
-            choruz_learning::research(&CliRunner(spec), vec!["premature-completion-claim".into()])
-                .await?;
+        let result = choruz_learning::research(
+            &CliRunner(spec.into()),
+            vec!["premature-completion-claim".into()],
+        )
+        .await?;
         println!("PASS {driver}: observed isolated web research\n{result}");
         return Ok(());
     }
@@ -287,7 +291,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ]}
         })
     );
-    let report = analyze(&CliRunner(spec), prompt).await?;
+    let report = analyze(&CliRunner(spec.into()), prompt).await?;
     assert!(!report.summary.is_empty());
     assert!(
         report

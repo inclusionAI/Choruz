@@ -22,6 +22,8 @@ The [runtime persistence boundary](2026-09-19-runtime-without-platform-database.
 
 The [community library boundary](2026-09-19-community-library.md) shares evidence records and dataset exchange without moving consent, publication state or activation out of the platform.
 
+The [routing policy boundary](2026-09-28-portable-routing-policy.md) lets consumers select event, command and routing contracts without the storage packages' PostgreSQL adapters. Durable platform routing keeps those adapters enabled.
+
 - End-to-end chat behaviour shipped quickly because one process could own the whole flow.
 - The future split points are named (API gateway, realtime gateway, agent gateway, job runner) but not scaffolded: a split starts by moving a module out of `choruz-api-gateway` or the pipeline, not by reviving an empty binary.
 - Operational load stays low: one PostgreSQL, a handful of binaries, no service mesh.

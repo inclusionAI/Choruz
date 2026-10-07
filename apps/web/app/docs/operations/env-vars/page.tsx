@@ -36,7 +36,7 @@ export default function Page() {
           <tr>
             <td><code>CHORUZ_PLUGINS</code></td>
             <td>(unset: default plugins)</td>
-            <td>Comma-separated built-in plugin allowlist. Pi and OpenCode require explicit <code>pi</code> and <code>opencode</code> entries. An empty value disables all plugins. Apply the same value to the web and API processes.</td>
+            <td>Comma-separated built-in plugin allowlist. Pi, OpenCode and Grok require explicit <code>pi</code>, <code>opencode</code> and <code>grok</code> entries. An empty value disables all plugins. Apply the same value to the web and API processes.</td>
           </tr>
         </tbody>
       </table>
@@ -139,6 +139,7 @@ export default function Page() {
           </tr>
           <tr><td><code>CHORUZ_PI_BINARY</code></td><td><code>pi</code></td><td>Path to the Pi Agent CLI binary.</td></tr>
           <tr><td><code>CHORUZ_GROK_BINARY</code></td><td><code>grok</code></td><td>Path to the Grok Build CLI binary.</td></tr>
+          <tr><td><code>CHORUZ_MUSE_BINARY</code></td><td><code>muse</code></td><td>Path to the Muse Code CLI on the execution device; CHORUZ_MUSE_CLI_PATH is an alias.</td></tr>
           <tr><td><code>CHORUZ_OPENCODE_BINARY</code></td><td><code>opencode</code></td><td>Path to the OpenCode CLI binary.</td></tr>
           <tr><td><code>CHORUZ_MATHCODE_BINARY</code></td><td><code>mathcode</code></td><td>Path to the MathCode CLI binary when the <code>mathcode</code> plugin is enabled.</td></tr>
           <tr><td><code>CHORUZ_HARNESS_ACCOUNT_ROOT</code></td><td><code>~/.choruz/accounts</code></td><td>Device-local root for isolated Claude Code and Codex login profiles. Keep it private and writable only by the runtime user.</td></tr>

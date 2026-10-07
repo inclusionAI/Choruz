@@ -287,7 +287,7 @@ describe("buildSidebarConversationSections", () => {
     });
 
     expect(result.pinned.defaultExpanded).toBe(true);
-    expect(result.direct.defaultExpanded).toBe(false);
+    expect(result.direct.defaultExpanded).toBe(true);
     expect(result.group.defaultExpanded).toBe(false);
     expect(result.allFilteredConversationIds).toEqual([
       "pinned-direct",

@@ -1,6 +1,8 @@
 # choruz-session
 
-Session manager of the message pipeline: `PgSessionStore` owns the `session_registry`, `agent_commands` and `dead_letters` tables (command state machine, leases with epoch fencing, heartbeats, runtime-host command claims) and the in-memory executor registry; `retry.rs` computes the exponential backoff and exhaustion rules. `services/choruz-pipeline`, `services/choruz-api-gateway`, `choruz-router`, `choruz-executor` and `apps/choruz-replay` depend on it.
+Session manager of the message pipeline: `PgSessionStore` owns the `session_registry`, `agent_commands` and `dead_letters` tables (command state machine, leases with epoch fencing, heartbeats, runtime-host command claims) and the in-memory executor registry; `retry.rs` computes the exponential backoff and exhaustion rules. The pipeline, API gateway, router and replay application depend on it.
+
+The default `postgres` feature supplies `PgSessionStore`. Set `default-features = false` to consume command/session models, errors and retry calculations without a database client. Lease enforcement and durable state transitions require the store; types alone do not implement those guarantees.
 
 ## Entry points
 

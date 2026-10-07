@@ -1,6 +1,6 @@
 # choruz-tools
 
-Tool gateway and effect journal of the message pipeline: `ToolGateway` runs every tool call through `effect_journal` rows so a mutating call replays idempotently, `ToolRegistry` classifies each tool as read-only or mutating with a `MutationPolicy`, and `effect.rs` holds the journal types and CRUD. `services/choruz-pipeline` depends on it (`default_registry`, `ToolExecutor`, `ToolGateway`).
+Tool gateway and PostgreSQL-backed effect-journal utilities. `ToolRegistry` classifies calls as read-only or mutating with a `MutationPolicy`; `effect.rs` holds journal types and CRUD. The platform does not currently dispatch native CLI tool calls through this library. It therefore provides no platform-wide tool interception or replay guarantee.
 
 ## Entry points
 
@@ -14,5 +14,5 @@ Tool gateway and effect journal of the message pipeline: `ToolGateway` runs ever
 
 ## Related
 
-- [docs/subsystems/message-pipeline.md](../../docs/subsystems/message-pipeline.md) — where the gateway sits in the executor path
+- [docs/subsystems/message-pipeline.md](../../docs/subsystems/message-pipeline.md) — the separate native CLI execution path
 - [docs/architecture.md](../../docs/architecture.md)

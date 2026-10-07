@@ -89,6 +89,7 @@ async fn remote_completion_does_not_overwrite_a_reconfigured_session_identity() 
                 1,
                 Some("headless-result"),
                 false,
+                None,
             )
             .await
             .unwrap();
@@ -464,6 +465,7 @@ async fn headless_progress_tracks_leases_in_binding_snapshots_and_sync() {
                 1,
                 None,
                 false,
+                None,
             )
             .await
             .unwrap();

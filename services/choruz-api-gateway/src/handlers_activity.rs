@@ -66,7 +66,7 @@ pub(crate) async fn list(
         .await?;
     let records: Vec<_> = records
         .into_iter()
-        .map(crate::handlers_events::sanitize_telemetry_value)
+        .map(choruz_activity::sanitize_value)
         .collect();
     let next_cursor = next
         .map(|c| serde_json::to_vec(&c).map(|v| URL_SAFE_NO_PAD.encode(v)))

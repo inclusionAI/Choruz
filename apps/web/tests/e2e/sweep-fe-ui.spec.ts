@@ -130,7 +130,7 @@ test.describe("FE feature sweep", () => {
     const marker = `fe-sweep-sent-${Date.now()}`;
     await input.fill(marker);
     await input.press("Enter");
-    await expect(page.getByText(marker).first()).toBeVisible({ timeout: 10_000 });
+    await expect(page.locator(".messages-area").getByText(marker, { exact: true })).toBeVisible({ timeout: 10_000 });
   });
 
   test("dashboard: search UI accepts a query and returns an empty/filled results panel", async ({ page }) => {

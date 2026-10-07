@@ -9,7 +9,7 @@ use serde_json::json;
 
 use crate::{
     ApiError, ApiState, authenticated_principal, db_persist, flush_webhooks, flush_webhooks_all,
-    redact_sensitive_text, require_actor, require_self,
+    require_actor, require_self,
 };
 
 // ── Telemetry ─────────────────────────────────────────────────────────
@@ -23,7 +23,7 @@ static ACTIVITY_BATCHES: std::sync::LazyLock<choruz_common::metrics::IntCounterV
     });
 #[derive(Debug, Deserialize)]
 pub(crate) struct TelemetryPayload {
-    events: Vec<choruz_application::db_service::TelemetryEvent>,
+    events: Vec<choruz_activity::TelemetryEvent>,
 }
 
 pub(crate) async fn ingest_telemetry(
@@ -33,7 +33,7 @@ pub(crate) async fn ingest_telemetry(
 ) -> Result<StatusCode, ApiError> {
     let principal = authenticated_principal(&headers, &state).await?;
     for event in &mut payload.events {
-        event.data = event.data.take().map(sanitize_telemetry_value);
+        event.data = event.data.take().map(choruz_activity::sanitize_value);
     }
     let result = state.db.record_telemetry(&principal, &payload.events).await;
     ACTIVITY_BATCHES
@@ -45,90 +45,6 @@ pub(crate) async fn ingest_telemetry(
         .inc();
     result?;
     Ok(StatusCode::NO_CONTENT)
-}
-
-pub(crate) fn sanitize_telemetry_value(value: serde_json::Value) -> serde_json::Value {
-    match value {
-        serde_json::Value::Object(mut object) => {
-            let private_payload = object
-                .get("private")
-                .or_else(|| object.get("is_private"))
-                .and_then(|value| value.as_bool())
-                .unwrap_or(false)
-                || object.get("privacy").and_then(|value| value.as_str()) == Some("private");
-
-            for (key, value) in object.iter_mut() {
-                if telemetry_key_is_sensitive(key)
-                    || (private_payload && telemetry_key_is_private_content(key))
-                {
-                    *value = serde_json::Value::String("[REDACTED]".into());
-                } else {
-                    *value = sanitize_telemetry_value(value.take());
-                }
-            }
-
-            serde_json::Value::Object(object)
-        }
-        serde_json::Value::Array(values) => {
-            serde_json::Value::Array(values.into_iter().map(sanitize_telemetry_value).collect())
-        }
-        serde_json::Value::String(value) => {
-            serde_json::Value::String(redact_sensitive_text(&value))
-        }
-        other => other,
-    }
-}
-
-fn telemetry_key_is_sensitive(key: &str) -> bool {
-    let key = key.to_ascii_lowercase();
-    let compact_key: String = key.chars().filter(|ch| *ch != '_' && *ch != '-').collect();
-    key == "authorization"
-        || key == "cookie"
-        || key == "set-cookie"
-        || matches!(
-            compact_key.as_str(),
-            "authorization"
-                | "cookie"
-                | "setcookie"
-                | "database64"
-                | "attachmentbytes"
-                | "filebytes"
-                | "contentbytes"
-                | "bodybytes"
-                | "rawbytes"
-                | "bytesbase64"
-                | "payloadbase64"
-                | "filename"
-                | "attachmentname"
-                | "path"
-                | "paths"
-                | "authenticationcode"
-                | "authorizationcode"
-                | "devicecode"
-                | "pairingcredential"
-                | "credential"
-        )
-        || compact_key.ends_with("filename")
-        || key.contains("secret")
-        || compact_key.contains("secret")
-        || key.contains("password")
-        || compact_key.contains("password")
-        || key.ends_with("_path")
-        || key.ends_with("_paths")
-        || compact_key.ends_with("path")
-        || compact_key.ends_with("paths")
-        || key.contains("session_token")
-        || compact_key.contains("sessiontoken")
-        || key.ends_with("_token")
-        || key.ends_with("token")
-        || compact_key.ends_with("token")
-}
-
-fn telemetry_key_is_private_content(key: &str) -> bool {
-    matches!(
-        key.to_ascii_lowercase().as_str(),
-        "content" | "message" | "text" | "body" | "preview"
-    )
 }
 
 // ── Events ────────────────────────────────────────────────────────────

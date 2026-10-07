@@ -11,18 +11,24 @@ import { BrowserAutomation } from "./browser-automation";
 import { BrowserWorkflowDraft } from "./browser-workflow";
 
 type Revision = { id: string; analysis: string; instruction: string; disposition: string; created_at: string; validation: { dataset?: DatasetReport | null; evaluation_cases?: { episode_ref: string; input: string; check: unknown | null; reason: string; classification?: { task_type: string; capability: string; structure: string; outcome: string } }[]; review?: string; observed_revision_id?: string; observed_revision_outcome?: string; team?: { config: { order: "serial" | "parallel"; members: { name: string; prompt: string }[] }; review: string } | null } };
-type Learning = { policy: { enabled: boolean; analyst_binding_id: string; active_revision_id: string | null; last_error: string | null; checked_at: string | null; optimization_settings: OptimizationSettings | null; optimization_error: string | null; decision_settings: DecisionSettings | null; active_decision_revision_id: string | null } | null; revisions: (Revision & { validation: DecisionEvidence })[]; task_performance?: TaskPerformance | null };
+type Learning = { policy: { binding_id: string; generation: number; reuse_for_new_tasks: boolean; shared_task_history: boolean; enabled: boolean; analyst_binding_id: string; active_revision_id: string | null; last_error: string | null; checked_at: string | null; optimization_settings: OptimizationSettings | null; optimization_error: string | null; decision_settings: DecisionSettings | null; active_decision_revision_id: string | null } | null; revisions: (Revision & { validation: DecisionEvidence })[]; task_performance?: TaskPerformance | null };
 
-export function ExperienceSettings({ bindingId, sessionToken, onClose }: { bindingId: string; sessionToken: string; onClose: () => void }) {
+export function ExperienceSettings({ bindingId, sessionToken, onClose, onModelChanged }: { bindingId: string; sessionToken: string; onClose: () => void; onModelChanged?: () => void }) {
   const [data, setData] = useState<Learning | null>(null);
   const [bindings, setBindings] = useState<RuntimeBinding[]>([]);
   const [analyst, setAnalyst] = useState("");
+  const [targetModel, setTargetModel] = useState("");
+  const [savedTargetModel, setSavedTargetModel] = useState("");
+  const [analystModel, setAnalystModel] = useState("");
+  const [reuseTasks, setReuseTasks] = useState(true);
+  const [learningBindingId, setLearningBindingId] = useState(bindingId);
   const [enabled, setEnabled] = useState(false);
   const [measured, setMeasured] = useState(false);
   const [optimization, setOptimization] = useState<OptimizationSettings>(emptyOptimization);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  const endpoint = `/v1/runtime/bindings/${encodeURIComponent(bindingId)}/experience`;
+  const endpoint = `/v1/runtime/bindings/${encodeURIComponent(learningBindingId)}/experience`;
+  useEffect(() => { setLearningBindingId(bindingId); }, [bindingId]);
   useEffect(() => {
     const abort = new AbortController();
     void Promise.all([
@@ -31,15 +37,21 @@ export function ExperienceSettings({ bindingId, sessionToken, onClose }: { bindi
     ]).then(([learning, available]) => {
       if (abort.signal.aborted) return;
       setData(learning);
+      if (learning.policy?.binding_id) setLearningBindingId(learning.policy.binding_id);
+      setReuseTasks(learning.policy?.reuse_for_new_tasks ?? !learning.policy);
       setAnalyst(learning.policy?.analyst_binding_id ?? "");
       setEnabled(learning.policy?.enabled ?? false);
       setMeasured(Boolean(learning.policy?.optimization_settings));
       setOptimization(learning.policy?.optimization_settings ?? emptyOptimization());
-      const target = available.find((binding) => binding.id === bindingId);
-      setBindings(available.filter((binding) => binding.id !== bindingId && binding.workspace_id === target?.workspace_id && binding.conversation_type === "direct" && binding.state !== "disabled" && ["claude_terminal", "codex_terminal"].includes(binding.driver_type)));
+      const target = available.find((binding) => binding.id === (learning.policy?.binding_id ?? learningBindingId));
+      setTargetModel(target?.model ?? "");
+      setSavedTargetModel(target?.model ?? "");
+      const selectedAnalyst = available.find((binding) => binding.id === learning.policy?.analyst_binding_id);
+      setAnalystModel(selectedAnalyst?.model ?? "");
+      setBindings(available.filter((binding) => binding.id !== bindingId && binding.id !== target?.id && binding.workspace_id === target?.workspace_id && binding.conversation_type === "direct" && binding.state !== "disabled" && ["claude_terminal", "codex_terminal"].includes(binding.driver_type)));
     }).catch((cause) => { if (!abort.signal.aborted) setError(cause instanceof Error ? cause.message : "Unable to load learning settings"); });
     return () => abort.abort();
-  }, [bindingId, endpoint, sessionToken]);
+  }, [bindingId, learningBindingId, endpoint, sessionToken]);
 
   useEffect(() => {
     const abort = new AbortController();
@@ -96,8 +108,15 @@ export function ExperienceSettings({ bindingId, sessionToken, onClose }: { bindi
     try {
       setData(await apiFetch<Learning>(endpoint, sessionToken, {
         method: "PUT",
-        body: JSON.stringify({ enabled, analyst_binding_id: analyst, optimization_settings: measured ? optimization : null }),
+        body: JSON.stringify({ enabled, analyst_binding_id: analyst, optimization_settings: measured ? optimization : null,
+          reuse_for_new_tasks: reuseTasks,
+          ...(measured ? { target_model: targetModel.trim(), analyst_model: analystModel.trim() } : {}),
+        }),
       }));
+      if (measured && learningBindingId === bindingId && targetModel.trim() !== savedTargetModel) {
+        setSavedTargetModel(targetModel.trim());
+        onModelChanged?.();
+      }
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Unable to save learning settings");
     } finally {
@@ -110,15 +129,29 @@ export function ExperienceSettings({ bindingId, sessionToken, onClose }: { bindi
     {error && <p className="modal-form-error" role="alert">{error}</p>}
     {data && <div className="modal-form">
       <label style={{ flexDirection: "row", alignItems: "center" }}><input style={{ width: "auto" }} type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)} disabled={saving} /> Enable background learning</label>
-      <label>Analysis Agent<select value={analyst} onChange={(event) => setAnalyst(event.target.value)} disabled={saving}>
+      <label style={{ flexDirection: "row", alignItems: "center" }}><input style={{ width: "auto" }} type="checkbox" checked={reuseTasks} onChange={(event) => setReuseTasks(event.target.checked)} disabled={saving} /> Reuse learning for new tasks in this project</label>
+      <p className="field-hint">Matching tasks on your same device and account share this learning history, reviewed guidance, team and selected bounded program. Their work and your feedback join the same background analysis and any enabled fast-decision provider. Other users, projects and accounts remain separate. Browser permissions stay on their original task.</p>
+      {reuseTasks && <p className="field-hint">Turning task reuse on clears prior public-contribution permission. Enable contribution again below only if you want matching task history included.</p>}
+      {learningBindingId !== bindingId && <p role="status">This task shares another Agent’s learning settings. Existing tasks keep their selected models; changing the source model applies to new matching tasks.</p>}
+      <label>Analysis Agent<select value={analyst} onChange={(event) => {
+        setAnalyst(event.target.value);
+        const selected = bindings.find((binding) => binding.id === event.target.value);
+        setAnalystModel(selected?.model ?? "");
+      }} disabled={saving}>
         <option value="">Choose an Agent</option>
         {bindings.map((binding) => <option key={binding.id} value={binding.id}>{binding.agent_name} · {binding.runtime_host_id ? "Remote device" : "This computer"}{binding.harness_account_name ? ` · ${binding.harness_account_name}` : ""}</option>)}
       </select></label>
       {!bindings.length && <p>Create another Claude Code or Codex Agent in this workspace to analyze the work.</p>}
-      <p className="field-hint">Analysis uses the selected Agent’s account in a separate background session and consumes its usage. This Agent’s native transcripts, your shared conversation messages and the workspace’s CLAUDE.md and AGENTS.md are sent to that account’s model provider. Transcripts may include task data and quoted conversation content. Enable only for work you are authorized to share. Learned guidance stays scoped to this Agent; running turns keep their current instructions.</p>
+      <p className="field-hint">Analysis uses the selected Agent’s account in a separate background session and consumes its usage. This Agent’s retained native transcripts, your shared conversation messages and the workspace’s CLAUDE.md and AGENTS.md are sent to that account’s model provider. When task reuse is enabled, matching tasks are included too. Transcripts may include task data and quoted conversation content. Enable only for work you are authorized to share. Running turns keep their current instructions.</p>
       <p className="field-hint">For observed mistakes, a separate web search looks for prompt techniques using short problem categories, without the source transcripts. Search failures are reported rather than treated as missing guidance.</p>
       <p className="field-hint">Team changes require measured search, team-evolution consent and evidence of recurrence after guidance was used. Collaborators add calls on this Agent’s account before execution, increasing usage and waiting time. Clear or restore a revision to change its team. Collaborator proposals are not proof that checks passed.</p>
       <label><input style={{ width: "auto" }} type="checkbox" checked={measured} disabled={saving} onChange={(e) => setMeasured(e.target.checked)} /> Evaluate and optimize against a fixed suite</label>
+      {measured && <fieldset disabled={saving}>
+        <legend>Explicit models for reproducible evaluation</legend>
+        <label>Task model<input value={targetModel} onChange={(event) => setTargetModel(event.target.value)} placeholder="Exact model ID" /></label>
+        <label>Analysis model<input value={analystModel} onChange={(event) => setAnalystModel(event.target.value)} placeholder="Exact model ID" /></label>
+        <p className="field-hint">Select the models on these existing Agents; no replacement task is needed. Changing a model closes its idle CLI session. Stop a running Agent before changing its model.</p>
+      </fieldset>}
       {measured && <OptimizationFields value={optimization} onChange={setOptimization} disabled={saving} />}
       {data.policy?.last_error && <p role="status">{data.policy.last_error}</p>}
       {data.policy?.optimization_error && <p role="status">{data.policy.optimization_error}</p>}
@@ -145,7 +178,7 @@ export function ExperienceSettings({ bindingId, sessionToken, onClose }: { bindi
         {revision.validation.review === "passed" && revision.disposition === "superseded" && <button className="btn-secondary" type="button" disabled={saving} onClick={() => void selectRevision(revision.id)}>Restore this revision</button>}
       </details>)}
       <OptimizationHistory endpoint={endpoint} sessionToken={sessionToken} />
-      {data.policy && <ExperienceCommunity key={endpoint} endpoint={endpoint} sessionToken={sessionToken} />}
+      {data.policy && <ExperienceCommunity key={`${endpoint}:${data.policy.reuse_for_new_tasks}`} endpoint={endpoint} sessionToken={sessionToken} sharedScope={data.policy.reuse_for_new_tasks || data.policy.shared_task_history} busy={saving} />}
     </div>}
   </Modal>;
 }

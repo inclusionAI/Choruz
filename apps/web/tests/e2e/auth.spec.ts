@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { API_BASE, WEB_BASE, CREDENTIALS, login, gotoDashboard } from "../fixtures/auth";
+import { createCompany, deleteCompany, uniqueName } from "../fixtures/api";
 
 test.describe("Authentication", () => {
   /* ---------------------------------------------------------------------- */
@@ -41,6 +42,30 @@ test.describe("Authentication", () => {
     await login(page);
     await gotoDashboard(page);
     await expect(page.locator(".chat-sidebar, .chat-app")).toBeVisible();
+  });
+
+  test("recovers the authenticated workspace after a failed initial bootstrap", async ({ page }) => {
+    const { token, principal } = await login(page);
+    const company = await createCompany(page, token, principal.id, uniqueName("bootstrap-recovery"));
+    let unavailable = true;
+    await page.route("**/api/v1/bootstrap*", (route) => unavailable
+      ? route.fulfill({ status: 503, json: { error: "temporary failure" } })
+      : route.continue());
+    try {
+      await page.goto(`${WEB_BASE}/dashboard`);
+      await expect(page.getByRole("button", { name: "Retry connection", exact: true })).toBeVisible();
+      await expect(page.locator(".chat-sidebar")).toHaveCount(0);
+      unavailable = false;
+      await page.getByRole("button", { name: "Retry connection", exact: true }).click();
+      await expect(page.locator(".chat-sidebar")).toBeVisible();
+      await page.getByRole("button", { name: "Select company", exact: true }).click();
+      await expect(page.locator(".company-dropdown-item-name").filter({ hasText: company.name })).toBeVisible();
+      const recovered = await page.request.get(`${API_BASE}/v1/bootstrap`, { headers: { Authorization: `Bearer ${token}` } });
+      expect((await recovered.json()).principal.id).toBe(principal.id);
+    } finally {
+      await page.unrouteAll({ behavior: "wait" });
+      await deleteCompany(page, token, company.id);
+    }
   });
 
   test("should not expose the retired onboarding route", async ({ page }) => {

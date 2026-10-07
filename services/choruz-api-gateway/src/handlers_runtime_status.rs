@@ -1,3 +1,4 @@
+use choruz_activity::redact_sensitive_text;
 use std::collections::{HashMap, HashSet};
 
 use axum::{
@@ -11,7 +12,7 @@ use choruz_session::{AgentRuntimeStatus, RuntimeStatusCommand};
 use serde::Serialize;
 
 use crate::handlers_runtime::accessible_workspace_ids;
-use crate::{ApiError, ApiState, redact_sensitive_text, require_human_operator};
+use crate::{ApiError, ApiState, require_human_operator};
 
 #[derive(Debug, Serialize)]
 pub(crate) struct RuntimeStatusCommandView {

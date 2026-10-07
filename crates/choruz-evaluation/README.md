@@ -1,6 +1,6 @@
 # Choruz evaluation
 
-Use fixed tasks to evaluate and optimize instructions and team configurations without starting Choruz, PostgreSQL or an agent CLI. This crate depends only on Serde and serde_json. It does not collect traces, run models, schedule work or install the selected configuration.
+Use fixed tasks to evaluate and optimize instructions and team configurations without starting Choruz, PostgreSQL or an agent CLI. It does not collect traces, run models, schedule work or install the selected configuration.
 
 ## Run a search
 
@@ -17,5 +17,7 @@ For proposals, pass only `proposal_input` to the proposer and return its result 
 Serialize `Optimization` together with the unchanged suite to checkpoint a search. Persist an action reservation before dispatch and the result after completion. A pending action after a crash has an uncertain external outcome: the caller must reconcile or fail it, not silently repeat a paid call. Winner selection precedes held-out testing; `can_apply` checks the comparison but grants no authority to install anything.
 
 ## Use outside the platform
+
+`dataset` curates reviewed trace cases, groups related objectives, assigns stable partitions and builds frozen evaluation suites. It also computes dataset versions and quality summaries. Both the platform's database adapter and standalone callers use these rules; callers retain source evidence and persist the returned changes.
 
 Add `choruz-evaluation` as a path dependency pointing to this directory, or to the extracted crate archive. There are no parent-directory assets or dependencies on other workspace crates. The Cargo package contains the source, this contract and the runnable example. No registry publication is implied by the repository version.

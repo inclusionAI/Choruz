@@ -34,6 +34,8 @@ pub struct ExperienceReport<'a> {
 
 #[derive(Debug, Serialize)]
 pub struct ExperiencePolicy {
+    pub reuse_for_new_tasks: bool,
+    pub shared_task_history: bool,
     pub active_decision_revision_id: Option<String>,
     pub decision_settings: Option<choruz_decision::settings::LearningSettings>,
     pub optimization_settings: Option<OptimizationSettings>,
@@ -99,7 +101,7 @@ impl DbService {
         binding_id: &str,
     ) -> Result<Option<ExperienceTurn>, AppError> {
         let client = self.store.connect().await?;
-        let row = client.query_opt("SELECT r.id,r.instruction,CASE WHEN r.validation->'team'->>'review'='passed' THEN r.validation->'team'->'config' END AS team FROM experience_policy p JOIN experience_revision r ON r.id=p.active_revision_id AND r.binding_id=p.binding_id AND r.workspace_id=p.workspace_id WHERE p.binding_id=$1 AND p.workspace_id=$2 AND p.enabled AND r.disposition='active'", &[&binding_id,&workspace_id]).await
+        let row = client.query_opt("SELECT r.id,r.instruction,CASE WHEN r.validation->'team'->>'review'='passed' THEN r.validation->'team'->'config' END AS team FROM experience_policy p JOIN experience_revision r ON r.id=p.active_revision_id AND r.binding_id=p.binding_id AND r.workspace_id=p.workspace_id WHERE p.binding_id=effective_experience_binding($2,$1,NULL) AND p.workspace_id=$2 AND p.enabled AND r.disposition='active'", &[&binding_id,&workspace_id]).await
             .map_err(|e| AppError::Internal(format!("read execution role: {e}")))?;
         row.map(|row| {
             let team: Option<choruz_evaluation::team::Team> = row
@@ -152,9 +154,9 @@ impl DbService {
     /// Agent in the policy's Company. No other private conversation is exported.
     pub async fn experience_feedback(&self, claim: &ExperienceClaim) -> Result<Value, AppError> {
         let client = self.store.connect().await?;
-        let rows = client.query("SELECT c.id,b.agent_principal_id FROM conversation c JOIN conversation_member human ON human.conv_id=c.id AND human.principal_id=$1 AND human.removed_at IS NULL
-            JOIN agent_runtime_bindings b ON b.id=$2 JOIN conversation_member agent ON agent.conv_id=c.id AND agent.principal_id=b.agent_principal_id
-            WHERE c.workspace_id=$3 AND agent.removed_at IS NULL ORDER BY c.id", &[&claim.owner_id, &claim.binding_id, &claim.workspace_id]).await
+        let rows = client.query("SELECT c.id,ARRAY_AGG(DISTINCT b.agent_principal_id) AS agents FROM conversation c JOIN conversation_member human ON human.conv_id=c.id AND human.principal_id=$1 AND human.removed_at IS NULL
+            JOIN agent_runtime_bindings b ON effective_experience_binding($3,b.id,$1)=$2 JOIN conversation_member agent ON agent.conv_id=c.id AND agent.principal_id=b.agent_principal_id
+            WHERE c.workspace_id=$3 AND agent.removed_at IS NULL GROUP BY c.id ORDER BY c.id", &[&claim.owner_id, &claim.binding_id, &claim.workspace_id]).await
             .map_err(|e| AppError::Internal(format!("read feedback scopes: {e}")))?;
         let mut cursors = claim.source_cursor["feedback"]
             .as_object()
@@ -165,18 +167,28 @@ impl DbService {
         let mut more = false;
         for row in rows {
             let id: String = row.get("id");
-            let agent: String = row.get("agent_principal_id");
+            let agents: Vec<String> = row.get("agents");
             let after = cursors.get(&id).and_then(Value::as_u64).unwrap_or(0);
-            let messages = self.list_messages(&id, Some(100), Some(after)).await?;
+            let messages = self
+                .store
+                .list_learning_feedback(
+                    &id,
+                    100,
+                    Some(i64::try_from(after).map_err(|_| {
+                        AppError::Validation("Feedback cursor exceeds its range".into())
+                    })?),
+                    None,
+                )
+                .await?;
             more |= messages.len() == 100;
             for message in messages {
-                if message.sender_id != claim.owner_id && message.sender_id != agent {
-                    cursors.insert(id.clone(), Value::from(message.server_seq));
+                if message.sender_id != claim.owner_id && !agents.contains(&message.sender_id) {
+                    cursors.insert(id.clone(), Value::from(message.seq));
                     continue;
                 }
-                let record = serde_json::json!({"ref":format!("message:{}",message.id),"kind":"conversation_feedback",
+                let record = serde_json::json!({"ref":format!("message:{}",message.event_id),"kind":"conversation_feedback",
                     "conversation":id,"sender":message.sender_id,"owner_feedback":message.sender_id == claim.owner_id,
-                    "content":message.content,"created_at":message.created_at});
+                    "content":message.content,"execution":message.metadata["execution"],"created_at":message.created_at});
                 let size = record.to_string().len();
                 if size > 160 * 1024 {
                     return Err(AppError::Validation(
@@ -188,7 +200,7 @@ impl DbService {
                     break;
                 }
                 bytes += size;
-                cursors.insert(id.clone(), Value::from(message.server_seq));
+                cursors.insert(id.clone(), Value::from(message.seq));
                 records.push(record);
             }
             if more {
@@ -212,13 +224,13 @@ impl DbService {
             return Ok(Vec::new());
         }
         let client = self.store.connect().await?;
-        let rows = client.query("SELECT e.event_id,e.conversation_id,e.seq FROM conversation_events e
+        let rows = client.query("SELECT DISTINCT e.event_id,e.conversation_id,e.seq FROM conversation_events e
             JOIN conversation c ON c.id=e.conversation_id
-            JOIN agent_runtime_bindings b ON b.id=$2
+            JOIN agent_runtime_bindings b ON effective_experience_binding($3,b.id,$1)=$2
             JOIN conversation_member human ON human.conv_id=c.id AND human.principal_id=$1 AND human.removed_at IS NULL
             JOIN conversation_member agent ON agent.conv_id=c.id AND agent.principal_id=b.agent_principal_id AND agent.removed_at IS NULL
             WHERE c.workspace_id=$3 AND e.event_id=ANY($4)
-                AND e.event_type IN ('message','message.created','reply') AND (e.sender_id=$1 OR e.sender_id=b.agent_principal_id)",
+                AND e.event_type IN ('message','message.created','reply','runtime.decision') AND (e.sender_id=$1 OR e.sender_id=b.agent_principal_id)",
             &[&claim.owner_id,&claim.binding_id,&claim.workspace_id,&ids]).await
             .map_err(|e| AppError::Internal(format!("verify historical learning feedback: {e}")))?;
         Ok(rows
@@ -394,8 +406,10 @@ impl DbService {
             let cases: Vec<choruz_evaluation::evaluation::TraceCase> =
                 serde_json::from_value(cases.clone())
                     .map_err(|_| AppError::Validation("Invalid evaluation cases".into()))?;
-            validation["evaluation_cases"] =
-                json!(super::trace_cases::curate_changes(&previous_cases, &cases));
+            validation["evaluation_cases"] = json!(choruz_evaluation::dataset::curate_changes(
+                &previous_cases,
+                &cases
+            ));
         }
         let disposition = if instruction.is_some() {
             "candidate"
@@ -419,10 +433,12 @@ impl DbService {
                 )
                 .await?;
                 if claim.trace_cases {
-                    let dataset = super::trace_cases::dataset_report(&previous_cases, &current);
+                    let dataset =
+                        choruz_evaluation::dataset::dataset_report(&previous_cases, &current);
                     tx.execute("UPDATE experience_revision SET validation=jsonb_set(validation,'{dataset}',$2) WHERE id=$1 AND workspace_id=$3", &[&id,&dataset,&claim.workspace_id]).await.map_err(|e| AppError::Internal(format!("save dataset version: {e}")))?;
                 }
-                let changed = super::trace_cases::changed_case_contexts(&previous_cases, &current);
+                let changed =
+                    choruz_evaluation::dataset::changed_case_contexts(&previous_cases, &current);
                 // Corrections invalidate the evidence, not merely the current
                 // selection. The old program cannot be selected again.
                 tx.execute("UPDATE experience_revision SET validation=jsonb_set(validation,'{program_trial,status}','\"evidence_changed\"'::jsonb) WHERE binding_id=$1 AND workspace_id=$2 AND id<>$4 AND validation->'program_trial'->>'status'='validated' AND EXISTS (SELECT 1 FROM jsonb_array_elements(validation->'program_trial'->'suite'->'cases') c WHERE c->'source'->>'episode_ref'=ANY($3::text[]))", &[&claim.binding_id,&claim.workspace_id,&changed,&id]).await.map_err(|e| AppError::Internal(format!("invalidate program evidence: {e}")))?;
@@ -536,14 +552,18 @@ impl DbService {
         let row = client
             .query_opt(
                 "SELECT binding_id, analyst_binding_id, enabled, generation, active_revision_id,
-                    checked_at, last_error, optimization_settings, optimization_error, decision_settings, active_decision_revision_id FROM experience_policy
-             WHERE binding_id=$1 AND workspace_id=$2 AND owner_id=$3",
+                    checked_at, last_error, optimization_settings, optimization_error, decision_settings, active_decision_revision_id,
+                    COALESCE((SELECT enabled FROM experience_task_profile profile WHERE profile.binding_id=experience_policy.binding_id),FALSE) AS reuse_for_new_tasks,
+                    COALESCE((SELECT shared_task_history FROM experience_task_profile profile WHERE profile.binding_id=experience_policy.binding_id),FALSE) AS shared_task_history FROM experience_policy
+             WHERE binding_id=effective_experience_binding($2,$1,$3) AND workspace_id=$2 AND owner_id=$3",
                 &[&binding_id, &workspace_id, &owner_id],
             )
             .await
             .map_err(|e| AppError::Internal(format!("read learning settings: {e}")))?;
         row.map(|row| {
             Ok(ExperiencePolicy {
+                reuse_for_new_tasks: row.get("reuse_for_new_tasks"),
+                shared_task_history: row.get("shared_task_history"),
                 active_decision_revision_id: row.get("active_decision_revision_id"),
                 decision_settings: row
                     .get::<_, Option<Value>>("decision_settings")
@@ -623,7 +643,7 @@ impl DbService {
         let client = self.store.connect().await?;
         let rows = client.query(
             "SELECT r.* FROM experience_revision r JOIN experience_policy p ON p.binding_id=r.binding_id
-             WHERE r.binding_id=$1 AND r.workspace_id=$2 AND p.workspace_id=$2 AND p.owner_id=$3
+             WHERE r.binding_id=effective_experience_binding($2,$1,$3) AND r.workspace_id=$2 AND p.workspace_id=$2 AND p.owner_id=$3
              ORDER BY r.created_at DESC,r.id DESC LIMIT 50",
             &[&binding_id, &workspace_id, &owner_id],
         ).await.map_err(|e| AppError::Internal(format!("read learning revisions: {e}")))?;

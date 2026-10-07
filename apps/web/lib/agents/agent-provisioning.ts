@@ -38,6 +38,7 @@ export type AgentProvisioningDriverType =
   | "codex_exec"
   | "codex_app_server"
   | "codex_terminal"
+  | "muse_terminal"
   | "pi_terminal"
   | "grok_terminal"
   | "opencode_terminal"
@@ -49,6 +50,7 @@ export type ProvisionRequestBody = {
   driver_type: AgentProvisioningDriverType;
   idempotency_key?: string;
   model?: string;
+  inherit_learning?: boolean;
   runtime_host_id?: string;
   harness_account_id?: string;
   instructions?: string;
@@ -229,13 +231,14 @@ export function validateProvisionRequestBody(
     driverType !== "codex_exec" &&
     driverType !== "codex_app_server" &&
     driverType !== "codex_terminal" &&
+    driverType !== "muse_terminal" &&
     driverType !== "pi_terminal" &&
     driverType !== "grok_terminal" &&
     driverType !== "opencode_terminal" &&
     driverType !== "mathcode_terminal" &&
     driverType !== "webhook_agent"
   ) {
-    return 'Field `driver_type` must be one of "claude_terminal", "codex_exec", "codex_app_server", "codex_terminal", "pi_terminal", "grok_terminal", "opencode_terminal", "mathcode_terminal", or "webhook_agent".';
+    return 'Field `driver_type` must be one of "claude_terminal", "codex_exec", "codex_app_server", "codex_terminal", "muse_terminal", "pi_terminal", "grok_terminal", "opencode_terminal", "mathcode_terminal", or "webhook_agent".';
   }
   if (driverType === "webhook_agent") {
     const webhookError = validateWebhookProvisioningConfig(body.webhook_url, body.webhook_secret);
@@ -328,6 +331,7 @@ export function runtimeDir(): string {
 const DRIVER_FILES: Record<AgentProvisioningDriverType, { template: string; instructions: string }> = {
   claude_terminal: { template: "agent-claude-md-template.md", instructions: "CLAUDE.md" },
   codex_terminal: { template: "agent-codex-md-template.md", instructions: "AGENTS.md" },
+  muse_terminal: { template: "agent-codex-md-template.md", instructions: "AGENTS.md" },
   codex_exec: { template: "agent-codex-md-template.md", instructions: "AGENTS.md" },
   codex_app_server: { template: "agent-codex-md-template.md", instructions: "AGENTS.md" },
   pi_terminal: { template: "agent-codex-md-template.md", instructions: "AGENTS.md" },
@@ -546,12 +550,21 @@ export async function provisionAgent(
         body.instructions ?? "",
         body.driver_type,
       );
-      await fs.writeFile(path.join(workspace.workspacePath, instructionsFile), fullInstructions, "utf-8");
+      let choruzManaged = true;
+      try {
+        await fs.writeFile(path.join(workspace.workspacePath, instructionsFile), fullInstructions, {
+          encoding: "utf-8",
+          flag: workspace.mode === "custom" ? "wx" : "w",
+        });
+      } catch (error) {
+        if (workspace.mode !== "custom" || (error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        choruzManaged = false;
+      }
       return {
         value: {
           workspacePath: workspace.workspacePath,
           file: instructionsFile,
-          choruzManaged: true,
+          choruzManaged,
         },
       };
     });
@@ -929,6 +942,7 @@ function runtimeBindingConfig(
   return {
     is_primary: true,
     original_driver: body.driver_type,
+    ...(body.inherit_learning === true ? { inherit_learning: true } : {}),
     mention_aliases: [agentName],
     ...(body.model?.trim() ? { model: body.model.trim() } : {}),
     ...(body.runtime_host_id?.trim() ? { runtime_host_id: body.runtime_host_id.trim() } : {}),

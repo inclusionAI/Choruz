@@ -39,6 +39,11 @@ type DriverDefinition = {
 
 const DRIVER_DEFINITIONS: DriverDefinition[] = [
   {
+    label: "Muse Code",
+    driverId: "muse_terminal",
+    setupHint: "Install Muse Code or set CHORUZ_MUSE_BINARY to an executable path.",
+  },
+  {
     label: "Claude",
     driverId: "claude_terminal",
     setupHint: "Install the Claude CLI or set CHORUZ_CLAUDE_BINARY to an executable path.",

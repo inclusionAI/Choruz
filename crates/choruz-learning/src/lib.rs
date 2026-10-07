@@ -3,6 +3,15 @@ use choruz_common::AppError;
 use choruz_evaluation::evaluation::{JudgeResult, OutputCheck};
 use serde::{Deserialize, Serialize};
 
+pub mod analysis_workflow;
+#[cfg(feature = "native-cli")]
+pub mod native_cli;
+#[cfg(feature = "native-source")]
+pub mod native_source;
+pub mod source;
+pub mod task_quality;
+pub mod workflow;
+
 /// Executes one isolated conversation. Implementations own credentials, input/output
 /// budgets, cancellation and cleanup. Non-research calls must prohibit tools; research
 /// calls must verify a completed search and reject other tools, not trust model prose.

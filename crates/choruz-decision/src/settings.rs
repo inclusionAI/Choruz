@@ -12,6 +12,8 @@ pub struct LearningSettings {
     pub supervise: bool,
     #[serde(default)]
     pub assist_turns: bool,
+    #[serde(default)]
+    pub complete_turns: bool,
     pub builder_binding_id: Option<String>,
 }
 
@@ -22,6 +24,7 @@ impl LearningSettings {
             || !(self.classify
                 || self.supervise
                 || self.assist_turns
+                || self.complete_turns
                 || self.builder_binding_id.is_some())
             || self
                 .builder_binding_id

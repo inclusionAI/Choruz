@@ -27,7 +27,7 @@ test("local entry creates a group and preserves its first message", async ({ pag
   expect(group).toBeDefined();
   await expect.poll(async () => (await getMessages(page, token, principal.id, group!.id))
     .filter(message => message.content === content).length).toBe(1);
-  await page.reload();
+  await page.goto(`${WEB_BASE}/dashboard?conversationId=${group!.id}`);
   await expect(page.getByRole("heading", { name, level: 1 })).toBeVisible();
   await expect(page.locator(".messages-area").getByText(content, { exact: true })).toBeVisible();
 });

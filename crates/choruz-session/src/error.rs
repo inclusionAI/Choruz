@@ -63,6 +63,7 @@ pub enum SessionError {
 /// Convenience type alias.
 pub type SessionResult<T> = Result<T, SessionError>;
 
+#[cfg(feature = "postgres")]
 impl From<tokio_postgres::Error> for SessionError {
     fn from(e: tokio_postgres::Error) -> Self {
         if let Some(db_err) = e.as_db_error()

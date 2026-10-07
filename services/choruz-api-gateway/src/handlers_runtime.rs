@@ -1,3 +1,4 @@
+use choruz_activity::redact_sensitive_text;
 use std::collections::HashSet;
 
 use axum::{
@@ -18,9 +19,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use serde_json::json;
 
-use crate::{
-    ApiError, ApiState, authenticated_principal, redact_sensitive_text, require_human_operator,
-};
+use crate::{ApiError, ApiState, authenticated_principal, require_human_operator};
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct RuntimeBindingView {
@@ -36,6 +35,8 @@ pub(crate) struct RuntimeBindingView {
     runtime_host_id: Option<String>,
     harness_account_id: Option<String>,
     harness_account_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model: Option<String>,
     workspace_path: String,
     git_worktree_path: Option<String>,
     external_session_id: Option<String>,
@@ -292,6 +293,11 @@ pub(crate) async fn binding_view_for_workspace(
         runtime_host_id,
         harness_account_id,
         harness_account_name,
+        model: binding
+            .config_json
+            .get("model")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
         workspace_path: binding.workspace_path,
         git_worktree_path: binding.git_worktree_path,
         external_session_id: binding.external_session_id,
@@ -410,6 +416,7 @@ fn binding_view_from_row(row: &tokio_postgres::Row) -> Result<RuntimeBindingView
         runtime_host_id: string_config("runtime_host_id"),
         harness_account_id: string_config("harness_account_id"),
         harness_account_name: string_config("harness_account_name"),
+        model: string_config("model"),
         workspace_path: row.get("workspace_path"),
         git_worktree_path: row.get("git_worktree_path"),
         external_session_id: row.get("external_session_id"),
@@ -568,6 +575,11 @@ pub(crate) async fn create_runtime_binding(
         .into_iter()
         .find(|b| !matches!(b.state, BindingState::Disabled))
     {
+        state
+            .db
+            .inherit_task_learning(&conversation.workspace_id, &actor.id, &active.id)
+            .await?;
+        let active = state.runtime.get_binding(&active.id).await?;
         let view = binding_view_for_workspace(&state.db, active, &allowed_ws).await?;
         return Ok((StatusCode::OK, Json(view)));
     }
@@ -673,6 +685,11 @@ pub(crate) async fn create_runtime_binding(
             audit_actor: Some(runtime_audit_actor(&actor)),
         })
         .await?;
+    state
+        .db
+        .inherit_task_learning(&conversation.workspace_id, &actor.id, &binding.id)
+        .await?;
+    let binding = state.runtime.get_binding(&binding.id).await?;
     let view = binding_view_for_workspace(&state.db, binding, &allowed_ws).await?;
     Ok((StatusCode::CREATED, Json(view)))
 }

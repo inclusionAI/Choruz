@@ -8,7 +8,7 @@ Evaluation tasks, team specifications and reflective optimization are pure logic
 
 ## Decision
 
-`crates/choruz-evaluation` owns the existing evaluation, optimization and team modules. Platform consumers depend on it directly; the [community library](2026-09-19-community-library.md) uses its team type for solutions. There are no compatibility re-exports or alternate optimizer. The library depends only on serialization, while platform workers retain leases, authorization, model execution, persistence and activation.
+`crates/choruz-evaluation` owns evaluation, optimization, team and dataset-curation policy. Platform consumers depend on it directly; the [community library](2026-09-19-community-library.md) uses its team type for solutions. There are no compatibility re-exports or alternate optimizer. The library uses serialization and hashing without I/O. The [learning library](2026-09-19-learning-library.md) executes reserved actions through injected adapters; platform workers retain leases, authorization, persistence and activation.
 
 This is a library boundary within the [modular monolith](2026-08-18-modular-monolith.md), not a new service. The [reflective search decision](../feature/2026-09-09-reflective-learning-optimization.md) still owns the algorithm and its fixed evaluation constraints.
 

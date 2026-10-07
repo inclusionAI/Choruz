@@ -16,12 +16,15 @@ Health probes identify themselves as `Choruz-CD/1.0`: Cloudflare can reject Pyth
 
 Device updates are opt-in. One release helper owns manifest validation, atomic link replacement, managed-service restart and health-checked recovery. Writable state is outside release directories. Packaging does not activate code.
 
+The same helper selects CLI-only, local API host, headless stack or full application artifacts. The composition determines both build inputs and required verified contents. Selective archives cannot enter the full managed-service activation or rollback path; a successful hash check alone does not establish that the required services exist.
+
 ## Alternatives considered
 
 - Deploy a fresh build of main after CI: the shipped bytes and revision can diverge from the verified run.
 - Share cloud deployment credentials with every mirror: multiple workflows can overwrite one production Worker independently.
 - Roll back storage with code: a code version is not a safe inverse of a database migration. Schema changes need a separate compatibility review.
 - Restart every paired device automatically: deployment would interrupt user-owned Agent sessions without a maintenance decision.
+- Maintain separate builders for smaller installations: selection would drift from manifest validation and the existing deployment safety boundary.
 
 ## Consequences
 

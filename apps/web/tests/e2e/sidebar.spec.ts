@@ -41,14 +41,16 @@ async function expectRowsInOrder(
   title: SectionTitle,
   orderedNames: string[],
 ) {
-  const rowNames = await sidebarSection(page, title)
-    .locator(".conv-item .conv-name")
-    .allTextContents();
-  const indices = orderedNames.map((name) =>
-    rowNames.findIndex((text) => text.includes(name)),
-  );
-  expect(indices, `${title} rows: ${rowNames.join(", ")}`).not.toContain(-1);
-  expect(indices).toEqual([...indices].sort((a, b) => a - b));
+  await expect(async () => {
+    const rowNames = await sidebarSection(page, title)
+      .locator(".conv-item .conv-name")
+      .allTextContents();
+    const indices = orderedNames.map((name) =>
+      rowNames.findIndex((text) => text.includes(name)),
+    );
+    expect(indices, `${title} rows: ${rowNames.join(", ")}`).not.toContain(-1);
+    expect(indices).toEqual([...indices].sort((a, b) => a - b));
+  }).toPass();
 }
 
 async function selectCompany(page: Page, name: string) {
@@ -108,6 +110,8 @@ async function seedSidebarConversationsForSession(
   const group = await createGroup(page, token, principal.id, groupName, [], workspaceId);
 
   await gotoDashboard(page, { expandSidebarSections: false });
+  await page.getByRole("button", { name: "Actions menu", exact: true }).click();
+  await page.getByRole("button", { name: "Background collaboration", exact: true }).click();
   await expect(sectionHeader(page, SECTION_TITLES.direct)).toBeVisible({
     timeout: 15_000,
   });
@@ -268,12 +272,12 @@ test.describe("Sidebar layout", () => {
     });
   });
 
-  test("should show conversation items with avatars", async ({ page }) => {
+  test("shows compact task titles without avatars", async ({ page }) => {
     const { directName } = await seedSidebarConversations(page);
     await expandSection(page, SECTION_TITLES.direct);
     const seededItem = rowInSection(page, SECTION_TITLES.direct, directName);
     await expect(seededItem).toBeVisible();
-    await expect(seededItem.locator(".avatar")).toBeVisible();
+    await expect(seededItem.locator(".avatar")).not.toBeVisible();
   });
 
   /* ---------------------------------------------------------------------- */
@@ -327,7 +331,7 @@ test.describe("Sidebar layout", () => {
     );
     await seedSidebarConversationsForSession(page, session, company.id);
     await selectCompany(page, company.name);
-    await expectSectionExpanded(page, SECTION_TITLES.direct, false);
+    await expectSectionExpanded(page, SECTION_TITLES.direct, true);
     await expectSectionExpanded(page, SECTION_TITLES.group, false);
     const actionsBtn = page.locator('[aria-label="Actions menu"]');
     await actionsBtn.click();
@@ -385,12 +389,12 @@ test.describe("Sidebar chat sections and pins", () => {
     }
   });
 
-  test("renders Direct and Group sections collapsed by default and expands search matches", async ({
+  test("keeps tasks expanded and expands background group search matches", async ({
     page,
   }) => {
     const { directName, groupName } = await seedSidebarConversations(page);
 
-    await expectSectionExpanded(page, SECTION_TITLES.direct, false);
+    await expectSectionExpanded(page, SECTION_TITLES.direct, true);
     await expectSectionExpanded(page, SECTION_TITLES.group, false);
 
     await expandSection(page, SECTION_TITLES.direct);
@@ -457,6 +461,9 @@ test.describe("Sidebar chat sections and pins", () => {
     await expect(page.locator(".chat-sidebar")).toBeVisible({ timeout: 15_000 });
     await expectSectionExpanded(page, SECTION_TITLES.pinned, true);
     await expect(rowInSection(page, SECTION_TITLES.pinned, directName)).toBeVisible();
+    await expect(rowInSection(page, SECTION_TITLES.pinned, groupName)).toHaveCount(0);
+    await page.getByRole("button", { name: "Actions menu", exact: true }).click();
+    await page.getByRole("button", { name: "Background collaboration", exact: true }).click();
     await expect(rowInSection(page, SECTION_TITLES.pinned, groupName)).toBeVisible();
     await expectRowsInOrder(page, SECTION_TITLES.pinned, [groupName, directName]);
 

@@ -37,7 +37,8 @@ fn home() -> Result<PathBuf, AppError> {
         .ok_or_else(|| AppError::Validation("Device HOME is not configured".into()))
 }
 
-pub(crate) fn binary(tool: Tool) -> PathBuf {
+/// Resolve a device-local installation, falling back to the executable name on PATH.
+pub fn binary(tool: Tool) -> PathBuf {
     if let Ok(home) = home() {
         let local = home.join(".local/bin").join(tool.binary());
         if local.is_file() {
@@ -140,7 +141,10 @@ async fn run(program: PathBuf, args: &[&str], seconds: u64) -> Result<Vec<u8>, S
     run_command(program, args, seconds, false).await
 }
 
-pub(crate) async fn run_command(
+/// Run a trusted device command with a deadline and collect its output.
+/// The caller authorizes the command; this is not a sandbox or a remote input API.
+/// Dropping the future terminates the contained process tree.
+pub async fn run_command(
     program: PathBuf,
     args: &[&str],
     seconds: u64,
@@ -168,9 +172,9 @@ pub(crate) async fn run_command(
         .stderr(std::process::Stdio::piped())
         .spawn()
         .map_err(|error| format!("Unable to run tool: {error}"))?;
-    let _container = child
-        .id()
-        .map(|id| crate::ProcessContainer::new(format!("computer-use-{id}"), id));
+    let _container = child.id().map(|id| {
+        choruz_agent_runtime::process::ProcessContainer::new(format!("computer-use-{id}"), id)
+    });
     let output = tokio::time::timeout(Duration::from_secs(seconds), child.wait_with_output())
         .await
         .map_err(|_| "Operation timed out; check the device network and retry".to_string())?
@@ -322,7 +326,7 @@ esac
 "#).unwrap();
                 fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
             }
-            let result = std::process::Command::new(std::env::current_exe().unwrap()).args(["--exact", "computer_use::tests::device_setup_persists_selection_and_installs_skills_without_touching_another_home", "--nocapture"]).env("HOME", root.path()).env("CHORUZ_TEST_TOOL_HOME", "1").output().unwrap();
+            let result = std::process::Command::new(std::env::current_exe().unwrap()).args(["--exact", "tests::device_setup_persists_selection_and_installs_skills_without_touching_another_home", "--nocapture"]).env("HOME", root.path()).env("CHORUZ_TEST_TOOL_HOME", "1").output().unwrap();
             assert!(
                 result.status.success(),
                 "{} {}",
@@ -336,27 +340,12 @@ esac
             );
             return;
         }
-        let result = crate::execute(crate::HostRequest::ComputerUse {
-            tool: Some(Tool::Browser),
-            enabled: Some(false),
-        })
-        .await
-        .unwrap();
+        let result = manage(Some(Tool::Browser), Some(false)).await.unwrap();
         assert_eq!(result["tools"][0]["enabled"], false);
-        let result = crate::execute(crate::HostRequest::ComputerUse {
-            tool: None,
-            enabled: None,
-        })
-        .await
-        .unwrap();
+        let result = manage(None, None).await.unwrap();
         assert_eq!(result["tools"][0]["enabled"], false);
         assert_eq!(result["tools"][0]["status"], "needs_attention");
-        crate::execute(crate::HostRequest::ComputerUse {
-            tool: Some(Tool::Browser),
-            enabled: Some(true),
-        })
-        .await
-        .unwrap();
+        manage(Some(Tool::Browser), Some(true)).await.unwrap();
         tokio::time::timeout(Duration::from_secs(5), async {
             loop {
                 if JOBS.lock().await.get(&Tool::Browser) != Some(&None) {
@@ -367,23 +356,13 @@ esac
         })
         .await
         .unwrap();
-        let result = crate::execute(crate::HostRequest::ComputerUse {
-            tool: None,
-            enabled: None,
-        })
-        .await
-        .unwrap();
+        let result = manage(None, None).await.unwrap();
         assert_eq!(result["tools"][0]["enabled"], true);
         assert_eq!(
             result["tools"][0]["checks"][0]["hint"],
             "Connect the browser extension"
         );
-        crate::execute(crate::HostRequest::ComputerUse {
-            tool: Some(Tool::Desktop),
-            enabled: Some(true),
-        })
-        .await
-        .unwrap();
+        manage(Some(Tool::Desktop), Some(true)).await.unwrap();
         tokio::time::timeout(Duration::from_secs(5), async {
             while JOBS.lock().await.get(&Tool::Desktop) == Some(&None) {
                 tokio::task::yield_now().await;

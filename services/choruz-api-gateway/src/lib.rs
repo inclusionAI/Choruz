@@ -1,5 +1,7 @@
+mod account_retirement;
 mod attachments;
 mod auth;
+mod background;
 mod behavior_worker;
 mod browser_completion_worker;
 pub mod config;
@@ -51,7 +53,6 @@ mod remote_control_executor;
 mod remote_control_pairing_host;
 mod state;
 mod sync_wakeup;
-mod task_quality;
 mod webhook;
 
 pub use config::Config;
@@ -60,8 +61,8 @@ pub use state::ApiState;
 
 // Re-export items used by handler modules and tests
 pub(crate) use auth::{
-    ApiError, authenticated_principal, bearer_token_value, redact_sensitive_text, require_actor,
-    require_human_operator, require_self,
+    ApiError, authenticated_principal, bearer_token_value, require_actor, require_human_operator,
+    require_self,
 };
 pub(crate) use db_projection::{db_persist, persist_principal_to_db};
 pub(crate) use webhook::{WebhookFlushResponse, flush_webhooks, flush_webhooks_all};
@@ -183,6 +184,10 @@ pub fn router_with_runtime(
                 .patch(handlers_experience::select),
         )
         .route(
+            "/v1/runtime/bindings/{binding_id}/experience/prepare",
+            post(handlers_experience::prepare),
+        )
+        .route(
             "/v1/runtime/bindings/{binding_id}/experience/community",
             get(handlers_experience::community).put(handlers_experience::configure_community),
         )
@@ -298,6 +303,10 @@ pub fn router_with_runtime(
         .route(
             "/v1/companies/{company_id}/harness-accounts/{account_id}/probe",
             post(handlers_harness_logins::probe_harness_account),
+        )
+        .route(
+            "/v1/companies/{company_id}/harness-accounts/{account_id}",
+            delete(account_retirement::remove),
         )
         .route(
             "/v1/drivers/models",
@@ -517,6 +526,7 @@ pub fn router_with_runtime(
             let online = online_groups::OnlineHub::spawn(app.clone(), db.clone());
             let mut state = ApiState {
                 experience_worker: None,
+                account_retirement_worker: None,
                 app,
                 db,
                 runtime,
@@ -531,7 +541,11 @@ pub fn router_with_runtime(
                 online,
             };
             remote_control_bridge::spawn(state.clone(), bridge_refreshes);
-            state.experience_worker = Some(experience_worker::spawn(state.clone()));
+            let background_state = state.clone();
+            state.experience_worker = Some(experience_worker::spawn(background_state.clone()));
+            state.account_retirement_worker = Some(background::spawn(async move {
+                account_retirement::run(&background_state).await;
+            }));
             state
         })
         .layer(axum::middleware::from_fn(

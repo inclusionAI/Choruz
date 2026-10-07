@@ -6,6 +6,230 @@ use choruz_application::db_service::ExperienceReport;
 mod browser_handoff;
 
 #[tokio::test]
+async fn new_tasks_share_owned_learning_without_copying_policy_state() {
+    let database = TestDatabase::create().await;
+    let db =
+        choruz_application::DbService::new(choruz_store::EventStore::new(&database.database_url));
+    let owner = db
+        .create_human_user("task-profile-owner", "password-123")
+        .await
+        .unwrap();
+    let outsider = db
+        .create_human_user("task-profile-other", "password-123")
+        .await
+        .unwrap();
+    let root = learning_binding(&database, &owner).await;
+    let analyst = learning_binding(&database, &owner).await;
+    let runtime = RuntimeStore::new(&database.database_url);
+    let client = runtime.connect().await.unwrap();
+    client.execute("UPDATE agent_runtime_bindings SET config_json='{\"model\":\"fixture-model\"}'::jsonb WHERE id=$1", &[&root]).await.unwrap();
+    client.execute("UPDATE agent_runtime_bindings SET config_json='{\"binary_path\":\"/nonexistent-test-analyst\"}'::jsonb WHERE id=$1", &[&analyst]).await.unwrap();
+    db.configure_experience(&owner.workspace_id, &owner.id, &root, &analyst, true, None)
+        .await
+        .unwrap();
+    let claim = db.claim_experience().await.unwrap().unwrap();
+    let validation = json!({"review":"passed","team":{"review":"passed","config":{"order":"parallel","members":[{"name":"reviewer","prompt":"Check the result."}]}},
+        "program_trial":{"status":"validated","resolved_model":"evaluated-decision-model","program":{"name":"Ticket route","applicability":"Billing tickets","minimum_confidence":0.9,
+            "questions":{"result":{"type":"choice","instructions":"Select queue","criteria":{"billing":"Billing issue","abstain":"Unknown"}}},"result_question":"result","outputs":{"billing":"billing_queue"}}}});
+    // Replace only the prior model-generated outcome. Inheritance, authorization,
+    // runtime creation and policy selection below use their production owners.
+    let revision = db
+        .save_experience_candidate(
+            &claim,
+            ExperienceReport {
+                digest: "task-profile",
+                references: &json!([]),
+                analysis: "Reviewed result",
+                instruction: Some("Verify before reporting completion."),
+                validation: &validation,
+                checkpoint: None,
+                activate: true,
+            },
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    db.release_experience(&claim, None).await.unwrap();
+    client.execute("UPDATE experience_policy SET community_settings='{\"search\":false,\"automatic_trial\":false,\"contribute\":true}'::jsonb WHERE binding_id=$1", &[&root]).await.unwrap();
+    client.execute("INSERT INTO experience_problem(binding_id,workspace_id,problem_key,description) VALUES($1,$2,'privacy','Consent scope fixture')", &[&root,&owner.workspace_id]).await.unwrap();
+    for state in ["local", "publishing", "pending", "uncertain"] {
+        client.execute("INSERT INTO experience_behavior_event(id,workspace_id,binding_id,problem_key,source_key,episode_ref,evidence_kind,source_references,public_payload,privacy_review,publication_state,lease_token,lease_until) VALUES($1,$2,$3,'privacy',$1,$1,'encountered','[]','{}','{\"accepted\":true}',$4,$4,NOW()+INTERVAL '1 day')", &[&choruz_common::new_id(),&owner.workspace_id,&root,&state]).await.unwrap();
+    }
+    client.execute("UPDATE experience_policy SET next_check_at=NOW()+INTERVAL '1 day',decision_settings=$2,active_decision_revision_id=$3 WHERE binding_id=$1", &[&root,&json!({"model":"evaluated-decision-model","minimum_confidence":0.9,"classify":false,"supervise":false,"assist_turns":true,"builder_binding_id":null}),&revision]).await.unwrap();
+    let app = router_with_db(choruz_application::ChatApp::new(), &database.database_url);
+    let (status, _) = api_json_payload_request(
+        app.clone(),
+        &owner,
+        Method::PUT,
+        format!("/v1/runtime/bindings/{root}/experience"),
+        json!({"enabled":true,"analyst_binding_id":analyst,"reuse_for_new_tasks":true}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, permissions) = api_json_request(
+        app.clone(),
+        &owner,
+        Method::GET,
+        format!("/v1/runtime/bindings/{root}/experience/community"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        permissions["settings"]["contribute"], false,
+        "root-only publication consent must not expand to shared tasks"
+    );
+    for row in client.query("SELECT publication_state,lease_token FROM experience_behavior_event WHERE binding_id=$1", &[&root]).await.unwrap() {
+        let state: String=row.get("publication_state");
+        let lease: Option<String>=row.get("lease_token");
+        assert_eq!(lease.is_none(),state=="local","only undispatched work may be revoked");
+    }
+    client
+        .execute(
+            "UPDATE experience_policy SET next_check_at=NOW()+INTERVAL '1 day' WHERE binding_id=$1",
+            &[&root],
+        )
+        .await
+        .unwrap();
+    let child = runtime
+        .get_binding(&learning_binding(&database, &owner).await)
+        .await
+        .unwrap();
+    client
+        .execute(
+            "DELETE FROM agent_runtime_bindings WHERE id=$1",
+            &[&child.id],
+        )
+        .await
+        .unwrap();
+    let payload = json!({"conversation_id":child.conversation_id,"agent_principal_id":child.agent_principal_id,"driver_type":"claude_terminal","workspace_path":child.workspace_path,"config_json":{"inherit_learning":true}});
+    let (status, created) = api_json_payload_request(
+        app.clone(),
+        &owner,
+        Method::POST,
+        "/v1/runtime/bindings".into(),
+        payload.clone(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let id = created["id"].as_str().unwrap();
+    assert_eq!(created["model"], "fixture-model");
+    let turn = db
+        .experience_for_turn(&owner.workspace_id, id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(turn.revision_id, revision);
+    assert_eq!(turn.instruction, "Verify before reporting completion.");
+    assert_eq!(turn.team.unwrap().members[0].name, "reviewer");
+    assert_eq!(
+        db.decision_for_turn(&owner.workspace_id, id)
+            .await
+            .unwrap()
+            .unwrap()
+            .revision_id,
+        revision
+    );
+    client.execute("UPDATE experience_revision SET validation=jsonb_set(validation,'{program_trial,workflow}','{\"name\":\"original browser owner\"}'::jsonb) WHERE id=$1", &[&revision]).await.unwrap();
+    assert!(
+        db.decision_for_turn(&owner.workspace_id, id)
+            .await
+            .unwrap()
+            .is_none(),
+        "a browser workflow must not become a shared finite turn program"
+    );
+    let browser: Value = client
+        .query_one(
+            "SELECT validation->'program_trial'->'workflow' FROM experience_revision WHERE id=$1",
+            &[&revision],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(
+        browser["name"], "original browser owner",
+        "browser workflow ownership remains intact"
+    );
+    client.execute("UPDATE experience_revision SET validation=jsonb_set(validation,'{program_trial}',(validation->'program_trial')-'workflow') WHERE id=$1", &[&revision]).await.unwrap();
+    assert_eq!(
+        db.experience_policy(&owner.workspace_id, &owner.id, id)
+            .await
+            .unwrap()
+            .unwrap()
+            .binding_id,
+        root
+    );
+    let copies: i64 = client
+        .query_one(
+            "SELECT COUNT(*) FROM experience_policy WHERE binding_id=$1",
+            &[&id],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(
+        copies, 0,
+        "tasks reference one learning owner, not copied histories"
+    );
+    assert!(
+        db.learning_source_bindings(&owner.workspace_id, &root)
+            .await
+            .unwrap()
+            .contains(&id.to_owned())
+    );
+    let message = choruz_common::new_id();
+    client.execute("INSERT INTO conversation_events(conversation_id,seq,event_id,event_type,sender_id,content) VALUES($1,1,$2,'message',$3,'Check this task result too.')", &[&child.conversation_id,&message,&owner.id]).await.unwrap();
+    let feedback = db.experience_feedback(&claim).await.unwrap();
+    assert!(
+        feedback["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|record| record["ref"] == format!("message:{message}")),
+        "new-task feedback must reach the same background learner"
+    );
+    let (status, retry) = api_json_payload_request(
+        app.clone(),
+        &owner,
+        Method::POST,
+        "/v1/runtime/bindings".into(),
+        payload,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(retry["id"], id);
+    db.select_experience_revision(&owner.workspace_id, &owner.id, &root, None, None)
+        .await
+        .unwrap();
+    assert!(
+        db.experience_for_turn(&owner.workspace_id, id)
+            .await
+            .unwrap()
+            .is_none(),
+        "source rollback must reach existing tasks"
+    );
+    let other = learning_binding(&database, &owner).await;
+    client.execute("UPDATE agent_runtime_bindings SET config_json='{\"inherit_learning\":true}'::jsonb WHERE id=$1", &[&other]).await.unwrap();
+    db.inherit_task_learning(&owner.workspace_id, &outsider.id, &other)
+        .await
+        .unwrap();
+    assert_eq!(
+        db.learning_binding_id(&owner.workspace_id, &other, None)
+            .await
+            .unwrap(),
+        other,
+        "another user cannot inherit this profile"
+    );
+    client.execute("UPDATE agent_runtime_bindings SET config_json=config_json||'{\"runtime_host_id\":\"other-device\"}'::jsonb WHERE id=$1", &[&id]).await.unwrap();
+    assert!(
+        db.experience_policy(&owner.workspace_id, &owner.id, id)
+            .await
+            .unwrap()
+            .is_none(),
+        "changing device detaches shared learning"
+    );
+}
+
+#[tokio::test]
 async fn browser_workflow_admission_is_scoped_durable_and_never_replays() {
     let database = TestDatabase::create().await;
     let db =
@@ -383,6 +607,7 @@ async fn decision_worker_builds_on_device_then_evaluates_selects_and_executes() 
         classify: true,
         supervise: true,
         assist_turns: false,
+        complete_turns: false,
         builder_binding_id: Some(builder.clone()),
     };
     db.configure_decisions(&owner.workspace_id, &owner.id, &target, Some(&settings))
@@ -395,6 +620,7 @@ async fn decision_worker_builds_on_device_then_evaluates_selects_and_executes() 
     let (link, mut incoming) = links.decision_fixture("decision-device");
     let state = crate::ApiState {
         experience_worker: None,
+        account_retirement_worker: None,
         app: app.clone(),
         db: db.clone(),
         runtime,
@@ -410,8 +636,7 @@ async fn decision_worker_builds_on_device_then_evaluates_selects_and_executes() 
     };
     let cases: Vec<choruz_evaluation::evaluation::TraceCase> = (0..30).map(|i| serde_json::from_value(json!({"episode_ref":format!("objective-{i}"),"evidence":[format!("source-{i}")],"input":format!("Billing ticket number {i}"),"check":{"type":"judge","expected":"billing_queue","rubric":"Select the billing queue for billing tickets."},"reason":"Confirmed by user"})).unwrap()).collect();
     let suite =
-        choruz_application::db_service::measured_trace_suite(&cases, 24, &Default::default())
-            .unwrap();
+        choruz_evaluation::dataset::measured_trace_suite(&cases, 24, &Default::default()).unwrap();
     let expected_training: Vec<_> = suite
         .cases
         .iter()
@@ -540,6 +765,16 @@ async fn decision_worker_builds_on_device_then_evaluates_selects_and_executes() 
             suite.cases.len()
         );
         assert_eq!(trial["resolved_model"], "fixture-version");
+        let calls_before_repeat = calls.load(std::sync::atomic::Ordering::SeqCst);
+        let duplicate =
+            crate::decision_worker::build(&state, &claim, &check, &host, &cases, &[], &[])
+                .await
+                .unwrap();
+        assert_eq!(duplicate["trial_state"], "completed");
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            calls_before_repeat
+        );
         assert_eq!(
             judged.load(std::sync::atomic::Ordering::SeqCst),
             suite.cases.len()
@@ -709,21 +944,69 @@ async fn decision_trials_are_reserved_once_and_selection_requires_current_consen
         classify: false,
         supervise: false,
         assist_turns: true,
+        complete_turns: false,
         builder_binding_id: None,
     };
     db.configure_decisions(&owner.workspace_id, &owner.id, &target, Some(&settings))
         .await
         .unwrap();
     let claim = db.claim_experience().await.unwrap().unwrap();
-    assert!(
-        db.reserve_decision_program_trial(&claim, "corpus-1")
+    use choruz_application::db_service::ProgramTrialAdmission;
+    let context =
+        json!({"model":"test-model","builder":"first-builder","builder_model":"native-model"});
+    let ProgramTrialAdmission::Reserved(key) = db
+        .reserve_decision_program_trial(&claim, "corpus-1", &context)
+        .await
+        .unwrap()
+    else {
+        panic!("new configuration must reserve");
+    };
+    assert_eq!(
+        db.reserve_decision_program_trial(&claim, "corpus-1", &context)
             .await
-            .unwrap()
+            .unwrap(),
+        ProgramTrialAdmission::Existing("reserved".into())
     );
-    assert!(
-        !db.reserve_decision_program_trial(&claim, "corpus-1")
+    db.update_decision_program_trial(&claim, "corpus-1", &key, "generating", None)
+        .await
+        .unwrap();
+    db.update_decision_program_trial(
+        &claim,
+        "corpus-1",
+        &key,
+        "uncertain",
+        Some(&json!({"status":"generation_failed"})),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        db.reserve_decision_program_trial(&claim, "corpus-1", &context)
             .await
-            .unwrap()
+            .unwrap(),
+        ProgramTrialAdmission::Existing("uncertain".into()),
+        "unknown external outcome must not auto-retry"
+    );
+    for next in [
+        json!({"model":"new-model","builder":"first-builder","builder_model":"native-model"}),
+        json!({"model":"new-model","builder":"second-builder","builder_model":"native-model"}),
+        json!({"model":"new-model","builder":"second-builder","builder_model":"updated-native-model"}),
+    ] {
+        assert!(
+            matches!(
+                db.reserve_decision_program_trial(&claim, "corpus-1", &next)
+                    .await
+                    .unwrap(),
+                ProgramTrialAdmission::Reserved(_)
+            ),
+            "changed execution configuration must get its own attempt"
+        );
+    }
+    assert_eq!(
+        db.reserve_decision_program_trial(&claim, "corpus-1", &json!({"model":"another-model"}))
+            .await
+            .unwrap(),
+        ProgramTrialAdmission::BudgetExhausted,
+        "new keys cannot create an unlimited holdout budget"
     );
     let objective = json!({"episode_ref":"ticket-1","evidence":["ticket-1"],"input":"Refund request","check":{"type":"exact","expected":"billing_queue"},"reason":"Confirmed result"});
     let validation = json!({"evaluation_cases":[objective.clone()],"program_trial":{"suite":{"cases":[{"source":objective.clone()}]},"status":"validated","model":"test-model","resolved_model":"test-model-version","program":{
@@ -809,6 +1092,93 @@ async fn decision_trials_are_reserved_once_and_selection_requires_current_consen
             .unwrap();
         assert_eq!(evidence.status, expected);
     }
+    let mut automatic = settings.clone();
+    automatic.assist_turns = false;
+    automatic.complete_turns = true;
+    db.configure_decisions(&owner.workspace_id, &owner.id, &target, Some(&automatic))
+        .await
+        .unwrap();
+    let claim = db.claim_experience().await.unwrap().unwrap();
+    db.select_decision_program(&owner.workspace_id, &owner.id, &target, Some(&revision))
+        .await
+        .unwrap();
+    let completion = db
+        .assist_turn(&owner.workspace_id, &target, "Refund request", |_| async {
+            Ok(choruz_decision::programs::ProgramResult {
+                output: Some("billing_queue".into()),
+                decision: choruz_decision::Response {
+                    model: "test-model-version".into(),
+                    answers: Default::default(),
+                    usage: choruz_decision::Usage {
+                        input_tokens: 10,
+                        output_tokens: 1,
+                    },
+                },
+            })
+        })
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        completion.completion(),
+        Some("billing_queue"),
+        "completion requires separate current consent and an evaluated model"
+    );
+    for _ in 0..2 {
+        db.record_decision_completion(&target, "finite-submission", "Refund request", &completion)
+            .await
+            .unwrap();
+    }
+    let feedback = db.experience_feedback(&claim).await.unwrap();
+    let records: Vec<_> = feedback["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|record| record["execution"]["source"] == "decision_program")
+        .collect();
+    assert_eq!(
+        records.len(),
+        1,
+        "repeated delivery must not duplicate learning evidence"
+    );
+    assert_eq!(records[0]["content"], "billing_queue");
+    assert_eq!(records[0]["execution"]["request"], "Refund request");
+    assert_eq!(
+        records[0]["execution"]["decision"]["evidence"]["model"],
+        "test-model-version"
+    );
+    let binding = RuntimeStore::new(&database.database_url)
+        .get_binding(&target)
+        .await
+        .unwrap();
+    assert!(
+        db.list_messages(&binding.conversation_id, Some(100), None)
+            .await
+            .unwrap()
+            .is_empty(),
+        "structured finite evidence must not create a second chat bubble"
+    );
+    let rejected = db
+        .assist_turn(&owner.workspace_id, &target, "Refund request", |_| async {
+            Ok(choruz_decision::programs::ProgramResult {
+                output: Some("An unevaluated tool action".into()),
+                decision: choruz_decision::Response {
+                    model: "test-model-version".into(),
+                    answers: Default::default(),
+                    usage: choruz_decision::Usage {
+                        input_tokens: 10,
+                        output_tokens: 1,
+                    },
+                },
+            })
+        })
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        rejected.status, "unavailable",
+        "a matching model cannot introduce an output outside the evaluated program"
+    );
     let revoked = db
         .assist_turn(
             &owner.workspace_id,
@@ -889,10 +1259,11 @@ async fn decision_trials_are_reserved_once_and_selection_requires_current_consen
             .await
             .is_err()
     );
-    assert!(
-        !db.reserve_decision_program_trial(&claim, "corpus-2")
+    assert_eq!(
+        db.reserve_decision_program_trial(&claim, "corpus-2", &context)
             .await
             .unwrap(),
+        ProgramTrialAdmission::ClaimExpired,
         "revoked claim must not start another paid trial"
     );
     assert!(
@@ -1370,8 +1741,7 @@ async fn corrected_trace_answer_cancels_pending_run_without_rewriting_its_snapsh
         .await
         .unwrap();
     let suite =
-        choruz_application::db_service::measured_trace_suite(&corpus, 16, &Default::default())
-            .unwrap();
+        choruz_evaluation::dataset::measured_trace_suite(&corpus, 16, &Default::default()).unwrap();
     let id = db
         .queue_experience_evaluation(
             &owner.workspace_id,
@@ -1463,7 +1833,7 @@ async fn corrected_trace_answer_cancels_pending_run_without_rewriting_its_snapsh
         .await
         .unwrap();
     let grouped =
-        choruz_application::db_service::measured_trace_suite(&corpus, 256, &Default::default())
+        choruz_evaluation::dataset::measured_trace_suite(&corpus, 256, &Default::default())
             .unwrap();
     assert!(
         grouped
@@ -1873,7 +2243,15 @@ async fn automatic_optimization_requires_holdout_and_content_review_then_support
         let target = learning_binding(&database, &owner).await;
         let analyst = learning_binding(&database, &owner).await;
         for binding in [&target, &analyst] {
-            client.execute("UPDATE agent_runtime_bindings SET driver_type='codex_terminal',config_json=$2 WHERE id=$1", &[binding,&json!({"binary_path":binary,"model":if team_search {"team-evaluation-fixture"} else {"evaluation-fixture"}})]).await.unwrap();
+            let mut config = json!({"binary_path":binary});
+            if expected_status != "applied" || team_search {
+                config["model"] = json!(if team_search {
+                    "team-evaluation-fixture"
+                } else {
+                    "evaluation-fixture"
+                });
+            }
+            client.execute("UPDATE agent_runtime_bindings SET driver_type='codex_terminal',config_json=$2 WHERE id=$1", &[binding,&config]).await.unwrap();
         }
         let endpoint = format!("/v1/runtime/bindings/{target}/experience");
         let settings = json!({"suite":{"name":"Measured formatting","cases":[
@@ -1886,11 +2264,27 @@ async fn automatic_optimization_requires_holdout_and_content_review_then_support
             &owner,
             Method::PUT,
             endpoint.clone(),
-            json!({"enabled":true,"analyst_binding_id":analyst,"optimization_settings":settings}),
+            json!({"enabled":true,"analyst_binding_id":analyst,"optimization_settings":settings,
+                "target_model":if team_search {"team-evaluation-fixture"} else {"evaluation-fixture"},
+                "analyst_model":if team_search {"team-evaluation-fixture"} else {"evaluation-fixture"}}),
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{configured}");
         assert_eq!(configured["policy"]["optimization_settings"], settings);
+        for binding in [&target, &analyst] {
+            let current = RuntimeStore::new(&database.database_url)
+                .get_binding(binding)
+                .await
+                .unwrap();
+            assert_eq!(
+                current.config_json["model"],
+                if team_search {
+                    "team-evaluation-fixture"
+                } else {
+                    "evaluation-fixture"
+                }
+            );
+        }
         // Seed storage is the analysis boundary; evaluation, review and selection
         // use the real asynchronous worker, HTTP settings and native transport.
         client.execute("UPDATE experience_policy SET next_check_at=NOW()+INTERVAL '1 day',lease_token=NULL,lease_until=NULL WHERE binding_id=$1", &[&target]).await.unwrap();
@@ -3380,6 +3774,33 @@ async fn experience_settings_scope_and_stale_analysis_activation() {
     assert_eq!(active.revision_id, revision);
     assert_eq!(active.instruction, "Explain results briefly.");
     assert!(active.team.is_none());
+    let app = router_with_db(choruz_application::ChatApp::new(), &database.database_url);
+    let prepare_endpoint = format!("/v1/runtime/bindings/{target}/experience/prepare");
+    for (actor, input, expected) in [
+        (&outsider, "Inspect changes", StatusCode::FORBIDDEN),
+        (&owner, " ", StatusCode::BAD_REQUEST),
+        (&owner, "Inspect changes", StatusCode::OK),
+    ] {
+        let (status, prepared) = api_json_payload_request(
+            app.clone(),
+            actor,
+            Method::POST,
+            prepare_endpoint.clone(),
+            json!({"input":input}),
+        )
+        .await;
+        assert_eq!(status, expected, "{prepared}");
+        if status == StatusCode::OK {
+            assert_eq!(prepared["revision_id"], revision);
+            assert!(prepared["prompt"].as_str().unwrap().starts_with(input));
+            assert!(
+                prepared["prompt"]
+                    .as_str()
+                    .unwrap()
+                    .contains("Explain results briefly.")
+            );
+        }
+    }
     assert!(
         db.experience_for_turn(&outsider.workspace_id, &target)
             .await
@@ -3394,6 +3815,19 @@ async fn experience_settings_scope_and_stale_analysis_activation() {
     db.select_experience_revision(&owner.workspace_id, &owner.id, &target, None, None)
         .await
         .unwrap();
+    let (status, prepared) = api_json_payload_request(
+        app,
+        &owner,
+        Method::POST,
+        prepare_endpoint,
+        json!({"input":"Inspect changes"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        prepared,
+        json!({"prompt":"Inspect changes","revision_id":null})
+    );
     assert!(
         db.experience_for_turn(&owner.workspace_id, &target)
             .await
@@ -3406,5 +3840,137 @@ async fn experience_settings_scope_and_stale_analysis_activation() {
             .unwrap()
             .len(),
         2
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn native_preparation_rejects_revocation_during_collaboration_and_runner_failure() {
+    use std::os::unix::fs::PermissionsExt;
+    let database = TestDatabase::create().await;
+    let db =
+        choruz_application::DbService::new(choruz_store::EventStore::new(&database.database_url));
+    let owner = db
+        .create_human_user("preparation-owner", "test-password-123")
+        .await
+        .unwrap();
+    let target = learning_binding(&database, &owner).await;
+    let analyst = learning_binding(&database, &owner).await;
+    db.configure_experience(
+        &owner.workspace_id,
+        &owner.id,
+        &target,
+        &analyst,
+        true,
+        None,
+    )
+    .await
+    .unwrap();
+    let runtime = RuntimeStore::new(&database.database_url);
+    let client = runtime.connect().await.unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let binary = directory.path().join("collaborator");
+    std::fs::write(
+        &binary,
+        include_str!("../../../../crates/choruz-host-runtime/tests/fixtures/team-collaborator.py"),
+    )
+    .unwrap();
+    std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+    client.execute("UPDATE agent_runtime_bindings SET driver_type='codex_terminal',config_json=$2 WHERE id=$1",
+        &[&target,&json!({"binary_path":binary,"model":"fixture"})]).await.unwrap();
+    // Seed only the reviewed state; the production route and collaborator run unchanged.
+    let revision = choruz_common::new_id();
+    client.execute("INSERT INTO experience_revision(id,binding_id,workspace_id,policy_generation,source_digest,source_references,analysis,instruction,disposition,validation) VALUES($1,$2,$3,1,'fixture','[]','Reviewed','Check results.','active',$4)",
+        &[&revision,&target,&owner.workspace_id,&json!({"team":{"review":"passed","config":{"order":"serial","members":[{"name":"derive","prompt":"Derive a candidate."}]}}})]).await.unwrap();
+    client.execute("UPDATE experience_policy SET active_revision_id=$2,next_check_at=NOW()+INTERVAL '1 day' WHERE binding_id=$1", &[&target,&revision]).await.unwrap();
+    let replacement = choruz_common::new_id();
+    client.execute("INSERT INTO experience_revision(id,binding_id,workspace_id,policy_generation,source_digest,source_references,analysis,instruction,disposition,validation) SELECT $2,binding_id,workspace_id,policy_generation,'replacement',source_references,analysis,'Replacement guidance.','candidate',validation FROM experience_revision WHERE id=$1", &[&revision,&replacement]).await.unwrap();
+    let app = router_with_db(choruz_application::ChatApp::new(), &database.database_url);
+    let endpoint = format!("/v1/runtime/bindings/{target}/experience/prepare");
+    let input = |mode| json!({"input":json!({"directory":directory.path(),"order":"serial","mode":mode}).to_string()});
+    for change in ["disable", "selection", "binding"] {
+        client.execute("UPDATE experience_policy SET enabled=TRUE,active_revision_id=$2,next_check_at=NOW()+INTERVAL '1 day' WHERE binding_id=$1", &[&target,&revision]).await.unwrap();
+        client.execute("UPDATE experience_revision SET disposition=CASE WHEN id=$2 THEN 'active' ELSE 'candidate' END WHERE binding_id=$1", &[&target,&revision]).await.unwrap();
+        for name in ["derive", "release"] {
+            let path = directory.path().join(name);
+            if path.exists() {
+                std::fs::remove_file(path).unwrap();
+            }
+        }
+        let preparing = api_json_payload_request(
+            app.clone(),
+            &owner,
+            Method::POST,
+            endpoint.clone(),
+            input("gate"),
+        );
+        let revoke = async {
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                while !directory.path().join("derive").exists() {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            match change {
+                "disable" => db
+                    .configure_experience(
+                        &owner.workspace_id,
+                        &owner.id,
+                        &target,
+                        &analyst,
+                        false,
+                        None,
+                    )
+                    .await
+                    .unwrap(),
+                "selection" => {
+                    // Automatic activation can change the active pointer without
+                    // changing policy generation; exercise that distinct fence.
+                    client.execute("UPDATE experience_revision SET disposition=CASE WHEN id=$2 THEN 'active' ELSE 'superseded' END WHERE binding_id=$1", &[&target,&replacement]).await.unwrap();
+                    client.execute("UPDATE experience_policy SET active_revision_id=$2 WHERE binding_id=$1", &[&target,&replacement]).await.unwrap();
+                }
+                "binding" => {
+                    client.execute("UPDATE agent_runtime_bindings SET updated_at=updated_at+INTERVAL '1 second',config_json=config_json || '{\"model\":\"changed-fixture\"}'::jsonb WHERE id=$1", &[&target]).await.unwrap();
+                }
+                _ => unreachable!(),
+            }
+            std::fs::write(directory.path().join("release"), "ready").unwrap();
+        };
+        let ((status, result), ()) = tokio::join!(preparing, revoke);
+        assert_eq!(status, StatusCode::CONFLICT, "{change}: {result}");
+        assert!(result.get("prompt").is_none());
+    }
+    db.configure_experience(
+        &owner.workspace_id,
+        &owner.id,
+        &target,
+        &analyst,
+        true,
+        None,
+    )
+    .await
+    .unwrap();
+    client
+        .execute(
+            "UPDATE experience_policy SET next_check_at=NOW()+INTERVAL '1 day' WHERE binding_id=$1",
+            &[&target],
+        )
+        .await
+        .unwrap();
+    let (status, result) =
+        api_json_payload_request(app, &owner, Method::POST, endpoint, input("error")).await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{result}");
+    assert!(result.get("prompt").is_none());
+    assert_eq!(
+        client
+            .query_one(
+                "SELECT COUNT(*) FROM audit_log WHERE action='learning.prepare' AND target_id=$1",
+                &[&target]
+            )
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+        0
     );
 }

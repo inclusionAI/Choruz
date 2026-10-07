@@ -44,9 +44,10 @@ impl EmbeddedPg {
     /// a deployed binary, or `<workspace>/migrations/` in dev. The caller
     /// resolves which is available (see `choruz-server`'s `main.rs`).
     pub async fn setup_and_start(migrations_dir: &Path) -> Result<Self, String> {
-        let base = dirs::data_dir()
-            .ok_or_else(|| "no OS data directory available".to_string())?
-            .join("choruz");
+        let base = std::env::var_os("CHORUZ_DATA_DIR")
+            .map(PathBuf::from)
+            .or_else(|| dirs::data_dir().map(|path| path.join("choruz")))
+            .ok_or_else(|| "no OS data directory available".to_string())?;
         let data_dir: PathBuf = base.join("pgdata");
         let install_dir: PathBuf = base.join("pg-install");
         let password_file: PathBuf = base.join("pgpass");
@@ -63,9 +64,19 @@ impl EmbeddedPg {
             .installation_dir(install_dir)
             .data_dir(data_dir)
             .password_file(password_file)
-            .port(5433)
+            .port(
+                std::env::var("CHORUZ_POSTGRES_PORT")
+                    .ok()
+                    .map(|value| value.parse::<u16>())
+                    .transpose()
+                    .map_err(|_| "CHORUZ_POSTGRES_PORT must be a valid port".to_string())?
+                    .unwrap_or(5433),
+            )
             .username("postgres")
-            .password("postgres")
+            .password(
+                std::env::var("CHORUZ_POSTGRES_PASSWORD")
+                    .unwrap_or_else(|_| "postgres".to_string()),
+            )
             .temporary(false)
             .timeout(Some(postgres_command_timeout(
                 std::env::var("CHORUZ_POSTGRES_COMMAND_TIMEOUT_SECS")

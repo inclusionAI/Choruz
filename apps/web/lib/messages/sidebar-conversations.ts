@@ -166,7 +166,7 @@ export function buildSidebarConversationSections({
     hasSearchQuery,
   });
   const direct = buildSection("direct", "Direct Messages", directItems, {
-    defaultExpanded: false,
+    defaultExpanded: true,
     hideWhenEmpty: false,
     hasSearchQuery,
   });

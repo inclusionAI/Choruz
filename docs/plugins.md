@@ -4,7 +4,7 @@ Choruz ships product features on top of a small communication/runtime core as bu
 
 ## Configuration
 
-`CHORUZ_PLUGINS` is a comma-separated allowlist of built-in plugin IDs. When it is unset, the default plugins are enabled; `pi` and `opencode` require explicit opt-in. Set it to an empty string to start the core product without plugins. Use the same allowlist for the web and API processes.
+`CHORUZ_PLUGINS` is a comma-separated allowlist of built-in plugin IDs. When it is unset, the default plugins are enabled; `pi`, `opencode` and `grok` require explicit opt-in. Set it to an empty string to start the core product without plugins. Use the same allowlist for the web and API processes.
 
 ```bash
 CHORUZ_PLUGINS=kanban,pixel-world,workspace-git,remote-ssh,agent-skills,mathcode pnpm dev:all
@@ -24,10 +24,13 @@ The current built-ins are:
 | `mathcode` | Advertises the MathCode terminal-agent driver | Enables MathCode in Create Agent; the existing availability guard requires a local `mathcode` CLI |
 | `pi` | Advertises the Pi Agent driver and allows session import | Enables Pi Agent in Create Agent and Pi in Import Sessions |
 | `opencode` | Advertises the OpenCode driver and allows session import | Enables OpenCode in Create Agent and Import Sessions |
+| `grok` | Advertises the Grok driver and allows session import | Enables Grok in Create Agent and Import Sessions |
 
 `mathcode` creates a new MathCode agent with the installed [`mathcode`](https://github.com/math-ai-org/mathcode) CLI. Install MathCode with its own setup procedure before selecting it. The plugin does not scan or import MathCode's historical sessions because MathCode does not publish a stable session-catalog contract for that purpose.
 
-To use Pi or OpenCode, install its CLI on the execution device and include `pi` or `opencode` in the controller's `CHORUZ_PLUGINS` allowlist alongside the other plugins you want to retain. Restart the web and API processes after changing the allowlist. Enabling the plugin does not install its CLI. Disabling it removes new-agent and import choices and rejects those provisioning and session-import requests; existing Agents, runtime bindings, transcripts, and account data remain intact and existing sessions can still run. MathCode's default remains unchanged.
+To use Pi, OpenCode or Grok, install its CLI on the execution device and include `pi`, `opencode` or `grok` in the controller's `CHORUZ_PLUGINS` allowlist alongside the other plugins you want to retain. Restart the web and API processes after changing the allowlist. Enabling the plugin does not install its CLI. Disabling it removes new-agent and import choices and rejects those provisioning and session-import requests; existing Agents, runtime bindings, transcripts, and account data remain intact and existing sessions can still run. MathCode's default remains unchanged.
+
+Muse Code is a core driver, alongside Claude Code and Codex. It uses the installed `muse` executable, or `CHORUZ_MUSE_BINARY` / `CHORUZ_MUSE_CLI_PATH` on its execution device. Interactive conversations use the shared PTY; group turns invoke `muse exec --json` and parse its versioned session records. The headless invocation trusts the managed workspace and disables interactive approval prompts while retaining Muse's sandbox. Interactive terminals keep Muse's own approvals and login. Model catalog discovery, isolated account management and historical session import are not exposed for Muse; leave the model blank for its CLI configuration or enter an exact model ID.
 
 ## Contract And Registration
 

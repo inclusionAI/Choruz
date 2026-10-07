@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent, type CSSProperties } from "react";
 import { useTheme } from "next-themes";
-import { ChevronDown, ChevronRight, MoreHorizontal } from "lucide-react";
+import { ChevronDown, ChevronRight, MoreHorizontal, SquarePen, Settings2, FolderOpen } from "lucide-react";
 import { trace } from "../../lib/api/choruz-trace";
 import { EmptyState } from "../ui/empty-state";
 import type {
@@ -27,6 +27,7 @@ import { Modal } from "../ui/modal";
 import { ConversationListItem } from "./conversation-list-item";
 import { Avatar } from "../ui/avatar";
 import { transportFetch } from "../../lib/api/transport";
+import { workbenchConversations } from "../../lib/messages/workbench-conversations";
 
 // ResetSessionsButton removed from UI — backend endpoint preserved at
 // POST /v1/companies/{id}/reset-sessions for local console/API use.
@@ -80,6 +81,7 @@ export type SidebarProps = {
   onHideSession: (conversationId: string) => void;
   onSelectConversation: (convId: string) => void;
   onCreateAgent: () => void;
+  onNewTask: () => void;
   onManageHarnessAccounts?: () => void;
   onCreateGroup: () => void;
   sessionToken: string;
@@ -132,6 +134,7 @@ export function Sidebar({
   onHideSession,
   onSelectConversation,
   onCreateAgent,
+  onNewTask,
   onManageHarnessAccounts,
   onCreateGroup,
   sessionToken,
@@ -160,6 +163,12 @@ export function Sidebar({
   const [searchFilter, setSearchFilter] = useState("");
   const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [manageMode, setManageMode] = useState(false);
+  const [showCollaboration, setShowCollaboration] = useState(false);
+  const [showFiles, setShowFiles] = useState(false);
+  const activeConversationType = conversations.find((conversation) => conversation.id === activeConvId)?.conversation_type;
+  useEffect(() => {
+    if (activeConversationType === "group") setShowCollaboration(true);
+  }, [activeConvId, activeConversationType]);
   const [expandedSections, setExpandedSections] = useState<
     Partial<Record<SidebarConversationSectionId, boolean>>
   >({});
@@ -292,7 +301,7 @@ export function Sidebar({
 
   const sidebarSections = useMemo(() =>
     buildSidebarConversationSections({
-      conversations,
+      conversations: workbenchConversations(conversations, showCollaboration),
       agents,
       principal,
       messagesByConv,
@@ -304,7 +313,7 @@ export function Sidebar({
       activeConvId,
       runtimeBindings,
     }),
-    [activeConvId, agents, archivedConversations, conversations, hiddenConversations, messagesByConv, pinnedConversations, principal, runtimeBindings, searchFilter, sharedPreviews],
+    [activeConvId, agents, archivedConversations, conversations, hiddenConversations, messagesByConv, pinnedConversations, principal, runtimeBindings, searchFilter, sharedPreviews, showCollaboration],
   );
 
   const toggleSection = useCallback((
@@ -417,6 +426,9 @@ export function Sidebar({
           aria-hidden="true"
         />
       </div>
+      <button className="workbench-nav-action" type="button" onClick={onNewTask}>
+        <SquarePen size={17} aria-hidden="true" /> New task
+      </button>
       {/* Company selector — ChatGPT-style dropdown */}
       {companies.length > 0 && (
         <div className="company-selector">
@@ -666,7 +678,10 @@ export function Sidebar({
           )}
         </div>
       )}
-      {(() => {
+      <button className="workbench-nav-action" type="button" aria-expanded={showFiles} onClick={() => setShowFiles(!showFiles)}>
+        <FolderOpen size={17} aria-hidden="true" /> Project files
+      </button>
+      {showFiles && (() => {
         const activeCompany = companies.find((c) => c.id === activeCompanyId);
         return activeCompany?.folder_path ? (
           <>
@@ -788,7 +803,7 @@ export function Sidebar({
                 aria-label="Actions menu"
                 className="sidebar-action-btn"
               >
-                +
+                <Settings2 size={17} aria-hidden="true" />
               </button>
               {showPlusMenu && (
                 <>
@@ -797,6 +812,9 @@ export function Sidebar({
                     onClick={() => setShowPlusMenu(false)}
                   />
                   <div className="dropdown-menu align-right">
+                    <button className="dropdown-menu-item" type="button" aria-pressed={showCollaboration} onClick={() => { setShowCollaboration(!showCollaboration); setShowPlusMenu(false); }}>
+                      {showCollaboration ? "Hide background collaboration" : "Background collaboration"}
+                    </button>
                     <button onClick={() => { onCreateAgent(); setShowPlusMenu(false); }} className="dropdown-menu-item">
                       Create Agent
                     </button>
@@ -856,7 +874,7 @@ export function Sidebar({
 
       <div className="sidebar-search">
         <input
-          placeholder="Search conversations…"
+          placeholder="Search tasks…"
           value={searchFilter}
           onChange={(e) => {
             const val = e.target.value;
@@ -884,7 +902,7 @@ export function Sidebar({
           items[(current + delta + items.length) % items.length]?.focus();
         }}
       >
-        {sidebarSections.sections.filter((section) => section.shouldRender).map((section) => {
+        {sidebarSections.sections.filter((section) => section.shouldRender && (showCollaboration || section.id !== "group")).map((section) => {
           const initialExpanded = section.defaultExpanded || section.forceExpandedByActive;
           const isExpanded = section.forceExpandedBySearch
             || (expandedSections[section.id] ?? initialExpanded);
@@ -901,13 +919,14 @@ export function Sidebar({
                 onClick={() => toggleSection(section.id, isExpanded)}
                 aria-expanded={isExpanded}
                 aria-controls={`conversation-section-${section.id}`}
+                aria-label={section.title}
               >
                 {isExpanded ? (
                   <ChevronDown size={15} aria-hidden="true" />
                 ) : (
                   <ChevronRight size={15} aria-hidden="true" />
                 )}
-                <span className="conversation-section-title">{section.title}</span>
+                <span className="conversation-section-title">{section.id === "direct" ? "Tasks" : section.title}</span>
                 <span className="conversation-section-count">{section.conversations.length}</span>
               </button>
               {isExpanded && (
@@ -925,7 +944,7 @@ export function Sidebar({
                         sidebarSections.hasSearchQuery
                           ? "No matching conversations"
                           : section.id === "direct"
-                            ? "No direct messages"
+                            ? "No tasks yet"
                             : section.id === "group"
                               ? "No group conversations"
                               : "No archived conversations"

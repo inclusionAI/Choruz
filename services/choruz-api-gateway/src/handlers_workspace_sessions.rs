@@ -125,6 +125,7 @@ pub(crate) fn require_session_plugins(
         let plugin = match harness {
             HarnessKind::Pi => Some(choruz_common::plugins::PI_PLUGIN_ID),
             HarnessKind::OpenCode => Some(choruz_common::plugins::OPENCODE_PLUGIN_ID),
+            HarnessKind::Grok => Some(choruz_common::plugins::GROK_PLUGIN_ID),
             _ => None,
         };
         if let Some(plugin) = plugin {

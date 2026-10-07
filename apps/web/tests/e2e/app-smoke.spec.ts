@@ -5,6 +5,14 @@ test("local login reaches the dashboard and sends a group message", async ({ pag
   await page.goto("/");
 
   await expect(page.getByRole("img", { name: "Choruz" })).toBeVisible();
+  const loadedFonts = await page.evaluate(async () => {
+    const families = ["Instrument Sans Variable", "Azeret Mono Variable"];
+    return Promise.all(families.flatMap((family) => [400, 500, 600, 700].map(async (weight) => {
+      const faces = await document.fonts.load(`${weight} 16px "${family}"`, "Choruz");
+      return faces.length > 0 && faces.every((face) => face.status === "loaded");
+    })));
+  });
+  expect(loadedFonts).toEqual(Array(8).fill(true));
 
   const apiLogin = await page.request.post(`${API_BASE}/v1/auth/local/login`, {
     data: {

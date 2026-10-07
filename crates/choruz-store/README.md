@@ -4,6 +4,8 @@ Event store of the durable message pipeline: `EventStore` wraps the PostgreSQL p
 
 ## Entry points
 
+The default `postgres` feature supplies `EventStore` and `CdcPoller`. With `default-features = false`, consumers get the same event/outbox records and thread semantics without database clients. That mode has no persistence implementation; it does not create an alternative store.
+
 - `src/pool.rs` — `EventStore`
 - `src/conversation_events.rs` — `ConversationEvent`, `ConversationEventRow`, `ThreadFlags`
 - `src/event_outbox.rs` — `OutboxEntry`, `OutboxRow`

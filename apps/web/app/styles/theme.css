@@ -32,11 +32,9 @@
   --danger-soft: #fca5a5;
   --warn:        #fbbf24;
   --on-accent:   #fff;
-  /* Type pairing: Instrument Sans (body) + Azeret Mono (display/brand/code).
-   * Humane-editorial voice for chat, terminal-precise for agent zones.
-   * `--font-sans` and `--font-mono` are set by next/font in layout.tsx.
-   * Here we only define `--font-brand` (display/eyebrow/login/chat title)
-   * as an alias of mono, plus a fallback stack baked into body/code below. */
+  /* Fontsource assets are bundled locally by the root layout. */
+  --font-sans: 'Instrument Sans Variable';
+  --font-mono: 'Azeret Mono Variable';
   --font-brand: var(--font-mono), 'SF Mono', 'JetBrains Mono', ui-monospace, monospace;
   --radius-sm:   4px;
   --radius-md:   6px;

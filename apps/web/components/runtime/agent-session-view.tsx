@@ -4,13 +4,14 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { apiFetch, ApiRequestError } from "../../lib/api/choruz-api";
+import { readSessionDraft, writeSessionDraft } from "../../lib/chat-drafts";
 import { TerminalView } from "./terminal-view";
 import { ExperienceSettings } from "./experience-settings";
 
 type Item = { id: string; revision: number; position: number; kind: string; text: string; detail: Record<string, unknown>; status: string };
 type Pending = { id?: string | number; request_id?: string; method?: string; params?: Record<string, unknown>; request?: Record<string, unknown> };
 type Snapshot = { instance: string; revision: number; cursor: number; more: boolean; retained_from?: number; history_truncated?: boolean; session_id: string | null; status: string; items: Item[]; requests: Pending[]; error: string | null };
-type Props = { bindingId: string; sessionToken: string; gatewayBaseUrl?: string };
+type Props = { principalId: string; bindingId: string; sessionToken: string; gatewayBaseUrl?: string };
 
 function display(value: unknown): string {
   if (value == null) return "";
@@ -29,11 +30,12 @@ export function splitLearnedContext(text: string) {
   return { message: text, guidance: null };
 }
 
-function SessionMessage({ item }: { item: Item }) {
+export function SessionMessage({ item }: { item: Item }) {
   const { message, guidance } = item.kind === "user" ? splitLearnedContext(item.text) : { message: item.text, guidance: null };
   return <>
     <div className="agent-session-speaker">{item.kind === "user" ? "You" : "Agent"}</div>
     <ReactMarkdown remarkPlugins={[remarkGfm]}>{message}</ReactMarkdown>
+    {item.kind === "assistant" && item.detail?.source === "decision_program" && <small>{String(item.detail.model)} · finite program · native inference skipped</small>}
     {guidance && <details><summary>Choruz learned context · {guidance.revision.slice(0, 8)}</summary><p>Supplemental context supplied by Choruz, not part of your message.</p><pre>{guidance.instruction}</pre></details>}
   </>;
 }
@@ -48,15 +50,20 @@ export function mergeSessionPage(prior: Snapshot | null, page: Snapshot): Snapsh
   return { ...latest, items: [...items.values()].filter((item) => item.position >= (latest.retained_from ?? 0)).sort((a, b) => a.position - b.position) };
 }
 
-export function AgentSessionView({ bindingId, sessionToken, gatewayBaseUrl }: Props) {
+export function AgentSessionView({ principalId, bindingId, sessionToken, gatewayBaseUrl }: Props) {
   const [learningOpen, setLearningOpen] = useState(false);
   const [mode, setMode] = useState<"conversation" | "terminal">("conversation");
   const [state, setState] = useState<Snapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [draft, setDraft] = useState("");
+  const [restored] = useState(() => readSessionDraft(principalId, bindingId));
+  const [draft, setDraft] = useState(restored?.text ?? "");
+  const initialPending = useRef(restored?.autoSubmit ?? false);
+  const initialSubmitted = useRef(false);
   const [busy, setBusy] = useState(false);
+  const [stopping, setStopping] = useState(false);
+  const interrupted = useRef<string | null>(null);
   const [attempt, setAttempt] = useState(0);
-  const submission = useRef<{ text: string; id: string } | null>(null);
+  const submission = useRef<{ text: string; id: string } | null>(restored?.submissionId ? { text: restored.text, id: restored.submissionId } : null);
   const scroll = useRef<HTMLDivElement>(null);
   const follow = useRef(true);
   const endpoint = `/v1/runtime/bindings/${encodeURIComponent(bindingId)}/session`;
@@ -103,10 +110,16 @@ export function AgentSessionView({ bindingId, sessionToken, gatewayBaseUrl }: Pr
     if (follow.current && scroll.current) scroll.current.scrollTop = scroll.current.scrollHeight;
   }, [state]);
 
-  const command = useCallback(async (payload: object) => {
+  const command = useCallback(async (payload: Record<string, unknown>) => {
     if (!state) return false;
     const instance = state.instance;
-    setBusy(true);
+    const interrupt = payload.action === "interrupt";
+    if (interrupt) {
+      setStopping(true);
+      interrupted.current = submission.current?.id ?? null;
+      initialPending.current = false;
+      writeSessionDraft(principalId, bindingId, draft ? { text: draft, submissionId: submission.current?.id ?? null, autoSubmit: false } : null);
+    } else setBusy(true);
     try {
       const snapshot = await apiFetch<Snapshot>(`${endpoint}/commands`, sessionToken, {
         method: "POST", body: JSON.stringify({ ...payload, instance }),
@@ -115,20 +128,50 @@ export function AgentSessionView({ bindingId, sessionToken, gatewayBaseUrl }: Pr
       setError(null);
       return true;
     } catch (failure) {
-      setError(failure instanceof Error ? failure.message : "The Agent action failed");
+      if (!(failure instanceof ApiRequestError && failure.status === 409 && payload.action === "send" && payload.submission_id === interrupted.current)) {
+        setError(failure instanceof Error ? failure.message : "The Agent action failed");
+      }
       return false;
-    } finally { setBusy(false); }
-  }, [endpoint, sessionToken, state]);
+    } finally { if (interrupt) setStopping(false); else setBusy(false); }
+  }, [endpoint, sessionToken, state, principalId, bindingId, draft]);
+
+  function updateDraft(text: string) {
+    setDraft(text);
+    if (submission.current?.text !== text) submission.current = null;
+    writeSessionDraft(principalId, bindingId, text ? { text, submissionId: submission.current?.id ?? null, autoSubmit: initialPending.current } : null);
+  }
+
+  function reserveSubmission() {
+    interrupted.current = null;
+    if (submission.current?.text !== draft) submission.current = { text: draft, id: crypto.randomUUID() };
+    const current = submission.current!;
+    writeSessionDraft(principalId, bindingId, { text: draft, submissionId: current.id, autoSubmit: initialPending.current });
+    return current.id;
+  }
+
+  function accepted(id: string) {
+    initialPending.current = false;
+    if (readSessionDraft(principalId, bindingId)?.submissionId === id) writeSessionDraft(principalId, bindingId, null);
+    setDraft("");
+    submission.current = null;
+    follow.current = true;
+  }
 
   async function send() {
     if (!draft.trim() || busy) return;
-    if (submission.current?.text !== draft) submission.current = { text: draft, id: crypto.randomUUID() };
-    if (await command({ action: "send", text: draft, submission_id: submission.current.id })) {
-      setDraft("");
-      submission.current = null;
-      follow.current = true;
-    }
+    initialSubmitted.current = true;
+    const id = reserveSubmission();
+    if (await command({ action: "send", text: draft, submission_id: id })) accepted(id);
   }
+
+  useEffect(() => {
+    if (!initialPending.current || initialSubmitted.current || state?.status !== "ready" || busy || !draft.trim()) return;
+    initialSubmitted.current = true;
+    const id = reserveSubmission();
+    void command({ action: "send", text: draft, submission_id: id }).then((sent) => {
+      if (sent) accepted(id);
+    });
+  }, [draft, state?.status, busy, bindingId, command]);
 
   async function switchToTerminal() {
     if (state && state.status !== "closed" && !await command({ action: "close" })) return;
@@ -144,9 +187,9 @@ export function AgentSessionView({ bindingId, sessionToken, gatewayBaseUrl }: Pr
       </div>
       <span role="status">{mode === "terminal" ? "Raw terminal" : error ? "Disconnected" : state?.status ?? "Connecting…"}</span>
       <button type="button" onClick={() => setLearningOpen(true)}>Experience learning</button>
-      {mode === "conversation" && running && <button type="button" disabled={busy} onClick={() => void command({ action: "interrupt" })}>Stop</button>}
+      {mode === "conversation" && running && <button type="button" disabled={stopping} onClick={() => void command({ action: "interrupt" })}>Stop</button>}
     </div>
-    {learningOpen && <ExperienceSettings bindingId={bindingId} sessionToken={sessionToken} onClose={() => setLearningOpen(false)} />}
+    {learningOpen && <ExperienceSettings bindingId={bindingId} sessionToken={sessionToken} onClose={() => setLearningOpen(false)} onModelChanged={() => setAttempt((value) => value + 1)} />}
     {mode === "terminal" ? <TerminalView bindingId={bindingId} sessionToken={sessionToken} gatewayBaseUrl={gatewayBaseUrl} /> : <>
       <div className="agent-session-timeline" ref={scroll} onScroll={() => {
         const element = scroll.current;
@@ -167,7 +210,7 @@ export function AgentSessionView({ bindingId, sessionToken, gatewayBaseUrl }: Pr
         <button type="button" disabled={busy} onClick={() => { setAttempt((value) => value + 1); }}>Reconnect</button>
       </div>}
       <form className="agent-session-composer" onSubmit={(event) => { event.preventDefault(); void send(); }}>
-        <textarea aria-label="Message Agent" placeholder="Message this Agent…" value={draft} onChange={(event) => setDraft(event.target.value)} rows={3} onKeyDown={(event) => {
+        <textarea aria-label="Message Agent" placeholder="Message this Agent…" value={draft} disabled={busy} onChange={(event) => updateDraft(event.target.value)} rows={3} onKeyDown={(event) => {
           if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
             event.preventDefault();
             if (state?.status === "ready") void send();

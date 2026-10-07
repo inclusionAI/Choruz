@@ -20,7 +20,6 @@ choruz-application = { path = "../../crates/choruz-application" }
 choruz-common = { path = "../../crates/choruz-common" }
 choruz-events = { path = "../../crates/choruz-events" }
 choruz-executor = { path = "../../crates/choruz-executor" }
-choruz-tools = { path = "../../crates/choruz-tools" }
 choruz-ids = { path = "../../crates/choruz-ids" }
 choruz-infrastructure = { path = "../../crates/choruz-infrastructure" }
 choruz-router = { path = "../../crates/choruz-router" }
@@ -39,6 +38,7 @@ futures-util.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+choruz-decision = { path = "../../crates/choruz-decision" }
 tempfile = "3"
 tokio = { workspace = true, features = ["full", "test-util"] }
 futures-util.workspace = true

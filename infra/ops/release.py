@@ -19,6 +19,12 @@ import urllib.request
 ROOT = Path(__file__).resolve().parents[2]
 SERVICES = ("api-gateway", "pipeline", "web-app")
 BINARIES = ("choruz", "choruz-server", "choruz-api-gateway", "choruz-pipeline", "choruz-connector")
+COMPOSITIONS = {
+    "cli": BINARIES[:1],
+    "local": BINARIES[:3],
+    "headless": BINARIES,
+    "full": BINARIES,
+}
 
 
 def run(*args, **kwargs):
@@ -55,19 +61,30 @@ def verify(directory):
     manifest = json.loads((directory / "manifest.json").read_text())
     if manifest.get("format") != 1 or manifest.get("files") != inventory(directory):
         raise ValueError("release manifest does not match the files; do not activate this package")
-    for name in BINARIES:
+    composition = manifest.get("composition")
+    if not isinstance(composition, str) or composition not in COMPOSITIONS:
+        raise ValueError("unknown release composition")
+    for name in COMPOSITIONS[composition]:
         if not os.access(directory / "bin" / name, os.X_OK):
             raise ValueError(f"release binary is missing or not executable: {name}")
-    for name in ("web/apps/web/server.js", "web/apps/web/.next/static", "bin/migrations"):
+    required = [] if composition == "cli" else ["bin/migrations"]
+    if composition == "full":
+        required += ["web/apps/web/server.js", "web/apps/web/.next/static"]
+    for name in required:
         if not (directory / name).exists():
             raise ValueError(f"release artifact is missing: {name}")
     return manifest
 
 
-def package(releases):
+def package(releases, composition="full"):
+    if composition not in COMPOSITIONS:
+        raise ValueError("unknown release composition")
+    binaries = COMPOSITIONS[composition]
     run("git", "diff", "--quiet", "HEAD", cwd=ROOT)
     revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
     name = f"choruz-{revision}-{platform.system().lower()}-{platform.machine()}"
+    if composition != "full":
+        name += f"-{composition}"
     target = releases / name
     if target.exists():
         raise ValueError(f"immutable release already exists: {target}")
@@ -76,28 +93,31 @@ def package(releases):
     with tempfile.TemporaryDirectory(prefix=".build-", dir=releases) as staging:
         stage = Path(staging) / name
         (stage / "bin").mkdir(parents=True)
-        run("cargo", "build", "--locked", "--release", "-p", "choruz-cli", "-p", "choruz-server",
-            "-p", "choruz-api-gateway", "-p", "choruz-pipeline", "-p", "choruz-connector", cwd=ROOT)
-        run("pnpm", "install", "--frozen-lockfile", cwd=ROOT)
-        run("pnpm", "web:build", cwd=ROOT)
+        packages = [arg for binary in binaries for arg in ("-p", "choruz-cli" if binary == "choruz" else binary)]
+        run("cargo", "build", "--locked", "--release", *packages, cwd=ROOT)
+        if composition == "full":
+            run("pnpm", "install", "--frozen-lockfile", cwd=ROOT)
+            run("pnpm", "web:build", cwd=ROOT)
         metadata = json.loads(subprocess.check_output(
             ["cargo", "metadata", "--no-deps", "--format-version", "1"], cwd=ROOT))
-        for binary in BINARIES:
+        for binary in binaries:
             shutil.copy2(Path(metadata["target_directory"]) / "release" / binary, stage / "bin")
-        shutil.copytree(ROOT / "migrations", stage / "bin/migrations")
+        if composition != "cli":
+            shutil.copytree(ROOT / "migrations", stage / "bin/migrations")
         for notice in ("LICENSE", "NOTICE"):
             shutil.copy2(ROOT / notice, stage / notice)
-        shutil.copytree(ROOT / "apps/web/.next/standalone", stage / "web", symlinks=True,
-                        ignore=shutil.ignore_patterns(".env", ".env.*"))
-        shutil.copytree(ROOT / "apps/web/.next/static", stage / "web/apps/web/.next/static", dirs_exist_ok=True)
-        shutil.copytree(ROOT / "apps/web/public", stage / "web/apps/web/public", dirs_exist_ok=True)
+        if composition == "full":
+            shutil.copytree(ROOT / "apps/web/.next/standalone", stage / "web", symlinks=True,
+                            ignore=shutil.ignore_patterns(".env", ".env.*"))
+            shutil.copytree(ROOT / "apps/web/.next/static", stage / "web/apps/web/.next/static", dirs_exist_ok=True)
+            shutil.copytree(ROOT / "apps/web/public", stage / "web/apps/web/public", dirs_exist_ok=True)
         shutil.copytree(ROOT / "infra/ops", stage / "infra/ops", ignore=shutil.ignore_patterns("__pycache__"))
         # Tar's safe extraction strips group/world writes and restores owner
         # read/write. Canonicalize before hashing so extracted modes still match.
         for path in stage.rglob("*"):
             if not path.is_symlink():
                 path.chmod(0o755 if path.is_dir() or path.stat().st_mode & 0o100 else 0o644)
-        manifest = {"format": 1, "revision": revision, "platform": platform.system(),
+        manifest = {"format": 1, "composition": composition, "revision": revision, "platform": platform.system(),
                     "architecture": platform.machine(), "libc": platform.libc_ver(),
                     "ci_run": os.environ.get("GITHUB_RUN_ID"), "files": inventory(stage)}
         (stage / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
@@ -164,6 +184,8 @@ def healthy(urls, timeout):
 def activate(releases, target, urls, timeout):
     with activation_lock(releases):
         manifest = verify(target)
+        if manifest["composition"] != "full":
+            raise ValueError("managed activation requires a full release; use selective packages through their CLI entrypoints")
         if (manifest["platform"], manifest["architecture"]) != (platform.system(), platform.machine()):
             raise ValueError("release platform does not match this device")
         built_libc, built_version = manifest.get("libc", ("", ""))
@@ -175,7 +197,8 @@ def activate(releases, target, urls, timeout):
         if current.exists() and not current.is_symlink():
             raise ValueError("current must be a release symlink, not a directory")
         if known_good:
-            verify(known_good)
+            if verify(known_good)["composition"] != "full":
+                raise ValueError("current managed release is not a full composition")
         replace_link(current, target.resolve())
         try:
             control_services("restart")
@@ -206,12 +229,15 @@ def main():
     parser.add_argument("--releases", type=Path, default=ROOT / "releases")
     parser.add_argument("--health-url", action="append", help="repeat for API, pipeline and web readiness endpoints")
     parser.add_argument("--timeout", type=float, default=60)
+    parser.add_argument("--composition", choices=tuple(COMPOSITIONS), help="package only: cli, local API host, headless stack, or full (default)")
     args = parser.parse_args()
     if args.timeout <= 0:
         parser.error("--timeout must be positive")
+    if args.composition is not None and args.action != "package":
+        parser.error("--composition applies only to package; verification reads the manifest")
     releases = args.releases.resolve()
     if args.action == "package":
-        package(releases)
+        package(releases, args.composition or "full")
     elif args.action == "verify":
         if not args.target:
             parser.error("verify requires an extracted release directory")

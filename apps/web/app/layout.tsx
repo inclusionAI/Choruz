@@ -1,22 +1,9 @@
 import type { Metadata } from "next";
-import { Instrument_Sans, Azeret_Mono } from "next/font/google";
+import "@fontsource-variable/instrument-sans";
+import "@fontsource-variable/azeret-mono";
 import "./globals.css";
 
 import { ThemeProvider } from "../components/ui/theme-provider";
-
-const instrumentSans = Instrument_Sans({
-  subsets: ["latin"],
-  variable: "--font-sans",
-  display: "swap",
-  weight: ["400", "500", "600", "700"],
-});
-
-const azeretMono = Azeret_Mono({
-  subsets: ["latin"],
-  variable: "--font-mono",
-  display: "swap",
-  weight: ["400", "500", "600", "700"],
-});
 
 export const metadata: Metadata = {
   title: "Choruz",
@@ -53,7 +40,6 @@ export default function RootLayout({
       // `suppressHydrationWarning` flag below tolerates next-themes'
       // attribute mutation during hydration.
       data-theme="light"
-      className={`${instrumentSans.variable} ${azeretMono.variable}`}
       suppressHydrationWarning
     >
       <head>

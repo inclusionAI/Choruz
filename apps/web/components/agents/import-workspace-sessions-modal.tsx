@@ -19,7 +19,7 @@ const HARNESSES: Array<{ id: HarnessKind; label: string; plugin?: string }> = [
   { id: "claude", label: "Claude Code" },
   { id: "codex", label: "Codex" },
   { id: "pi", label: "Pi", plugin: "pi" },
-  { id: "grok", label: "Grok" },
+  { id: "grok", label: "Grok", plugin: "grok" },
   { id: "open_code", label: "OpenCode", plugin: "opencode" },
 ];
 

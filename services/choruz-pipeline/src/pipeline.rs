@@ -84,6 +84,24 @@ pub async fn run_pipeline(config: PipelineConfig) {
     tracing::info!("running WAL crash recovery...");
     executor_ctx.recover_from_wal().await;
 
+    let retirement_store = event_store.clone();
+    let retirement_task = tokio::spawn(async move {
+        let db = choruz_application::DbService::new(retirement_store);
+        let mut timer = tokio::time::interval(std::time::Duration::from_secs(1));
+        timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            timer.tick().await;
+            match db.pending_account_retirements().await {
+                Ok(requests) => {
+                    for request in requests {
+                        let _ = choruz_agent_runtime::process_scope::retire(&request.account_id);
+                    }
+                }
+                Err(error) => tracing::warn!(%error,"account cancellation queue unavailable"),
+            }
+        }
+    });
+
     // -----------------------------------------------------------------------
     // 2. CDC Poller -> mpsc channel -> Router loop
     // -----------------------------------------------------------------------
@@ -275,8 +293,10 @@ pub async fn run_pipeline(config: PipelineConfig) {
     tracing::info!(
         "choruz-pipeline running: cdc_poller + router + dispatch + writer + lease_monitor + retry + cron + outbox_watcher + http"
     );
+    let retirement_abort = retirement_task.abort_handle();
 
     tokio::select! {
+        r=retirement_task=>{tracing::error!(?r,"account cancellation task exited");}
         r = router_task => {
             tracing::error!(?r, "router task exited");
         }
@@ -302,6 +322,7 @@ pub async fn run_pipeline(config: PipelineConfig) {
             tracing::error!(?r, "pipeline HTTP server task exited");
         }
     }
+    retirement_abort.abort();
 
     // Graceful shutdown: terminate all persistent sessions
     tracing::info!("shutting down persistent executor sessions...");

@@ -94,6 +94,7 @@ describe("onboarding template registry", () => {
     const validDriverIds = new Set<DriverId>([
       "claude_terminal",
       "codex_terminal",
+      "muse_terminal",
       "codex_exec",
       "pi_terminal",
       "grok_terminal",

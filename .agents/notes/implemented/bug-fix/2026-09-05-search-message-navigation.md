@@ -20,9 +20,17 @@ History errors retain the existing Retry owner and pause automatic requests.
 An exhausted history reports the unavailable target. A queued bottom scroll
 rechecks following intent, so mounting Chat from Tasks cannot steal navigation.
 After virtualization renders the target, its measured DOM position corrects
-the estimated scroll before highlighting. Successful navigation completes after
-that alignment; Cancel invalidates any queued alignment, including a loaded
-replacement waiting for an earlier history page.
+the estimated scroll before highlighting. Successful navigation completes only
+when the visible rows have current measurements and the virtual scroll state
+matches the aligned viewport. Cancel invalidates queued completion, including a
+loaded replacement waiting for an earlier history page. A history request may
+restore its captured viewport only if no newer navigation has taken ownership.
+Alignment corrections run in cancellable animation frames, allowing virtual
+rows to complete layout between updates instead of recursively rendering from
+a layout effect before their measured heights settle.
+The row observer ignores disconnected or zero-height boxes: removal and hidden
+tabs may notify before passive cleanup, but must not overwrite a rendered row's
+height and move the target after navigation completes.
 
 Quiet thread replies load contiguous history through their root before the
 existing thread loader opens the panel and highlights the reply. They are not

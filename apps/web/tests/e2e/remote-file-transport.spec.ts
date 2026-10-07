@@ -61,6 +61,8 @@ test("remote editor saves through the encrypted transport to B", async ({ page, 
   const edit = async (value: string, externalChange = false) => {
     await page.locator(".company-selector-btn").click();
     await page.locator(".company-dropdown-item-name").filter({ hasText: company.name }).click();
+    const files = page.getByRole("button", { name: "Project files", exact: true });
+    if (await files.getAttribute("aria-expanded") !== "true") await files.click();
     const explorer = page.locator(".file-tree-section-toggle");
     if (await explorer.getAttribute("aria-expanded") !== "true") await explorer.click();
     const tree = page.getByRole("tree", { name: "File explorer" });
@@ -141,6 +143,8 @@ test("remote attachment previews and downloads use B's encrypted bytes", async (
   await page.locator(".company-selector-btn").click();
   await page.locator(".company-dropdown-item-name").filter({ hasText: company.name }).click();
   const remoteGroups = page.getByRole("button", { name: /Group Conversations/ });
+  await page.getByRole("button", { name: "Actions menu", exact: true }).click();
+  await page.getByRole("button", { name: "Background collaboration", exact: true }).click();
   if (await remoteGroups.getAttribute("aria-expanded") !== "true") await remoteGroups.click();
   await page.locator(`[data-conversation-id="${group.id}"]`).click();
   const image = page.locator("img[alt='owned.png']");

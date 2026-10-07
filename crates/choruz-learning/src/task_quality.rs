@@ -1,28 +1,34 @@
 //! Blind trials diagnose tasks; independent source-grounded review controls admission.
-use crate::{experience_diagnostics::LearningCheck, host_runtime::RuntimeHost};
+use crate::TaskDecision;
 use choruz_common::AppError;
 use choruz_evaluation::evaluation::{TraceCase, case_review_covers};
-use choruz_host_runtime::{HostRequest, TerminalSpec};
-use choruz_learning::TaskDecision;
 use serde_json::{Value, json};
 use sha2::Digest;
 use std::collections::{BTreeMap, BTreeSet};
 
-pub(crate) async fn inspect(
-    host: &RuntimeHost,
-    spec: TerminalSpec,
+/// Independent calls: blind trials receive inputs only, reviewers receive source
+/// evidence. Implementations enforce authorization and audit each call.
+pub trait TaskServices: Sync {
+    fn trial(&self, prompt: String) -> impl Future<Output = Result<String, AppError>> + Send;
+    fn review_tasks(
+        &self,
+        prompt: String,
+    ) -> impl Future<Output = Result<Vec<TaskDecision>, AppError>> + Send;
+}
+
+pub async fn inspect(
+    services: &impl TaskServices,
     cases: &mut [TraceCase],
     context: Value,
-    check: &LearningCheck<'_>,
 ) -> Result<Value, AppError> {
     let variants: BTreeMap<_, _> = cases
         .iter_mut()
         .filter_map(|c| c.variant.take().map(|v| (c.episode_ref.clone(), v)))
         .collect();
-    let mut history = inspect_rounds(host, spec.clone(), cases, &context, check, true).await?;
+    let mut history = inspect_rounds(services, cases, &context, true).await?;
     let previous: Vec<TraceCase> = serde_json::from_value(context["existing_cases"].clone())
         .map_err(|e| AppError::Internal(format!("Invalid task review corpus: {e}")))?;
-    let training = choruz_application::db_service::training_objectives(&previous, cases);
+    let training = choruz_evaluation::dataset::training_objectives(&previous, cases);
     let mut proposed: Vec<_> = cases
         .iter()
         .filter(|c| c.check.is_some() && training.contains(&c.episode_ref))
@@ -40,8 +46,7 @@ pub(crate) async fn inspect(
     if !proposed.is_empty() {
         let mut variant_context = context.clone();
         variant_context["original_cases"] = json!(cases);
-        let reviewed =
-            inspect_rounds(host, spec, &mut proposed, &variant_context, check, false).await?;
+        let reviewed = inspect_rounds(services, &mut proposed, &variant_context, false).await?;
         history["variants"] = reviewed;
         for variant in proposed.into_iter().filter(|v| v.check.is_some()) {
             if let Some(original) = cases
@@ -56,11 +61,9 @@ pub(crate) async fn inspect(
 }
 
 async fn inspect_rounds(
-    host: &RuntimeHost,
-    spec: TerminalSpec,
+    services: &impl TaskServices,
     cases: &mut [TraceCase],
     context: &Value,
-    check: &LearningCheck<'_>,
     allow_repair: bool,
 ) -> Result<Value, AppError> {
     let known: BTreeSet<String> = context["records"]
@@ -94,11 +97,7 @@ async fn inspect_rounds(
             .iter()
             .map(|&i| json!({"episode_ref":cases[i].episode_ref,"input":cases[i].input}))
             .collect();
-        let answer: String = check.call(host, "task_trial", HostRequest::EvaluateExperience {
-            spec: Box::new(spec.clone()),
-            input: format!("Independently attempt each task using only its input. If information is missing, explain what is missing rather than inventing it. Return only a JSON object mapping every episode_ref to a concise answer (at most 2000 characters each).\n{}", json!({"task_trials":inputs})),
-            instruction:String::new(), preflight:String::new(),
-        }).await?;
+        let answer = services.trial(format!("Independently attempt each task using only its input. If information is missing, explain what is missing rather than inventing it. Return only a JSON object mapping every episode_ref to a concise answer (at most 2000 characters each).\n{}", json!({"task_trials":inputs}))).await?;
         let trials: BTreeMap<String, String> =
             serde_json::from_str(answer.trim()).map_err(|_| {
                 AppError::Validation("Blind task trial returned invalid answers".into())
@@ -116,15 +115,8 @@ async fn inspect_rounds(
             ));
         }
         let proposed: Vec<_> = pending.iter().map(|&i| &cases[i]).collect();
-        let decisions: Vec<TaskDecision> = check
-            .call(
-                host,
-                "task_quality_review",
-                HostRequest::ReviewTasks {
-                    spec: Box::new(spec.clone()),
-                    prompt: json!({"cases":proposed,"context":context,"trials":trials}).to_string(),
-                },
-            )
+        let decisions = services
+            .review_tasks(json!({"cases":proposed,"context":context,"trials":trials}).to_string())
             .await?;
         let by_ref: BTreeMap<_, _> = decisions.iter().map(|d| (&d.episode_ref, d)).collect();
         if decisions.len() != pending.len()
@@ -180,6 +172,6 @@ async fn inspect_rounds(
         pending = retry;
     }
     Ok(
-        json!({"procedure_digest":hex::encode(sha2::Sha256::digest(choruz_learning::TASK_REVIEW_SKILL.as_bytes())),"attempts":history}),
+        json!({"procedure_digest":hex::encode(sha2::Sha256::digest(crate::TASK_REVIEW_SKILL.as_bytes())),"attempts":history}),
     )
 }

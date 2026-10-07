@@ -64,6 +64,8 @@ pub(crate) struct AssignBindingHostRequest {
 
 #[derive(Debug, Serialize)]
 pub(crate) struct ClaimedCommand {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    decision_input: Option<String>,
     command_id: String,
     attempt_id: String,
     /// The binding the turn runs under; the connector ships the turn's outbox
@@ -134,6 +136,8 @@ pub(crate) struct CompleteCommandRequest {
     external_session_id: Option<String>,
     #[serde(default)]
     clear_external_session: bool,
+    #[serde(default)]
+    execution_metadata: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1049,17 +1053,26 @@ pub(crate) async fn claim_command(
             },
         )
         .await?;
+    let decision_input = decision
+        .as_ref()
+        .filter(|decision| decision.completion().is_some())
+        .map(|_| command.prompt.clone());
     let preflight = choruz_host_runtime::harness::Preparation::new(preflight, decision);
+    let history = state
+        .db
+        .decision_conversation_context(&host.company_id, &binding.id, &command.conversation_id)
+        .await?;
     Ok(Json(Some(ClaimedCommand {
+        decision_input,
         command_id: command.command_id,
         attempt_id: assignment.attempt_id,
         binding_id: binding.id.clone(),
         agent_id: command.agent_id,
         conversation_id: command.conversation_id,
         turn_id: command.turn_id,
-        prompt: choruz_agent_runtime::headless::with_experience(
-            command.prompt,
-            experience.as_ref(),
+        prompt: format!(
+            "{history}{}",
+            choruz_agent_runtime::headless::with_experience(command.prompt, experience.as_ref(),)
         ),
         driver_type: binding.driver_type.as_str().to_owned(),
         workspace_path: binding.workspace_path,
@@ -1079,6 +1092,30 @@ pub(crate) async fn complete_command(
     Json(payload): Json<CompleteCommandRequest>,
 ) -> Result<StatusCode, ApiError> {
     let host = require_host(&headers, &state, &host_id).await?;
+    if let Some(metadata) = &payload.execution_metadata {
+        let decision: choruz_decision::programs::TurnDecision =
+            serde_json::from_value(metadata["decision"].clone()).map_err(|_| {
+                ApiError(AppError::Validation(
+                    "Invalid finite execution evidence".into(),
+                ))
+            })?;
+        if metadata["source"] != "decision_program"
+            || metadata["native_calls_avoided"] != 1
+            || decision.completion().is_none()
+            || metadata["request"]
+                .as_str()
+                .is_none_or(|request| request.len() > 128 * 1024)
+            || metadata.to_string().len() > 160 * 1024
+            || !payload.succeeded
+            || payload.tool_calls_count != 0
+            || payload.contents.len() != 1
+            || payload.contents.first().map(String::as_str) != decision.completion()
+        {
+            return Err(ApiError(AppError::Validation(
+                "Invalid finite execution evidence".into(),
+            )));
+        }
+    }
     let external_session_id = payload
         .external_session_id
         .as_deref()
@@ -1119,6 +1156,7 @@ pub(crate) async fn complete_command(
             payload.execution_duration_ms,
             external_session_id,
             payload.clear_external_session,
+            payload.execution_metadata.as_ref(),
         )
         .await
         .map_err(session_error)?;

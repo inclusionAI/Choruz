@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { API_BASE, CREDENTIALS, WEB_BASE } from "../fixtures/auth";
+import { API_BASE, CREDENTIALS, WEB_BASE, expandSidebarConversationSections } from "../fixtures/auth";
 import { createCompany, createGroup, deleteCompany } from "../fixtures/api";
 
 /**
@@ -152,8 +152,7 @@ test("incoming thread replies preserve reading position and follow the bottom", 
     await page.goto(`${WEB_BASE}/dashboard`);
     await page.locator(".company-selector-btn").click();
     await page.locator(".company-dropdown-item-name").filter({ hasText: name }).click();
-    const groups = page.getByRole("button", { name: /Group Conversations/ });
-    if (await groups.getAttribute("aria-expanded") !== "true") await groups.click();
+    await expandSidebarConversationSections(page);
     await page.locator(`[data-conversation-id="${group.id}"]`).click();
     await page.locator(".msg-thread-rollup").click();
     const list = page.locator(".thread-panel-messages");
@@ -200,8 +199,7 @@ test("thread drafts survive closing and switching roots", async ({ page }) => {
     await page.goto(`${WEB_BASE}/dashboard`);
     await page.locator(".company-selector-btn").click();
     await page.locator(".company-dropdown-item-name").filter({ hasText: name }).click();
-    const groups = page.getByRole("button", { name: /Group Conversations/ });
-    if (await groups.getAttribute("aria-expanded") !== "true") await groups.click();
+    await expandSidebarConversationSections(page);
     await page.locator(`[data-conversation-id="${group.id}"]`).click();
     const open = async (text: string) => {
       await page.locator(".chat-primary .msg-group").filter({ hasText: text }).locator(".msg-thread-rollup").click();
@@ -302,13 +300,7 @@ test("thread unread badge: lights on agent reply, survives conversation view, cl
   // fetch must light the thread badge; the conversation badge must NOT be
   // lit (quiet replies don't bump total_msg_count).
   await page.goto(`${WEB_BASE}/dashboard`);
-  // Expand the group section ONLY if collapsed — an unconditional click
-  // would toggle an already-expanded section closed and flake the test.
-  const groupSection = page.getByRole("button", { name: /Group Conversations/ });
-  await expect(groupSection).toBeVisible({ timeout: 15000 });
-  if ((await groupSection.getAttribute("aria-expanded")) !== "true") {
-    await groupSection.click();
-  }
+  await expandSidebarConversationSections(page);
   const convItem = page.locator(`.conv-item:has-text("${groupName}")`);
   await expect(convItem).toBeVisible({ timeout: 15000 });
   await expect(convItem.locator(".conv-thread-unread")).toBeVisible({ timeout: 15000 });

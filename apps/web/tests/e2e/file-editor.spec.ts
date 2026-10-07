@@ -36,6 +36,7 @@ for (const scenario of ["save after undo", "retry a failed save", "ignore a prev
       await page.locator(".company-selector-btn").click();
       await page.locator(".company-dropdown-item").filter({ hasText: name })
         .locator(".company-dropdown-item-name").click();
+      await page.getByRole("button", { name: "Project files", exact: true }).click();
       if (scenario === "ignore a previous file read") {
         oldRead = page.waitForResponse((response) => new URL(response.url()).searchParams.get("path") === oldPath);
         const started = page.waitForRequest((request) => new URL(request.url()).searchParams.get("path") === oldPath);

@@ -82,6 +82,7 @@ print(json.dumps(out))
     let chat = choruz_application::ChatApp::new();
     let state = crate::ApiState {
         experience_worker: None,
+        account_retirement_worker: None,
         app: chat.clone(),
         db: db.clone(),
         runtime,

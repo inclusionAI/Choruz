@@ -39,12 +39,12 @@ export default function OutboxProtocol() {
         <thead><tr><th>Field</th><th>Required</th><th>Description</th></tr></thead>
         <tbody>
           <tr><td><code>name</code></td><td>Yes</td><td>Agent display name</td></tr>
-          <tr><td><code>driver_type</code></td><td>No</td><td><code>claude_terminal</code> (default), <code>codex_terminal</code>, <code>pi_terminal</code>, <code>grok_terminal</code>, or <code>opencode_terminal</code></td></tr>
+          <tr><td><code>driver_type</code></td><td>No</td><td><code>claude_terminal</code> (default), <code>codex_terminal</code>, <code>muse_terminal</code>, <code>pi_terminal</code>, <code>grok_terminal</code>, or <code>opencode_terminal</code></td></tr>
           <tr><td><code>instructions</code></td><td>No</td><td>Agent instructions (written to CLAUDE.md or AGENTS.md)</td></tr>
         </tbody>
       </table>
 
-      <p>Pi and OpenCode require the corresponding <code>pi</code> or <code>opencode</code> plugin in <code>CHORUZ_PLUGINS</code> before provisioning.</p>
+      <p>Pi, OpenCode and Grok require the corresponding <code>pi</code>, <code>opencode</code> or <code>grok</code> plugin in <code>CHORUZ_PLUGINS</code> before provisioning.</p>
       <h3>create_group</h3>
       <p>Create a new group chat.</p>
       <pre><code>{`"$CHORUZ_SEND" '{"type":"create_group",

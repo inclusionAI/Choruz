@@ -10,17 +10,15 @@
 
 pub mod browser_workflow;
 pub mod codex;
-pub mod computer_use;
 pub mod drivers;
-pub mod experience_source;
+mod experience_source;
 pub mod filesystem;
 pub mod harness;
 pub mod inbox;
 pub mod instructions;
-pub mod learning_runner;
+pub mod learning_executor;
 pub mod link;
 pub mod outbox;
-pub mod process;
 pub mod session;
 mod session_history;
 pub mod session_protocol;
@@ -29,6 +27,7 @@ pub mod terminal;
 #[cfg(test)]
 static TEST_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+use choruz_learning::native_cli::CliRunner;
 use std::{collections::BTreeSet, path::PathBuf};
 
 use choruz_agent_runtime::{HarnessKind, SessionAccount, SessionCatalogScanner};
@@ -36,14 +35,14 @@ use choruz_common::AppError;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-pub use codex::{CodexSessionFileMeta, ImportedCodexSession, ManagedCodexHome};
+pub use codex::{ImportedCodexSession, ManagedCodexHome};
 pub mod evaluation_replay;
+use choruz_computer_use as computer_use;
 pub use filesystem::{FilesystemEntry, FilesystemHome, FilesystemListing};
-pub use process::ProcessContainer;
 pub use terminal::{
-    EnsureOutcome, TerminalPool, TerminalSession, TerminalSpec, default_terminal_binary,
-    ensure_terminal, evict_stale_terminals, is_terminal_driver, live_terminal_exists,
-    new_terminal_pool, terminal_binary, terminal_cli_args,
+    EnsureOutcome, TerminalPool, TerminalSession, TerminalSpec, ensure_terminal,
+    evict_stale_terminals, is_terminal_driver, live_terminal_exists, new_terminal_pool,
+    terminal_cli_args,
 };
 
 /// The helper installed as `<workspace>/.choruz/send`; `"$CHORUZ_SEND"`
@@ -80,18 +79,18 @@ pub enum HostRequest {
     ExperienceTrace {
         spec: Box<TerminalSpec>,
         #[serde(default)]
-        cursor: experience_source::Cursor,
+        cursor: choruz_learning::source::Cursor,
     },
-    /// Returns projected `experience_source::HistoricalRecord` envelopes from
+    /// Returns projected `choruz_learning::source::HistoricalRecord` envelopes from
     /// the selected source before its committed cursor, never raw reasoning.
     ExperienceReferences {
         spec: Box<TerminalSpec>,
-        cursor: experience_source::Cursor,
+        cursor: choruz_learning::source::Cursor,
         references: Vec<String>,
     },
     BehaviorReferences {
         spec: Box<TerminalSpec>,
-        cursor: experience_source::Cursor,
+        cursor: choruz_learning::source::Cursor,
         references: Vec<String>,
     },
     AnalyzeExperience {
@@ -296,8 +295,7 @@ pub async fn execute(request: HostRequest) -> Result<Value, AppError> {
                 ));
             }
             serde_json::to_value(
-                choruz_learning::build_program(&learning_runner::CliRunner(*spec), training)
-                    .await?,
+                choruz_learning::build_program(&CliRunner((*spec).into()), training).await?,
             )
             .map_err(|e| AppError::Internal(e.to_string()))
         }
@@ -317,8 +315,11 @@ pub async fn execute(request: HostRequest) -> Result<Value, AppError> {
         }
         HostRequest::ExperienceTrace { spec, cursor } => {
             blocking(move || {
-                serde_json::to_value(experience_source::read(&spec, cursor)?)
-                    .map_err(|e| AppError::Internal(format!("encode source window: {e}")))
+                serde_json::to_value(choruz_learning::native_source::read(
+                    &experience_source::for_read(&spec)?,
+                    cursor,
+                )?)
+                .map_err(|e| AppError::Internal(format!("encode source window: {e}")))
             })
             .await
         }
@@ -328,13 +329,17 @@ pub async fn execute(request: HostRequest) -> Result<Value, AppError> {
             references,
         } => {
             blocking(move || {
-                serde_json::to_value(experience_source::references(&spec, &cursor, &references)?)
-                    .map_err(|e| AppError::Internal(format!("encode source references: {e}")))
+                serde_json::to_value(choruz_learning::native_source::references(
+                    &experience_source::selected(&spec, &cursor)?,
+                    &cursor,
+                    &references,
+                )?)
+                .map_err(|e| AppError::Internal(format!("encode source references: {e}")))
             })
             .await
         }
         HostRequest::AnalyzeExperience { spec, prompt } => serde_json::to_value(
-            choruz_learning::analyze(&learning_runner::CliRunner(*spec), prompt).await?,
+            choruz_learning::analyze(&CliRunner((*spec).into()), prompt).await?,
         )
         .map_err(|e| AppError::Internal(format!("encode analysis report: {e}"))),
         HostRequest::BehaviorReferences {
@@ -343,8 +348,8 @@ pub async fn execute(request: HostRequest) -> Result<Value, AppError> {
             references,
         } => {
             blocking(move || {
-                serde_json::to_value(experience_source::behavior_references(
-                    &spec,
+                serde_json::to_value(choruz_learning::native_source::behavior_references(
+                    &experience_source::selected(&spec, &cursor)?,
                     &cursor,
                     &references,
                 )?)
@@ -353,19 +358,19 @@ pub async fn execute(request: HostRequest) -> Result<Value, AppError> {
             .await
         }
         HostRequest::ExtractBehavior { spec, prompt } => serde_json::to_value(
-            choruz_learning::extract_behavior(&learning_runner::CliRunner(*spec), prompt).await?,
+            choruz_learning::extract_behavior(&CliRunner((*spec).into()), prompt).await?,
         )
         .map_err(|e| AppError::Internal(format!("encode behavior card: {e}"))),
         HostRequest::ReviewBehavior { spec, prompt } => serde_json::to_value(
-            choruz_learning::review_behavior(&learning_runner::CliRunner(*spec), prompt).await?,
+            choruz_learning::review_behavior(&CliRunner((*spec).into()), prompt).await?,
         )
         .map_err(|e| AppError::Internal(format!("encode privacy review: {e}"))),
         HostRequest::RedactBehavior { spec, record } => serde_json::to_value(
-            choruz_learning::redact_behavior(&learning_runner::CliRunner(*spec), *record).await?,
+            choruz_learning::redact_behavior(&CliRunner((*spec).into()), *record).await?,
         )
         .map_err(|e| AppError::Internal(format!("encode public behavior projection: {e}"))),
         HostRequest::ResearchExperience { spec, categories } => serde_json::to_value(
-            choruz_learning::research(&learning_runner::CliRunner(*spec), categories).await?,
+            choruz_learning::research(&CliRunner((*spec).into()), categories).await?,
         )
         .map_err(|e| AppError::Internal(format!("encode research: {e}"))),
         HostRequest::EvaluateExperience {
@@ -374,13 +379,8 @@ pub async fn execute(request: HostRequest) -> Result<Value, AppError> {
             instruction,
             preflight,
         } => serde_json::to_value(
-            choruz_learning::evaluate(
-                &learning_runner::CliRunner(*spec),
-                input,
-                instruction,
-                preflight,
-            )
-            .await?,
+            choruz_learning::evaluate(&CliRunner((*spec).into()), input, instruction, preflight)
+                .await?,
         )
         .map_err(|e| AppError::Internal(format!("encode evaluation output: {e}"))),
         HostRequest::ReplayExperience {
@@ -399,20 +399,19 @@ pub async fn execute(request: HostRequest) -> Result<Value, AppError> {
             check,
             output,
         } => serde_json::to_value(
-            choruz_learning::judge(&learning_runner::CliRunner(*spec), input, check, output)
-                .await?,
+            choruz_learning::judge(&CliRunner((*spec).into()), input, check, output).await?,
         )
         .map_err(|e| AppError::Internal(format!("encode judge result: {e}"))),
         HostRequest::ProposeExperience { spec, prompt } => serde_json::to_value(
-            choruz_learning::propose(&learning_runner::CliRunner(*spec), prompt).await?,
+            choruz_learning::propose(&CliRunner((*spec).into()), prompt).await?,
         )
         .map_err(|e| AppError::Internal(format!("encode guidance proposal: {e}"))),
-        HostRequest::ReviewExperience { spec, prompt } => serde_json::to_value(
-            choruz_learning::review(&learning_runner::CliRunner(*spec), prompt).await?,
-        )
-        .map_err(|e| AppError::Internal(format!("encode guidance review: {e}"))),
+        HostRequest::ReviewExperience { spec, prompt } => {
+            serde_json::to_value(choruz_learning::review(&CliRunner((*spec).into()), prompt).await?)
+                .map_err(|e| AppError::Internal(format!("encode guidance review: {e}")))
+        }
         HostRequest::ReviewTasks { spec, prompt } => serde_json::to_value(
-            choruz_learning::review_tasks(&learning_runner::CliRunner(*spec), prompt).await?,
+            choruz_learning::review_tasks(&CliRunner((*spec).into()), prompt).await?,
         )
         .map_err(|e| AppError::Internal(format!("encode task review: {e}"))),
         HostRequest::PrepareExecutionTeam {
@@ -459,9 +458,11 @@ pub async fn execute(request: HostRequest) -> Result<Value, AppError> {
                     &workspace_path,
                     account_home.as_deref(),
                 )?;
-                let baseline = codex::collect_codex_session_files(&managed.sessions_path)?
-                    .into_iter()
-                    .collect();
+                let baseline = choruz_agent_runtime::session_files::collect_codex_session_files(
+                    &managed.sessions_path,
+                )?
+                .into_iter()
+                .collect();
                 Ok(CodexHomeReady {
                     home_path: managed.home_path,
                     sessions_path: managed.sessions_path,

@@ -6,6 +6,8 @@ description = "The Axum process that serves every /v1 route, the WebSockets and 
 license.workspace = true
 
 [dependencies]
+choruz-activity = { path = "../../crates/choruz-activity", version = "0.2.3" }
+choruz-computer-use = { path = "../../crates/choruz-computer-use", version = "0.2.3" }
 choruz-decision = { path = "../../crates/choruz-decision", version = "0.2.3" }
 choruz-learning = { path = "../../crates/choruz-learning", version = "0.2.3" }
 choruz-community = { path = "../../crates/choruz-community", version = "0.2.3" }
