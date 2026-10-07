@@ -5,19 +5,52 @@
   </picture>
 </p>
 
-<h1 align="center">Choruz — A Collaboration Space for Humans and AI Agents</h1>
+<h1 align="center">Choruz — An Agent Workspace That Learns From Your Work</h1>
 
-Choruz is a local-first collaboration app where humans and AI agents work together in a Slack-like space. Each agent runs a real CLI in its own workspace and can hand work to people or other agents through messages, threads, tasks, and files.
+An agent workspace for **Codex, Claude Code, and Muse** that asynchronously turns user interaction traces into **personalized benchmarks** to adapt harnesses, reduce recurring errors, and support selective substitution with **smaller provider models you configure**.
+
+Native trace learning currently supports **Codex and Claude Code**. Muse workspace execution is supported; its native learning adapter is not included yet. Choruz evaluates task suitability, not a provider model's parameter count or billing cost.
+
+Keep working with your agent. With background learning enabled, Choruz uses task outcomes, tool feedback, and your corrections to build evaluable tasks and test proposed improvements. The agent's instructions and execution team can change; the analysis and evaluation standards stay fixed. This adapts the harness, not the model's weights.
 
 Choruz supports Claude Code, Codex, Muse Code, and webhook-driven external agents by default. Plugins enable Grok, Pi, OpenCode, and MathCode; see [plugin configuration](docs/plugins.md).
 
 ## Demo
 
-https://github.com/user-attachments/assets/4b82c980-0083-4294-b947-dff9a3a59078
+[![Choruz — Your work becomes your benchmark](https://raw.githubusercontent.com/inclusionAI/Choruz/93ea9787b6bc8865cebdeb9a6f4f2fc732c90cd9/poster.png)](https://github.com/inclusionAI/Choruz/raw/93ea9787b6bc8865cebdeb9a6f4f2fc732c90cd9/choruz-learning-overview.mp4)
+
+[Watch the 1:57 English overview](https://github.com/inclusionAI/Choruz/raw/93ea9787b6bc8865cebdeb9a6f4f2fc732c90cd9/choruz-learning-overview.mp4) · [Production and provenance](https://github.com/inclusionAI/Choruz/tree/93ea9787b6bc8865cebdeb9a6f4f2fc732c90cd9)
+
+Illustrated mechanisms with one actual product-settings capture; no measured improvement or cost saving is claimed.
 
 ## Developer Preview
 
 Choruz is under pre-release development. Its interfaces, configuration, and data formats may change incompatibly. Before upgrading an existing installation, follow the [offline conversion guide](docs/testing/choruz-runtime-conversion-rehearsal.md).
+
+## From Interaction to Improvement
+
+```text
+Your task + agent actions + real feedback
+                    ↓
+          Background trace analysis
+                    ↓
+         Personalized benchmark cases
+                    ↓
+       Evaluate prompt and team changes
+                    ↓
+   Apply reviewed improvements to future tasks
+                    ↓
+  Reuse a validated program with your configured provider model
+```
+
+- **Learn from your actual work.** Meaningful work segments retain attempts, outcomes, and later corrections. An unsuccessful exploration is not automatically an agent mistake.
+- **Turn experience into tests.** Cases carry an input, expected outcome, and an exact check or independent AI judge. Curated training, validation, and held-out cases keep evaluation separate from optimization.
+- **Improve the harness, not the scorecard.** Prompt changes come first. A documented recurrence after guidance was used can unlock changes to collaborator count, role prompts, and execution order. Reviewed revisions can be restored or cleared.
+- **Use a configured smaller model selectively.** When you select a smaller provider model, a validated finite-output program can complete applicable turns without native inference if you enable that capability. Abstentions and provider failures return to the original agent; this is not blanket replacement of arbitrary tasks or a guaranteed cost saving.
+
+Enable background learning, choose an analysis agent, and set the evaluation and application permissions in **Experience learning**. Analysis runs in separate asynchronous sessions and consumes the selected account's usage; foreground work keeps its current instructions. Provider-program execution additionally requires the configured provider and explicit transmission permission.
+
+The same [learning](crates/choruz-learning/README.md), [evaluation](crates/choruz-evaluation/README.md), and [decision](crates/choruz-decision/README.md) libraries can be used independently of the full workspace.
 
 ## Run
 
@@ -31,7 +64,7 @@ Choruz is under pre-release development. Its interfaces, configuration, and data
 ### Run from source
 
 ```bash
-git clone https://github.com/jcguo123/Choruz.git
+git clone https://github.com/inclusionAI/Choruz.git
 cd Choruz
 pnpm install
 pnpm dev:all
@@ -43,7 +76,7 @@ Start the Web app in another terminal:
 pnpm dev:web
 ```
 
-The command prints the URL to open. The main checkout uses `http://127.0.0.1:3100` by default, while Git worktrees receive independent ports automatically. In the Dashboard, create a Company and an Agent, then start a direct chat or mention the Agent in a group.
+The command prints the URL to open. The main checkout uses `http://127.0.0.1:3100` by default, while Git worktrees receive independent ports automatically. Choose a project in the task workbench and start a task with an installed agent CLI. Use **Configure device, account or agent** for additional setup; collaboration and group conversations remain available from the workspace controls.
 
 Stop the Web app and Choruz services:
 
@@ -53,11 +86,10 @@ pnpm stop:all
 
 ## Core Capabilities
 
-- **Real CLI agents:** Terminal and headless execution preserve each CLI's models, tools, and session capabilities.
-- **Human-agent collaboration:** Isolated Companies, direct messages, groups, mentions, threads, and channel task boards.
-- **Agent workspaces:** Dedicated directories or Git worktrees with skills, sub-agents, AI Manager, and scheduled work.
-- **Local and remote operation:** An integrated terminal, file browser and editor, SSH runtime hosts, and browser-based remote control.
-- **Open integration:** REST APIs, WebSocket sync, webhook agents, Slack and Telegram bridges, and optional plugins.
+- **Personalized evaluation:** Background trace analysis, feedback-grounded benchmark cases, fixed checks and judges, and measured prompt/team optimization.
+- **Selective provider-model execution:** Use a smaller model you configure through evaluated decision programs, with confidence/applicability checks, native fallback, and recorded model attribution.
+- **A familiar workspace:** Real CLI agents, persistent tasks, project files, and local or remote execution devices. Collaboration, groups, threads, and task boards remain available when needed.
+- **Composable capabilities:** Shared libraries, REST APIs, WebSocket sync, webhook agents, optional plugins, and Slack/Telegram bridges.
 
 ## Documentation
 
