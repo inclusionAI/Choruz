@@ -21,13 +21,11 @@ async fn require_agent_workspace_access(
     if !matches!(agent.principal_type, PrincipalType::Agent) {
         return Err(ApiError::from(AppError::NotFound("agent not found".into())));
     }
-    let can_access = operator.workspace_id == agent.workspace_id
-        || state
-            .db
-            .list_companies(&operator.id)
-            .await?
-            .iter()
-            .any(|company| company.id == agent.workspace_id);
+    let can_access = state
+        .db
+        .accessible_workspace_ids(&operator.id)
+        .await?
+        .contains(&agent.workspace_id);
     if !can_access {
         return Err(ApiError::from(AppError::Forbidden(
             "cross-workspace access denied".into(),

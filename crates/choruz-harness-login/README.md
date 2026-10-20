@@ -2,6 +2,11 @@
 
 Codex browser sign-in and read-only account probes for installed Claude Code and Codex CLIs. Codex uses its app-server browser login with an optional state-checked loopback callback. Claude authentication runs in the official CLI terminal, outside this crate; identity, model and exact-usage probes read the selected profile afterward.
 
+Authentication and probes use the shared device executable resolver, including
+`CHORUZ_<HARNESS>_BINARY` and supported `CHORUZ_<HARNESS>_CLI_PATH` overrides.
+The selected account still controls the profile; choosing a binary never copies
+credentials or switches accounts.
+
 ## Entry points
 
 - `src/lib.rs` — `LoginJob`, `LoginSink`, `run_login`, `login_binary`, `claude_signed_in`, `claude_model_catalog`, `claude_account_probe`, `codex_account_probe`

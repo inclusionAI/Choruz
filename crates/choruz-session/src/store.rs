@@ -1042,11 +1042,6 @@ impl PgSessionStore {
                         &[&conversation_id, &outbox_payload, &now],
                     )
                     .await?;
-                    tx.execute(
-                    "UPDATE conversation SET total_msg_count = total_msg_count + 1 WHERE id = $1",
-                    &[&conversation_id],
-                )
-                    .await?;
                 }
             }
         }

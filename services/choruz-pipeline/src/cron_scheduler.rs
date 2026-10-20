@@ -279,7 +279,7 @@ async fn dispatch_cron_occurrence(
         let event_turn_id: Option<&str> = None;
         let reply_event_id: Option<&str> = None;
 
-        let inserted = tx
+        tx
             .query_opt(
                 "INSERT INTO conversation_events
                     (conversation_id, seq, event_id, event_type, sender_id,
@@ -307,15 +307,6 @@ async fn dispatch_cron_occurrence(
             )
             .await
             .map_err(|e| format!("insert event: {e}"))?;
-
-        if inserted.is_some() {
-            tx.execute(
-                "UPDATE conversation SET total_msg_count = total_msg_count + 1 WHERE id = $1",
-                &[&conversation_id],
-            )
-            .await
-            .map_err(|e| format!("update conversation count: {e}"))?;
-        }
     }
 
     let existing = tx

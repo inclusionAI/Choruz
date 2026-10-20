@@ -1,3 +1,4 @@
+use choruz_common::mentions::contains_mention as contains_mention_with_candidates;
 use choruz_common::{AppError, new_id, now};
 use choruz_domain::{Message, PrincipalType};
 use choruz_store::conversation_events::THREAD_FLAG_SQL;
@@ -601,18 +602,8 @@ impl DbService {
         .await
         .map_err(|e| AppError::Internal(format!("send_message outbox insert: {e}")))?;
 
-        // Phase 4: push message.created events to outbox_event for each
-        // conversation member so that list_events/ack_events consumers
-        // (SSE, webhooks) see the new message.
-        //
-        // Payload schema (stable contract for external webhook apps):
-        //   event_type    = "message.created" (carried at envelope level)
-        //   workspace_id  = conv.workspace_id
-        //   conversation_id, conversation_type
-        //   message_id, content, content_type, server_seq
-        //   sender: { id, name, type }
-        //   metadata (preserved for integrations such as the platform bridge)
-        //   client_msg_id (for dedup on receiver side, may be null)
+        // Message publication is owned by the event INSERT trigger; this
+        // envelope is the separately subscribed app_mention notification.
         let event_payload = serde_json::json!({
             "workspace_id": conv.workspace_id,
             "conversation_id": conv.id,
@@ -636,17 +627,6 @@ impl DbService {
             // same correlator in their structured logs.
             "trace_id": trace_id_opt,
         });
-        for member_id in conv.members.keys() {
-            let evt_id = new_id();
-            let evt_type = "message.created";
-            tx.execute(
-                "INSERT INTO outbox_event (id, workspace_id, principal_id, event_type, payload, created_at)
-                 VALUES ($1, $2, $3, $4, $5, NOW())",
-                &[&evt_id, &conv.workspace_id, member_id, &evt_type, &event_payload],
-            )
-            .await
-            .map_err(|e| AppError::Internal(format!("send_message push_event: {e}")))?;
-        }
 
         // Additionally emit `app_mention` events for each *agent* member
         // whose name (case-insensitive) appears as `@<name>` in the
@@ -695,10 +675,9 @@ impl DbService {
             }
         }
 
-        let content_lc = request.content.to_lowercase();
         let mention_candidates: Vec<String> = agent_rows
             .iter()
-            .map(|row| row.get::<_, String>("name").to_lowercase())
+            .map(|row| row.get::<_, String>("name"))
             .collect();
         for row in &agent_rows {
             let agent_id: String = row.get("id");
@@ -707,11 +686,8 @@ impl DbService {
             if agent_id == actor.id {
                 continue;
             }
-            if !contains_mention_with_candidates(
-                &content_lc,
-                &agent_name.to_lowercase(),
-                &mention_candidates,
-            ) {
+            if !contains_mention_with_candidates(&request.content, &agent_name, &mention_candidates)
+            {
                 continue;
             }
             let evt_id = new_id();
@@ -752,48 +728,6 @@ impl DbService {
         tx.commit()
             .await
             .map_err(|e| AppError::Internal(format!("send_message commit: {e}")))?;
-
-        // Increment unread counters (Mattermost pattern).
-        // This runs outside the transaction — eventual consistency is fine.
-        //
-        // Threaded replies WITHOUT broadcast do not bump the conversation-
-        // level counter: a busy thread should not light up the conversation
-        // badge for members who already triaged the root. Broadcast replies
-        // appear on the main timeline, so they count like normal messages.
-        // Thread-level unread is computed from thread_read_receipt instead
-        //.
-        //
-        // PINNED SEMANTICS for future mention wiring: per the RFC's
-        // counter table, MENTIONS inside threads must still bump
-        // mention_count unconditionally (a mention is a direct ask
-        // regardless of where it happens). Today increment_msg_count is
-        // called with an empty mentioned_user_ids list — when mentions
-        // are wired through this path, the mention bump must NOT sit
-        // behind this gate; only the total_msg_count bump is gated.
-        let bumps_conversation_unread = thread_flags.bumps_conversation_unread();
-        if bumps_conversation_unread && let Err(e) = self.increment_msg_count(&conv.id, &[]).await {
-            tracing::warn!(
-                conversation_id = %conv.id,
-                error = %e,
-                "increment_msg_count failed (non-fatal)"
-            );
-        }
-
-        // Auto-mark sender as read (sender shouldn't see their own message
-        // as unread). Gated on the same condition as the counter bump: for
-        // a quiet (non-broadcast) threaded reply, total_msg_count was not
-        // bumped, so marking viewed here would have only one effect —
-        // wiping the sender's PRE-EXISTING main-timeline unread and
-        // mention_count, which they haven't actually read. Skip it.
-        if bumps_conversation_unread
-            && let Err(e) = self.mark_conversation_viewed(&conv.id, &actor.id).await
-        {
-            tracing::warn!(
-                conversation_id = %conv.id,
-                error = %e,
-                "auto mark_viewed for sender failed (non-fatal)"
-            );
-        }
 
         tracing::info!(
             event = "send_message_succeeded",
@@ -856,41 +790,6 @@ impl DbService {
     }
 
     // ── Unread counts (Mattermost pattern) ─────────────────────────────
-
-    /// Increment `conversation.total_msg_count` by 1 and optionally
-    /// increment `mention_count` for the specified user IDs.
-    ///
-    /// Called inside `send_message` after the message row is committed.
-    pub async fn increment_msg_count(
-        &self,
-        conversation_id: &str,
-        mentioned_user_ids: &[String],
-    ) -> Result<(), AppError> {
-        let client = self.store.connect().await?;
-
-        // Increment total_msg_count on the conversation row.
-        client
-            .execute(
-                "UPDATE conversation SET total_msg_count = total_msg_count + 1 WHERE id = $1",
-                &[&conversation_id],
-            )
-            .await
-            .map_err(|e| AppError::Internal(format!("increment_msg_count: {e}")))?;
-
-        // Increment mention_count for explicitly mentioned users (best-effort).
-        for uid in mentioned_user_ids {
-            client
-                .execute(
-                    "UPDATE conversation_member SET mention_count = mention_count + 1 \
-                     WHERE conv_id = $1 AND principal_id = $2 AND removed_at IS NULL",
-                    &[&conversation_id, uid],
-                )
-                .await
-                .ok(); // best-effort — don't fail the message send
-        }
-
-        Ok(())
-    }
 
     /// Mark a conversation as viewed by a user: set `msg_count` to the
     /// conversation's current `total_msg_count` and reset `mention_count`.
@@ -1284,45 +1183,6 @@ fn event_row_to_message(row: &tokio_postgres::Row, workspace_id: &str) -> Messag
             .unwrap_or_default(),
         created_at: row.get("created_at"),
     }
-}
-
-fn contains_mention_with_candidates(
-    content: &str,
-    mention: &str,
-    mention_candidates: &[String],
-) -> bool {
-    if mention.is_empty() {
-        return false;
-    }
-
-    let pattern = format!("@{mention}");
-    content.match_indices(&pattern).any(|(start, _)| {
-        mention_matches_at(content, mention, start)
-            && !mention_candidates
-                .iter()
-                .filter(|candidate| candidate.len() > mention.len())
-                .any(|candidate| mention_matches_at(content, candidate, start))
-    })
-}
-
-fn mention_matches_at(content: &str, mention: &str, start: usize) -> bool {
-    if mention.is_empty() {
-        return false;
-    }
-
-    let pattern = format!("@{mention}");
-    if !content[start..].starts_with(&pattern) {
-        return false;
-    }
-
-    let before = content[..start].chars().next_back();
-    let after = content[start + pattern.len()..].chars().next();
-
-    before.is_none_or(|ch| !is_mention_char(ch)) && after.is_none_or(|ch| !is_mention_char(ch))
-}
-
-fn is_mention_char(ch: char) -> bool {
-    ch.is_ascii_alphanumeric() || ch == '-' || ch == '_'
 }
 
 #[cfg(test)]

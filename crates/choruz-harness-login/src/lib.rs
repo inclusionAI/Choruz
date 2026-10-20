@@ -76,28 +76,19 @@ pub trait LoginSink: Send + Sync {
     ) -> impl std::future::Future<Output = Result<(), String>> + Send;
 }
 
-/// The executable that runs the sign-in: the `CHORUZ_<HARNESS>_BINARY`
-/// override, else the Harness's default command name.
+/// Resolve authentication through the same device-local executable owner as turns.
 pub fn login_binary(driver: HeadlessDriver) -> String {
-    if driver == HeadlessDriver::Muse {
-        return choruz_agent_runtime::executable::terminal_binary(
-            &choruz_agent_runtime::DriverType::MuseTerminal,
-            None,
-        );
-    }
-    let variable = match driver {
-        HeadlessDriver::Claude => "CHORUZ_CLAUDE_BINARY",
-        HeadlessDriver::Codex => "CHORUZ_CODEX_BINARY",
-        HeadlessDriver::Muse => "CHORUZ_MUSE_BINARY",
-        HeadlessDriver::Pi => "CHORUZ_PI_BINARY",
-        HeadlessDriver::Grok => "CHORUZ_GROK_BINARY",
-        HeadlessDriver::OpenCode => "CHORUZ_OPENCODE_BINARY",
-        HeadlessDriver::MathCode => "CHORUZ_MATHCODE_BINARY",
+    use choruz_agent_runtime::DriverType;
+    let kind = match driver {
+        HeadlessDriver::Claude => DriverType::ClaudeTerminal,
+        HeadlessDriver::Codex => DriverType::CodexTerminal,
+        HeadlessDriver::Muse => DriverType::MuseTerminal,
+        HeadlessDriver::Pi => DriverType::PiTerminal,
+        HeadlessDriver::Grok => DriverType::GrokTerminal,
+        HeadlessDriver::OpenCode => DriverType::OpenCodeTerminal,
+        HeadlessDriver::MathCode => DriverType::MathCodeTerminal,
     };
-    std::env::var(variable)
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| driver.default_binary().to_owned())
+    choruz_agent_runtime::executable::terminal_binary(&kind, None)
 }
 
 /// Run the sign-in for `job` to completion. Authentication succeeds once the
@@ -819,6 +810,60 @@ pub fn codex_identity_probe(account: &serde_json::Value) -> Result<AccountProbe,
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    #[test]
+    fn account_probe_uses_the_shared_cli_alias_in_an_isolated_process() {
+        const CHILD: &str = "CHORUZ_TEST_LOGIN_RESOLVER_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            let runtime = tokio::runtime::Runtime::new().unwrap();
+            let probe = runtime
+                .block_on(super::probe_account(&super::AccountProfile {
+                    driver: choruz_agent_runtime::headless::HeadlessDriver::Codex,
+                    account_id: "12345678-1234-1234-1234-123456789abc".into(),
+                    profile_kind: "isolated".into(),
+                }))
+                .unwrap();
+            assert_eq!(probe.models[0]["id"], "alias-model");
+            assert_eq!(probe.usage["windows"][0]["remainingPercent"], 62.0);
+            return;
+        }
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let binary = directory.path().join("selected-codex");
+        std::fs::write(&binary, r##"#!/bin/sh
+[ "$1" = app-server ] || exit 9
+case "$CODEX_HOME" in */12345678-1234-1234-1234-123456789abc/codex) ;; *) exit 8;; esac
+while IFS= read -r line; do
+case "$line" in
+*'"method":"initialize"'*) printf '%s\n' '{"id":0,"result":{}}';;
+*'"method":"account/read"'*) printf '%s\n' '{"id":10,"result":{"account":{"email":"alias@example.test","planType":"team"}}}';;
+*'"method":"account/rateLimits/read"'*) printf '%s\n' '{"id":11,"result":{"rateLimits":{"primary":{"usedPercent":38,"windowDurationMins":10080,"resetsAt":1800000000}}}}';;
+*'"method":"model/list"'*) printf '%s\n' '{"id":12,"result":{"data":[{"id":"alias-model","displayName":"Alias model"}]}}'; exit 0;;
+esac
+done
+"##).unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "tests::account_probe_uses_the_shared_cli_alias_in_an_isolated_process",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env("CHORUZ_CODEX_CLI_PATH", format!(" {} ", binary.display()))
+            .env("CHORUZ_CODEX_BINARY", " ")
+            .env("CHORUZ_HARNESS_ACCOUNT_ROOT", directory.path())
+            .env("PATH", directory.path())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn exited_codex_initialize_reports_the_cli_recovery_action() {

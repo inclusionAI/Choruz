@@ -8,6 +8,7 @@ import type {
   ProvisioningJobRetryRequest,
 } from "./group-provisioning-contract";
 import type { Principal, RuntimeBindingInfo } from "../api/choruz-types";
+import { transportFetch } from "../api/transport";
 import {
   generateGroupName,
   getRoleTemplate,
@@ -520,7 +521,7 @@ function cryptoRandomId(): string {
 async function groupProvisioningFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
   if (init.body && !headers.has("content-type")) headers.set("content-type", "application/json");
-  const response = await fetch(path, {
+  const response = await transportFetch(path, {
     ...init,
     headers,
     credentials: init.credentials ?? "same-origin",

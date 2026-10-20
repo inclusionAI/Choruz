@@ -153,23 +153,7 @@ impl Supervisor {
             .and_then(reqwest::blocking::Response::error_for_status)
             .and_then(reqwest::blocking::Response::json::<choruz_common::HostServiceStatus>)
             .map_err(|error| format!("read readiness: {error}"))?;
-        if status.service != expected_service {
-            return Err(format!(
-                "expected service {expected_service}, found {}",
-                status.service
-            ));
-        }
-        if status.protocol_version != choruz_common::HOST_SERVICE_PROTOCOL_VERSION {
-            return Err(format!(
-                "unsupported host protocol {}, expected {}",
-                status.protocol_version,
-                choruz_common::HOST_SERVICE_PROTOCOL_VERSION
-            ));
-        }
-        if status.status != "ready" {
-            return Err(format!("service reported status {}", status.status));
-        }
-        Ok(())
+        status.validate_ready(expected_service)
     }
 
     fn child_is_running(&self, name: &str) -> Result<bool, String> {

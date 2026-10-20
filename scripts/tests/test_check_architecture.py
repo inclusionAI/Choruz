@@ -46,6 +46,14 @@ class ArchitectureTests(unittest.TestCase):
             ("execution-identity", "services/choruz-api-gateway/src/decision_worker.rs", "struct ExecutionIdentity { model: String }"),
             ("database-webhook-outbox", "services/choruz-api-gateway/src/webhook.rs", "fn memory_queue(app: &ChatApp) {}"),
             ("driver-metadata", "apps/web/lib/drivers/driver-availability.ts", "const DRIVER_LABELS = new Map();"),
+            ("browser-api-transport", "apps/web/lib/groups/create-group-template-flow.ts", "await fetch('/api/group-provisioning-jobs');"),
+            ("cached-message-merge", "apps/web/components/chat/chat-app.tsx", "if (idbMsgs.length > existing.length) { merged[cid] = idbMsgs; }"),
+            ("snapshot-request-epoch", "apps/web/components/chat/chat-app.tsx", "const applyBootstrap = useCallback((bootstrap) => { const snapshotStartedAt = Date.now(); });"),
+            ("mention-lexer", "crates/choruz-router/src/policy.rs", "fn contains_mention(content: &str) -> bool { false }"),
+            ("workspace-access", "services/choruz-api-gateway/src/handlers_cron.rs", "let allowed = operator.workspace_id == agent.workspace_id;"),
+            ("authentication-executable", "crates/choruz-harness-login/src/lib.rs", 'pub fn login_binary(driver: Driver) -> String { std::env::var("CHORUZ_CODEX_BINARY").unwrap() }'),
+            ("host-service-readiness", "apps/choruz-cli/src/main.rs", "async fn api_ready() { client.send().await.is_ok_and(|response| response.status() == StatusCode::OK) }"),
+            ("bridge-channel-link", "services/choruz-bridge/src/adapters/slack.ts", "await mappings.createMapping(proposed);"),
         )
         for name, path, code in cases:
             with self.subTest(contract=name):
@@ -89,6 +97,14 @@ await transport.fetch('/api/v1/messages');
         self.append("apps/web/lib/api/clients/README.md", "Use fetch(url) only through the transport.")
         path = "services/choruz-connector/src/main.rs"
         self.append(path, '#[cfg(test)]\nmod tests { fn fixture() { Command::new("fixture"); } }')
+        self.assertEqual(check(self.root, self.files), [])
+
+    def test_tsx_literals_are_not_cache_or_clock_bypasses(self):
+        self.append("apps/web/components/chat/chat-app.tsx", """
+const explanation = 'if (idbMsgs.length > existing.length)';
+const docs = `const applyBootstrap = useCallback(() => { const snapshotStartedAt = Date.now(); });`;
+const component = <div title="idbMsgs.length > existing.length" />;
+""")
         self.assertEqual(check(self.root, self.files), [])
 
     def test_multiline_strings_do_not_hide_later_production_calls(self):

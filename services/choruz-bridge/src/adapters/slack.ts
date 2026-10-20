@@ -77,14 +77,14 @@ export class SlackAdapter {
 
   private registerSlashCommands(): void {
     // /new-agent <name> <driver>
-    // Example: /new-agent backend-dev claude
+    // Example: /new-agent backend-dev claude_terminal
     this.app.command('/new-agent', async ({ command, ack, respond }) => {
       await ack();
 
       const args = command.text.trim().split(/\s+/);
       if (args.length < 2) {
         await respond({
-          text: 'Usage: `/new-agent <name> <driver>`\nExample: `/new-agent backend-dev claude`',
+          text: 'Usage: `/new-agent <name> <driver>`\nExample: `/new-agent backend-dev claude_terminal`',
           response_type: 'ephemeral',
         });
         return;
@@ -127,21 +127,15 @@ export class SlackAdapter {
       }
 
       try {
-        const group = await this.choruz.createGroup({
-          name,
-          member_ids: [this.bridgePrincipalId],
-        });
-
-        // The current database column is renamed in the Phase 3B migration.
-        await this.mappings.createMapping({
-          platform: 'slack',
-          platform_channel_id: command.channel_id,
-          choruz_conversation_id: group.id,
-          platform_channel_name: command.channel_name,
-        });
+        const conversation = await this.mappings.getOrCreate(
+          'slack', command.channel_id, command.channel_name,
+          async () => (await this.choruz.createGroup({
+            name, member_ids: [this.bridgePrincipalId],
+          })).id,
+        );
 
         await respond({
-          text: `Group *${name}* created in Choruz (id: \`${group.id}\`). This Slack channel is now linked.`,
+          text: `This Slack channel is linked to Choruz conversation \`${conversation}\`. Existing links are retained.`,
           response_type: 'in_channel',
         });
       } catch (err) {

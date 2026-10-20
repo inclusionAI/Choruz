@@ -14,6 +14,10 @@ Use `choruz` for local library operations or authenticated host operations witho
 
 `choruz start local` starts the shared API without the group-chat pipeline or a pairing request. It retains the API's asynchronous learning worker and needs PostgreSQL. `choruz start` starts the full headless stack and requests a Remote Control credential. Both reuse an existing ready host without changing its service selection. Stop that host before choosing a different composition. `--api-url` selects a loopback port for a new host. See [host composition](../../docs/subsystems/host-and-remote.md) for database and bundle requirements.
 
+Reusing a listener requires the gateway's service identity, supported host protocol
+and ready status. An unrelated, incompatible or unready listener fails startup
+instead of being reported as an existing Choruz host.
+
 `learning` reads or changes the selected binding's existing experience policy, evaluations and community permissions. Mutation bodies are JSON files using the [HTTP contract](../../openapi/choruz.yaml). `api` exposes other `/v1/` endpoints on the configured host with the same authentication; it accepts an optional JSON body for non-GET requests. Failed HTTP responses exit nonzero. Neither command starts a host automatically or duplicates its learning worker.
 
 ## Entry points

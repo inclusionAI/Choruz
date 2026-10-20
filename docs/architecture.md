@@ -67,7 +67,7 @@ human types in apps/web
   -> DbService::send_message (crates/choruz-application/src/db_service/messages.rs)
        INSERT conversation_events (seq = MAX(seq)+1 per conversation, client_msg_id) ON CONFLICT DO NOTHING
        INSERT event_outbox                       -- pipeline intake
-       INSERT outbox_event                       -- trigger trg_outbox_message_sync_change -> sync_change
+       trigger publish_conversation_message      -- unread counters + per-member outbox_event -> sync_change
   -> CdcPoller (crates/choruz-store/src/cdc_poller.rs) claims event_outbox rows
   -> run_router_loop (crates/choruz-router) writes mailbox_visibility, route_decisions, agent_commands (pending)
        NOTIFY choruz_commands -> services/choruz-pipeline/src/pg_notify.rs wakes dispatch
@@ -75,12 +75,12 @@ human types in apps/web
   -> execute_command (services/choruz-pipeline/src/executor.rs) runs one headless turn for the binding's DriverType
   -> agent output + drained .choruz-outbox/new/*.json (outbox_handler.rs)
   -> run_writer_loop (crates/choruz-writer) commits a reply row keyed by turn_id
-       trigger trg_agent_reply_sync_change -> sync_change; NOTIFY choruz_sync_change
+       trigger publish_conversation_message -> outbox_event -> sync_change; NOTIFY choruz_sync_change
   -> services/choruz-api-gateway/src/sync_wakeup.rs wakes /v1/ws/sync
   -> apps/web/hooks/use-chat-web-socket.ts applies the page, sends sync_ack, updates lib/messages/message-db.ts
 ```
 
-Ordering lives in `conversation_events.seq`, assigned inside the insert and exposed to clients as `server_seq`; the web cache upserts by `[conversation_id, server_seq]`. Idempotency lives in two partial unique indexes on the same table: `client_msg_id` for human messages and `turn_id` for agent replies, so a retried POST or a re-run turn is a no-op rather than a duplicate. A browser starts from `GET /v1/bootstrap` (`services/choruz-api-gateway/src/meta_handlers.rs`, at most `MAX_BOOTSTRAP_LIMIT` = 100 conversation previews), then replays `sync_change` rows after its acknowledged cursor over `/v1/ws/sync?device_id=…&cursor=…`; `GET /v1/sync` is the same feed over plain HTTP. `event_outbox` gives at-least-once handoff to the pipeline; `sync_change` gives each device its own durable cursor (`sync_device.ack_cursor`) so one browser cannot hide changes from another.
+Ordering lives in `conversation_events.seq`, assigned inside the insert and exposed to clients as `server_seq`; the web cache upserts by `[conversation_id, server_seq]`. The database publication trigger owns message fanout and unread updates for HTTP, helper, watcher, cron and result-writer entries in the same event transaction; quiet thread replies still emit message changes without increasing the main-timeline unread counter. Idempotency lives in two partial unique indexes on the same table: `client_msg_id` for human messages and `turn_id` for agent replies, so a retried POST or a re-run turn is a no-op rather than a duplicate. A browser starts from `GET /v1/bootstrap` (`services/choruz-api-gateway/src/meta_handlers.rs`, at most `MAX_BOOTSTRAP_LIMIT` = 100 conversation previews), then replays `sync_change` rows after its acknowledged cursor over `/v1/ws/sync?device_id=…&cursor=…`; `GET /v1/sync` is the same feed over plain HTTP. `event_outbox` gives at-least-once handoff to the pipeline; `sync_change` gives each device its own durable cursor (`sync_device.ack_cursor`) so one browser cannot hide changes from another.
 
 The dashboard reads the gateway's `/v1/ws/sync` feed.
 

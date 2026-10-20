@@ -14,12 +14,15 @@ import type { Principal, RuntimeBindingInfo } from "../api/choruz-types";
 import type { GroupProvisioningJobContract } from "./group-provisioning-contract";
 import { getGroupTemplate } from "./team-templates";
 import type { ClientDriverAvailabilityItem } from "../agents/create-agent-template-flow";
+import { localTransport, setActiveTransport } from "../api/transport";
 
 describe("create group template flow", () => {
   const originalFetch = globalThis.fetch;
 
   afterEach(() => {
     globalThis.fetch = originalFetch;
+    setActiveTransport(null);
+    vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
 
@@ -262,7 +265,7 @@ describe("create group template flow", () => {
     ]));
   });
 
-  it("creates provisioning jobs with same-origin credentials for cookie auth", async () => {
+  it("creates provisioning jobs with same-origin credentials through the selected transport", async () => {
     const template = getGroupTemplate("research-team")!;
     const draft = createGroupTemplateDraft({ groupTemplate: template, mission: "Compare two papers" });
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
@@ -271,7 +274,10 @@ describe("create group template flow", () => {
       status: 201,
       headers: { "content-type": "application/json" },
     }));
-    globalThis.fetch = fetchMock as typeof fetch;
+    const localFetch = vi.fn(() => { throw new Error("The controller has no local API"); });
+    vi.stubGlobal("window", {});
+    globalThis.fetch = localFetch as typeof fetch;
+    setActiveTransport({ ...localTransport, fetch: fetchMock });
 
     const job = await createGroupProvisioningJob({
       idempotencyKey: "idem-1",
@@ -280,6 +286,7 @@ describe("create group template flow", () => {
     });
 
     expect(job.id).toBe("job-1");
+    expect(localFetch).not.toHaveBeenCalled();
     expect(fetchMock).toHaveBeenCalledWith("/api/group-provisioning-jobs", expect.objectContaining({
       method: "POST",
       credentials: "same-origin",

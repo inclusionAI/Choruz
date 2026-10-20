@@ -232,16 +232,22 @@ pub(crate) async fn accessible_workspace_ids(
     db: &DbService,
     principal_id: &str,
 ) -> Result<HashSet<String>, ApiError> {
-    let mut ids = HashSet::new();
-    if let Ok(p) = db.get_principal(principal_id).await {
-        ids.insert(p.workspace_id.clone());
+    Ok(db.accessible_workspace_ids(principal_id).await?)
+}
+
+#[cfg(test)]
+mod workspace_access_tests {
+    #[tokio::test]
+    async fn workspace_lookup_failure_is_not_an_empty_success() {
+        let store = choruz_store::EventStore::new("host=127.0.0.1 dbname=unused");
+        store.pool().close();
+        let db = choruz_application::DbService::new(store);
+        assert!(
+            super::accessible_workspace_ids(&db, "operator")
+                .await
+                .is_err()
+        );
     }
-    if let Ok(companies) = db.list_companies(principal_id).await {
-        for c in companies {
-            ids.insert(c.id);
-        }
-    }
-    Ok(ids)
 }
 
 pub(crate) async fn binding_view_for_workspace(

@@ -123,6 +123,9 @@ Use `data-activity` for a stable control identity when the accessible name is ab
 
 ## Invariants
 
+- Group-template job creation, continuation and recovery use the active browser transport. Remote template provisioning requires the target's Next.js provisioning routes; an unavailable target route fails on that target, without falling back to the controller's API.
+- IndexedDB history merges through `mergeFetchedMessages`, retaining newer bootstrap and sync messages. Pin, archive and hide reconciliation receives the bootstrap request's start time, so a delayed response cannot supersede a mutation acknowledged during that request.
+
 - Search results load in bounded pages through `useMessageSearch`; one lookahead result controls the Load more action. A failed continuation retains loaded matches and offers Retry. Query or identity changes invalidate the prior continuation without replacing the selected-message navigation owner.
 
 - Message search selection retains its message ID. `MessageList` uses the existing older-history loader until the target is present, then scrolls and highlights it; Cancel and conversation/view changes stop continuation. History errors use the same Retry action as scrolling. Quiet replies open their existing thread panel after history reaches the root. Search does not merge isolated messages across pagination gaps.

@@ -472,7 +472,7 @@ async fn start_host(client: &Client, args: &Args, local_only: bool) -> Result<()
     if local.token.is_none() && local.operator_password.is_none() {
         local.operator_password = Some("choruz-local".into());
     }
-    if !api_ready(client, &local.api_url).await {
+    if !api_ready(client, &local.api_url).await? {
         let binary = server_binary()?;
         let data_dir = dirs::data_dir()
             .ok_or("no OS data directory available")?
@@ -531,12 +531,20 @@ async fn start_host(client: &Client, args: &Args, local_only: bool) -> Result<()
     Ok(())
 }
 
-async fn api_ready(client: &Client, base_url: &str) -> bool {
-    client
-        .get(api_url(base_url, "/readyz"))
-        .send()
+async fn api_ready(client: &Client, base_url: &str) -> Result<bool, String> {
+    let response = match client.get(api_url(base_url, "/readyz")).send().await {
+        Ok(response) => response,
+        Err(error) if error.is_connect() => return Ok(false),
+        Err(error) => return Err(format!("probe local Choruz service: {error}")),
+    };
+    let status = response
+        .error_for_status()
+        .map_err(|error| format!("local listener is not a ready Choruz service: {error}"))?
+        .json::<choruz_common::HostServiceStatus>()
         .await
-        .is_ok_and(|response| response.status() == StatusCode::OK)
+        .map_err(|error| format!("local listener has no Choruz service identity: {error}"))?;
+    status.validate_ready("choruz-api-gateway")?;
+    Ok(true)
 }
 
 #[cfg(unix)]
@@ -656,6 +664,42 @@ mod tests {
 
     fn values(items: &[&str]) -> Vec<String> {
         items.iter().map(|item| (*item).into()).collect()
+    }
+
+    #[tokio::test]
+    async fn start_local_rejects_unrelated_and_incompatible_ready_listeners() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        for body in [
+            json!({"ok":true}),
+            json!({"status":"ready","service":"unrelated","protocol_version":1}),
+            json!({"status":"ready","service":"choruz-api-gateway","protocol_version":999}),
+            json!({"status":"starting","service":"choruz-api-gateway","protocol_version":1}),
+            json!({"status":"ready","service":"choruz-api-gateway","protocol_version":1}),
+        ] {
+            let ready = body["service"] == "choruz-api-gateway"
+                && body["protocol_version"] == 1
+                && body["status"] == "ready";
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = [0; 8192];
+                assert!(socket.read(&mut request).await.unwrap() > 0);
+                let body = body.to_string();
+                socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+                socket.shutdown().await.unwrap();
+            });
+            let args = parse_args(&values(&[
+                "start",
+                "local",
+                "--api-url",
+                &format!("http://{address}"),
+            ]))
+            .unwrap();
+            let result = start_host(&Client::new(), &args, true).await;
+            server.await.unwrap();
+            assert_eq!(result.is_ok(), ready, "{result:?}");
+        }
     }
 
     #[test]

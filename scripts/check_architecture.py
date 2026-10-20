@@ -34,9 +34,12 @@ HEADLESS_CONSUMERS = (
 BOUNDARIES = (
     Boundary(
         "browser-api-transport", "apps/web/lib/api/transport.ts",
-        ("apps/web/lib/api/*.ts",),
+        ("apps/web/lib/api/*.ts", "apps/web/lib/groups/create-group-template-flow.ts"),
         r"(?<![\w.])(?:(?:globalThis|window)\s*\.\s*)?fetch\s*\(",
-        (("apps/web/lib/api/choruz-api.ts", r"\btransportFetch\s*\("),),
+        tuple((path, r"\btransportFetch\s*\(") for path in (
+            "apps/web/lib/api/choruz-api.ts",
+            "apps/web/lib/groups/create-group-template-flow.ts",
+        )),
     ),
     Boundary(
         "headless-turn", "crates/choruz-host-runtime/src/headless.rs",
@@ -76,6 +79,60 @@ BOUNDARIES = (
         r"\b(?:const|let)\s+DRIVER_(?:DEFINITIONS|LABELS)\b",
         (("apps/web/lib/drivers/driver-availability.ts", r"\bDRIVER_DEFINITIONS\s*\.\s*map\s*\("),),
     ),
+    Boundary(
+        "cached-message-merge", "apps/web/lib/messages/messages.ts",
+        ("apps/web/components/chat/chat-app.tsx",),
+        r"\bidbMsgs\s*\.\s*length\s*>\s*existing\s*\.\s*length",
+        (("apps/web/components/chat/chat-app.tsx", r"\bmergeFetchedMessages\s*\("),),
+    ),
+    Boundary(
+        "snapshot-request-epoch", "apps/web/lib/messages/conversation-flags.ts",
+        ("apps/web/components/chat/chat-app.tsx",),
+        r"\bconst\s+applyBootstrap\s*=\s*useCallback\s*\((?:(?!=>)[\s\S])*=>\s*\{\s*"
+        r"const\s+snapshotStartedAt\s*=\s*Date\s*\.\s*now\s*\(",
+        (("apps/web/hooks/use-conversation-flags.ts", r"\.\s*applyOverrides\s*\("),),
+    ),
+    Boundary(
+        "mention-lexer", "crates/choruz-common/src/mentions.rs",
+        (APPLICATION + "messages.rs", "crates/choruz-router/src/policy.rs"),
+        r"\bfn\s+(?:contains_mention(?:_with_candidates)?|mention_matches_at|is_mention_char)\s*\(",
+        tuple((path, r"choruz_common\s*::\s*mentions\s*::") for path in (
+            APPLICATION + "messages.rs", "crates/choruz-router/src/policy.rs",
+        )),
+    ),
+    Boundary(
+        "workspace-access", APPLICATION + "companies.rs",
+        (GATEWAY + "handlers_cron.rs", GATEWAY + "handlers_runtime.rs"),
+        r"\boperator\s*\.\s*workspace_id\s*==\s*agent\s*\.\s*workspace_id|"
+        r"\bids\s*\.\s*insert\s*\(\s*p\s*\.\s*workspace_id\s*\.\s*clone\s*\(",
+        tuple((GATEWAY + file, r"\.\s*accessible_workspace_ids\s*\(") for file in (
+            "handlers_cron.rs", "handlers_runtime.rs",
+        )),
+    ),
+    Boundary(
+        "authentication-executable", "crates/choruz-agent-runtime/src/executable.rs",
+        ("crates/choruz-harness-login/src/lib.rs",),
+        r"\bfn\s+login_binary\b[^{]*\{(?:(?!\n\})[\s\S])*?"
+        r"\bstd\s*::\s*env\s*::\s*var\s*\(",
+        (("crates/choruz-harness-login/src/lib.rs",
+          r"choruz_agent_runtime\s*::\s*executable\s*::\s*terminal_binary\s*\("),),
+    ),
+    Boundary(
+        "host-service-readiness", "crates/choruz-common/src/lib.rs",
+        ("apps/choruz-cli/src/main.rs", "crates/choruz-supervisor/src/supervisor.rs"),
+        r"\basync\s+fn\s+api_ready\b[^{]*\{(?:(?!\n\})[\s\S])*?"
+        r"\.\s*is_ok_and\s*\(\s*\|response\|\s*response\s*\.\s*status\s*\(\s*\)\s*==\s*StatusCode\s*::\s*OK",
+        tuple((path, r"\.\s*validate_ready\s*\(") for path in (
+            "apps/choruz-cli/src/main.rs", "crates/choruz-supervisor/src/supervisor.rs",
+        )),
+    ),
+    Boundary(
+        "bridge-channel-link", "services/choruz-bridge/src/mapping-store.ts",
+        ("services/choruz-bridge/src/adapters/*.ts",),
+        r"\.\s*createMapping\s*\(",
+        tuple(("services/choruz-bridge/src/adapters/" + file, r"\.\s*getOrCreate\s*\(")
+              for file in ("slack.ts", "telegram.ts")),
+    ),
 )
 
 # Auth verification is server-only and cannot use the browser relay transport.
@@ -95,7 +152,7 @@ def production_text(text: str, path: str) -> str:
     or data flow. Behavioral tests and the independent ownership audit cover those.
     """
     tokens = r"'(?:\\.|[^'\\\n])'|" + r'//[^\n]*|/\*[\s\S]*?\*/|\br(\#*)"[\s\S]*?"\1|"(?:\\[\s\S]|[^"\\])*"'
-    if path.endswith(".ts"):
+    if path.endswith((".ts", ".tsx")):
         tokens += r"|'(?:\\[\s\S]|[^'\\])*'"
     token = re.compile(tokens)
     masked = list(text)
@@ -129,7 +186,7 @@ def production_text(text: str, path: str) -> str:
                 hide(index, match.end())
                 index = match.end()
                 continue
-            if path.endswith(".ts") and text[index] == "`":
+            if path.endswith((".ts", ".tsx")) and text[index] == "`":
                 index = template(index)
                 continue
             if expression:

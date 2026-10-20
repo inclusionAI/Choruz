@@ -3709,6 +3709,14 @@ async fn send_to_group_threads_canonicalize_and_gate_unread() {
         before,
         "quiet agent thread reply must not bump total_msg_count"
     );
+    let quiet_changes = client.query_one(
+        "SELECT COUNT(*) FROM sync_change WHERE principal_id=$1 AND conversation_id=$2 AND event_type='message.created' AND payload->>'content'='quiet agent reply'",
+        &[&human, &conv],
+    ).await.expect("quiet reply sync projection").get::<_, i64>(0);
+    assert_eq!(
+        quiet_changes, 1,
+        "quiet replies still reach an open thread through the canonical feed"
+    );
 
     // (c): broadcast reply bumps.
     let bcast_meta = serde_json::json!({
@@ -3729,6 +3737,25 @@ async fn send_to_group_threads_canonicalize_and_gate_unread() {
         count_for(&client, &conv).await,
         before + 1,
         "broadcast agent thread reply bumps total_msg_count"
+    );
+    let delivered = client.query(
+        "SELECT payload->>'content' AS content FROM sync_change WHERE principal_id=$1 AND conversation_id=$2 AND event_type='message.created' AND payload->>'sender_id'=$3 ORDER BY cursor",
+        &[&human, &conv, &agent],
+    ).await.expect("every consecutive reply has its own sync event");
+    assert_eq!(
+        delivered
+            .iter()
+            .map(|r| r.get::<_, String>(0))
+            .collect::<Vec<_>>(),
+        vec!["quiet agent reply", "broadcast agent reply"]
+    );
+    let deliveries = client.query_one(
+        "SELECT COUNT(*) FROM outbox_event WHERE principal_id=$1 AND event_type='message.created' AND payload->>'conversation_id'=$2 AND payload->>'sender_id'=$3",
+        &[&human, &conv, &agent],
+    ).await.unwrap().get::<_, i64>(0);
+    assert_eq!(
+        deliveries, 2,
+        "webhook and sync consumers share the same durable message owner"
     );
 
     // (d): missing target errors with an agent-readable message.

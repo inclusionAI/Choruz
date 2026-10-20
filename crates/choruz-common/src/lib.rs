@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
 
+pub mod mentions;
 pub mod metrics;
 pub mod plugins;
 
@@ -23,6 +24,26 @@ pub struct HostServiceStatus {
 }
 
 impl HostServiceStatus {
+    /// Reject unrelated, incompatible or unready services before reusing a listener.
+    pub fn validate_ready(&self, expected_service: &str) -> Result<(), String> {
+        if self.service != expected_service {
+            return Err(format!(
+                "expected service {expected_service}, found {}",
+                self.service
+            ));
+        }
+        if self.protocol_version != HOST_SERVICE_PROTOCOL_VERSION {
+            return Err(format!(
+                "unsupported host protocol {}, expected {}",
+                self.protocol_version, HOST_SERVICE_PROTOCOL_VERSION
+            ));
+        }
+        if self.status != "ready" {
+            return Err(format!("service reported status {}", self.status));
+        }
+        Ok(())
+    }
+
     pub fn new(service: impl Into<String>, status: impl Into<String>) -> Self {
         Self {
             status: status.into(),

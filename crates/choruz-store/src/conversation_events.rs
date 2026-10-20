@@ -83,14 +83,6 @@ impl ThreadFlags {
             is_broadcast: flag("broadcast"),
         }
     }
-
-    /// Whether this message bumps the CONVERSATION-level unread counter
-    /// (`total_msg_count`). Quiet thread replies don't — they are counted
-    /// per thread via `thread_read_receipt` instead. Mentions always bump
-    /// regardless (enforced at the mention-count sites, not here).
-    pub fn bumps_conversation_unread(&self) -> bool {
-        !self.is_thread_reply || self.is_broadcast
-    }
 }
 
 /// Row returned from the database.
@@ -510,13 +502,10 @@ mod tests {
             ThreadFlags::from_metadata(&serde_json::json!({"thread": true, "broadcast": true}));
         assert!(flags.is_thread_reply);
         assert!(flags.is_broadcast);
-        assert!(flags.bumps_conversation_unread());
 
-        // Quiet thread reply does NOT bump the conversation counter.
         let quiet = ThreadFlags::from_metadata(&serde_json::json!({"thread": true}));
         assert!(quiet.is_thread_reply);
         assert!(!quiet.is_broadcast);
-        assert!(!quiet.bumps_conversation_unread());
 
         // String "true" is NOT a thread — mirrors THREAD_FLAG_SQL's jsonb
         // equality and as_bool() on the write paths.
@@ -524,12 +513,9 @@ mod tests {
             ThreadFlags::from_metadata(&serde_json::json!({"thread": "true", "broadcast": "true"}));
         assert!(!stringly.is_thread_reply);
         assert!(!stringly.is_broadcast);
-        assert!(stringly.bumps_conversation_unread());
 
-        // Plain messages and legacy quote-replies bump as before.
         let plain = ThreadFlags::from_metadata(&serde_json::json!({"reply_to_id": "m-1"}));
         assert!(!plain.is_thread_reply);
-        assert!(plain.bumps_conversation_unread());
     }
 
     #[test]

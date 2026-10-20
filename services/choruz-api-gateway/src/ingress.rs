@@ -227,20 +227,6 @@ pub(crate) async fn ingest_message(
     .await
     .map_err(|e| ApiError::from(AppError::Internal(format!("insert outbox entry: {e}"))))?;
 
-    // 5c. Increment conversation.total_msg_count for unread tracking
-    // (Mattermost pattern — keeps /v1/unreads and console snapshot
-    // counts correct for writes that bypass DbService::send_message).
-    tx.execute(
-        "UPDATE conversation SET total_msg_count = total_msg_count + 1 WHERE id = $1",
-        &[&req.conversation_id],
-    )
-    .await
-    .map_err(|e| {
-        ApiError::from(AppError::Internal(format!(
-            "increment total_msg_count: {e}"
-        )))
-    })?;
-
     // 6. Commit the transaction.
     tx.commit()
         .await

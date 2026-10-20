@@ -99,7 +99,7 @@ Closing Harness Accounts or changing its device does not cancel a sign-in. Reope
 
 ## Invariants
 
-- A listener on 3000 or 3020 is reused only when `/readyz` returns `HostServiceStatus` with the expected `service`, `protocol_version == HOST_SERVICE_PROTOCOL_VERSION` and `status == "ready"`; pinned by `readiness_probe_requires_service_identity_and_protocol` in `supervisor.rs` and by `service_ready` in `common.sh` (`protocol_version == 1`).
+- A local listener is reused only when `/readyz` returns `HostServiceStatus` with the expected service, protocol version and ready status. CLI startup and the supervisor use `HostServiceStatus::validate_ready`; CLI coverage includes unrelated, incompatible and unready HTTP 200 listeners. Shell lifecycle checks use `service_ready` in `common.sh`.
 - `choruz-server` stdout carries only the handshake line: `tracing_subscriber` writes to stderr and `dup_stderr_to_stdio` routes children's stdout to the host's stderr.
 - A child that exits after readiness sets `backend_failed`, triggers `shutdown()` and makes `choruz-server` exit 1; pinned by `child_check_reports_exit_after_readiness`.
 - `stop_child` sends SIGTERM, waits `SHUTDOWN_GRACE` (3 s), then SIGKILLs and reaps; pinned by `stop_child_reaps_a_running_process`. `Drop for Supervisor` calls `shutdown()`.

@@ -788,7 +788,7 @@ async fn thread_detail_and_receipts() {
 
 #[tokio::test]
 async fn quiet_thread_reply_preserves_sender_unread_state() {
-    // Pins the bumps_conversation_unread gate on mark_conversation_viewed
+    // Pins the publication trigger's gate on sender read state.
     // (Gate-1 surface-2): a quiet (non-broadcast) threaded reply must NOT
     // clear the sender's PRE-EXISTING main-timeline unread. Reverting the
     // gate to the old unconditional mark_conversation_viewed makes this

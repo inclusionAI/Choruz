@@ -101,4 +101,12 @@ curl -fsS "http://127.0.0.1:${API_PORT}/v1/console" \
   -H "authorization: Bearer ${SESSION_TOKEN}" >/dev/null \
   || fail_with_logs "choruz-api-gateway console smoke failed on port ${API_PORT}"
 
+(
+  unset CHORUZ_TEST_DATABASE_URL
+  export PGHOST="${CHORUZ_PG_HOST}" PGPORT="${CHORUZ_PG_PORT}"
+  export PGUSER="${CHORUZ_PG_USER}" PGDATABASE="${CHORUZ_PG_DB}"
+  export PGPASSWORD="${CHORUZ_PG_PASSWORD:-}"
+  pnpm --dir "${ROOT_DIR}/services/choruz-bridge" exec tsx --test tests/mapping-store.pg.ts
+)
+
 echo "api smoke passed"

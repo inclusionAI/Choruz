@@ -1,6 +1,70 @@
 use super::*;
 
 #[tokio::test]
+async fn message_publication_rolls_back_when_unread_storage_rejects_it() {
+    let database = TestDatabase::create().await;
+    let app = choruz_application::ChatApp::new();
+    let alice = app
+        .create_principal(CreatePrincipalRequest {
+            workspace_id: "publication-atomicity".into(),
+            principal_type: PrincipalType::Human,
+            name: "Atomic Sender".into(),
+            avatar_url: None,
+        })
+        .unwrap();
+    seed_principal_to_db(&database.database_url, &alice).await;
+    let group = app
+        .create_group(CreateGroupRequest {
+            actor_id: alice.id.clone(),
+            name: "Atomic publication".into(),
+            description: None,
+            avatar_url: None,
+            member_ids: vec![],
+            workspace_id: None,
+        })
+        .unwrap();
+    seed_conversation_to_db(&database.database_url, &group).await;
+    let (client, connection) = tokio_postgres::connect(&database.database_url, NoTls)
+        .await
+        .unwrap();
+    tokio::spawn(async move {
+        let _ = connection.await;
+    });
+    // This database belongs only to this test; fail the count write, not the message INSERT.
+    client
+        .batch_execute(
+            "ALTER TABLE conversation ADD CONSTRAINT reject_unread_write CHECK(total_msg_count=0)",
+        )
+        .await
+        .unwrap();
+    let router = router_with_db(app, &database.database_url);
+    let status =
+        api_send_text_message(router, &alice, &group.id, "atomic-key", "must roll back").await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    for table in ["conversation_events", "event_outbox", "outbox_event"] {
+        let predicate = if table == "conversation_events" {
+            "conversation_id=$1"
+        } else if table == "event_outbox" {
+            "aggregate_id=$1"
+        } else {
+            "payload->>'conversation_id'=$1 AND event_type='message.created'"
+        };
+        let row = client
+            .query_one(
+                &format!("SELECT COUNT(*) FROM {table} WHERE {predicate}"),
+                &[&group.id],
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            row.get::<_, i64>(0),
+            0,
+            "{table} cannot retain a partial publication"
+        );
+    }
+}
+
+#[tokio::test]
 async fn interaction_records_are_paged_private_and_link_real_commands() {
     let database = TestDatabase::create().await;
     let app = choruz_application::ChatApp::new();

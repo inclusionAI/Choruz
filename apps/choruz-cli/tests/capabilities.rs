@@ -64,6 +64,39 @@ fn local_start_passes_api_only_selection_and_does_not_request_pairing() {
         format!("--api-only\n{port}\n")
     );
     assert!(!String::from_utf8_lossy(&output.stdout).contains("Pairing credential"));
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = format!("http://{}", listener.local_addr().unwrap());
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        let mut request = [0; 4096];
+        assert!(stream.read(&mut request).unwrap() > 0);
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}")
+            .unwrap();
+    });
+    let refused_spawn = root.path().join("must-not-spawn");
+    let rejected = Command::new(env!("CARGO_BIN_EXE_choruz"))
+        .args(["start", "local", "--api-url", &address])
+        .env("HOME", root.path())
+        .env("XDG_DATA_HOME", root.path())
+        .env("CHORUZ_SERVER_BINARY", root.path().join("server"))
+        .env("CHORUZ_TEST_RECEIVED", &refused_spawn)
+        .output()
+        .unwrap();
+    server.join().unwrap();
+    assert!(
+        !rejected.status.success(),
+        "unrelated listener must not count as a running host"
+    );
+    assert!(!String::from_utf8_lossy(&rejected.stdout).contains("already running"));
+    assert!(
+        !refused_spawn.exists(),
+        "an invalid listener must not launch another host"
+    );
 }
 
 #[cfg(unix)]

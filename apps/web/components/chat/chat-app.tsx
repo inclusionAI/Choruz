@@ -247,19 +247,12 @@ export function ChatApp({ initialSnapshot, sessionToken, runtimeBindings: initia
     if (convIds.length === 0) return;
     loadAllCachedMessages(convIds).then((cached) => {
       if (Object.keys(cached).length === 0) return;
-      // Merge IDB cache into state without overwriting messages already
-      // delivered by bootstrap or WebSocket during the async IDB load.
       setMessagesByConv((prev) => {
-        const merged = { ...prev };
-        let changed = false;
+        let merged = prev;
         for (const [cid, idbMsgs] of Object.entries(cached)) {
-          const existing = prev[cid] ?? [];
-          if (idbMsgs.length > existing.length) {
-            merged[cid] = idbMsgs;
-            changed = true;
-          }
+          merged = mergeFetchedMessages(merged, cid, idbMsgs);
         }
-        return changed ? merged : prev;
+        return merged;
       });
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1212,9 +1205,9 @@ export function ChatApp({ initialSnapshot, sessionToken, runtimeBindings: initia
   const applyBootstrap = useCallback((
     bootstrap: DashboardBootstrap,
     mode: "replace" | "append" | "refresh",
+    snapshotStartedAt: number,
     unreadRequestSeq?: number,
   ) => {
-    const snapshotStartedAt = Date.now();
     const items = bootstrap.conversations.items;
     setKnownPrincipals((prev) => mergeKnownPrincipals(prev, bootstrap.principals));
     setConversations((current) => {
@@ -1264,9 +1257,10 @@ export function ChatApp({ initialSnapshot, sessionToken, runtimeBindings: initia
   }, [commitUnreadRows, flags.applyBootstrap, replaceCompanies]);
 
   const refreshSnapshot = useCallback(async () => {
+    const snapshotStartedAt = Date.now();
     try {
       const bootstrap = await apiFetch<DashboardBootstrap>("/v1/bootstrap?limit=100", sessionToken);
-      applyBootstrap(bootstrap, "refresh");
+      applyBootstrap(bootstrap, "refresh", snapshotStartedAt);
     } catch (err) {
       trace.event("refresh_bootstrap_error", { error: String(err) });
     }
@@ -1276,10 +1270,11 @@ export function ChatApp({ initialSnapshot, sessionToken, runtimeBindings: initia
   const loadMoreConversations = useCallback(async () => {
     if (!bootstrapHasMore || !bootstrapNextCursor || loadingMoreConversations) return;
     setLoadingMoreConversations(true);
+    const snapshotStartedAt = Date.now();
     try {
       const query = new URLSearchParams({ limit: "100", after: bootstrapNextCursor });
       const bootstrap = await apiFetch<DashboardBootstrap>(`/v1/bootstrap?${query}`, sessionToken);
-      applyBootstrap(bootstrap, "append");
+      applyBootstrap(bootstrap, "append", snapshotStartedAt);
     } catch (error) {
       trace.event("load_more_conversations_error", { error: String(error) });
     } finally {

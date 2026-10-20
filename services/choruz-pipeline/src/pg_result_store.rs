@@ -97,9 +97,7 @@ impl ResultStore for PgResultStore {
         command_id: &str,
         attempt_id: &str,
     ) -> WriterResult<(String, i64)> {
-        // Reply insert and total_msg_count bump must be one transaction —
-        // otherwise a failed UPDATE leaves the message in the store but
-        // unread counts permanently drift (visible to every member forever).
+        // The publication trigger shares this transaction with the attempt fence.
         let mut client = self.store.connect().await.map_err(|e| {
             WriterError::Store(choruz_common::AppError::Internal(format!(
                 "connect for insert_reply_event: {e}"
@@ -147,17 +145,6 @@ impl ResultStore for PgResultStore {
             .store
             .insert_conversation_event_with_client(&tx, event)
             .await?;
-
-        tx.execute(
-            "UPDATE conversation SET total_msg_count = total_msg_count + 1 WHERE id = $1",
-            &[&event.conversation_id],
-        )
-        .await
-        .map_err(|e| {
-            WriterError::Store(choruz_common::AppError::Internal(format!(
-                "bump total_msg_count in insert_reply_event: {e}"
-            )))
-        })?;
 
         tx.commit().await.map_err(|e| {
             WriterError::Store(choruz_common::AppError::Internal(format!(

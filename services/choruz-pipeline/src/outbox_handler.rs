@@ -573,30 +573,6 @@ async fn send_to_group(
         ));
     }
 
-    // Increment conversation.total_msg_count so unread badges fire for
-    // other members when the agent sends a message through the outbox.
-    // (Mattermost pattern — matches what DbService::send_message does.)
-    //
-    // Quiet (non-broadcast) threaded replies skip the bump — same gate
-    // as DbService::send_message: thread traffic must not light up the
-    // conversation badge; thread-level unread covers it instead.
-    let bumps_conversation_unread = thread_flags.bumps_conversation_unread();
-    if bumps_conversation_unread
-        && let Err(e) = tx
-            .execute(
-                "UPDATE conversation SET total_msg_count = total_msg_count + 1 WHERE id = $1",
-                &[&conv_id],
-            )
-            .await
-    {
-        tracing::warn!(session_key, error = %e, "send_to_group: increment total_msg_count failed");
-        tx.rollback().await.ok();
-        return Err(format!(
-            "failed to update group '{}' message count: {e}",
-            group_name
-        ));
-    }
-
     if let Err(e) = tx.commit().await {
         tracing::warn!(session_key, error = %e, "send_to_group: commit failed");
         return Err(format!(
