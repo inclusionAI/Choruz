@@ -321,7 +321,7 @@ jobs:
       - name: Agent Notes
         if: env.PUSH == 'true' || needs.changes.outputs.notes == 'true'
         run: |
-          python3 -m unittest discover scripts/tests
+          python3 -m unittest discover scripts/tests -p test_verify_agent_notes.py
           python3 scripts/verify_agent_notes.py
       - name: Bridge build
         if: env.PUSH == 'true' || needs.changes.outputs.bridge == 'true'

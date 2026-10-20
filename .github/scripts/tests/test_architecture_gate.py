@@ -13,6 +13,9 @@ class ArchitectureGateTests(unittest.TestCase):
         self.assertIn("python3 -m unittest discover scripts/tests -p test_check_architecture.py", step)
         self.assertIn("python3 scripts/check_architecture.py", step)
         self.assertIn('[ "$DOCS_ONLY" != true ] && add checks', workflow)
+        notes = checks.split("      - name: Agent Notes\n", 1)[1].split("      - name:", 1)[0]
+        self.assertIn("python3 -m unittest discover scripts/tests -p test_verify_agent_notes.py", notes)
+        self.assertNotIn("python3 -m unittest discover scripts/tests\n", notes)
 
 
 if __name__ == "__main__":
