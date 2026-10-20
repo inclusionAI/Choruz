@@ -17,43 +17,8 @@ export interface ChannelMapping {
 export class MappingStore {
   private pool: pg.Pool;
 
-  constructor(connectionString: string) {
-    this.pool = new pg.Pool({ connectionString });
-  }
-
-  /** Look up a Choruz conversation ID for a platform channel. Returns null if not mapped. */
-  async findMapping(
-    platform: string,
-    platformChannelId: string,
-  ): Promise<string | null> {
-    const { rows } = await this.pool.query(
-      `SELECT choruz_conversation_id FROM bridge_channel_mappings
-       WHERE platform = $1 AND platform_channel_id = $2`,
-      [platform, platformChannelId],
-    );
-    if (rows.length === 0) return null;
-    return (rows[0] as { choruz_conversation_id: string }).choruz_conversation_id;
-  }
-
-  /** Create a new mapping. */
-  async createMapping(params: {
-    platform: string;
-    platform_channel_id: string;
-    choruz_conversation_id: string;
-    platform_channel_name?: string;
-  }): Promise<void> {
-    await this.pool.query(
-      `INSERT INTO bridge_channel_mappings
-         (platform, platform_channel_id, choruz_conversation_id, platform_channel_name)
-       VALUES ($1, $2, $3, $4)
-       ON CONFLICT (platform, platform_channel_id) DO NOTHING`,
-      [
-        params.platform,
-        params.platform_channel_id,
-        params.choruz_conversation_id,
-        params.platform_channel_name ?? null,
-      ],
-    );
+  constructor(connection: string | pg.PoolConfig) {
+    this.pool = new pg.Pool(typeof connection === 'string' ? { connectionString: connection } : connection);
   }
 
   /** Reverse-lookup: find all platform channels mapped to a Choruz conversation. */
@@ -71,8 +36,8 @@ export class MappingStore {
 
   /**
    * Get-or-create: returns the Choruz conversation ID for the given platform
-   * channel. If no mapping exists yet, calls `createFn` to provision a Choruz
-   * conversation and records the mapping before returning.
+   * channel. A database-scoped channel lock serializes factories across bridge
+   * processes. Existing mappings are reused; failures never announce a new link.
    */
   async getOrCreate(
     platform: string,
@@ -80,19 +45,36 @@ export class MappingStore {
     channelName: string,
     createFn: () => Promise<string>,
   ): Promise<string> {
-    const existing = await this.findMapping(platform, platformChannelId);
-    if (existing) return existing;
-
-    const choruzConversationId = await createFn();
-
-    await this.createMapping({
-      platform,
-      platform_channel_id: platformChannelId,
-      choruz_conversation_id: choruzConversationId,
-      platform_channel_name: channelName,
-    });
-
-    return choruzConversationId;
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [
+        JSON.stringify([platform, platformChannelId]),
+      ]);
+      const existing = await client.query(
+        `SELECT choruz_conversation_id FROM bridge_channel_mappings
+         WHERE platform = $1 AND platform_channel_id = $2`,
+        [platform, platformChannelId],
+      );
+      const conversation = existing.rows.length
+        ? (existing.rows[0] as { choruz_conversation_id: string }).choruz_conversation_id
+        : await createFn();
+      if (!existing.rows.length) {
+        await client.query(
+          `INSERT INTO bridge_channel_mappings
+           (platform, platform_channel_id, choruz_conversation_id, platform_channel_name)
+           VALUES ($1, $2, $3, $4)`,
+          [platform, platformChannelId, conversation, channelName],
+        );
+      }
+      await client.query('COMMIT');
+      return conversation;
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   async close(): Promise<void> {

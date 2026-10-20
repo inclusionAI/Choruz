@@ -12,13 +12,15 @@ export interface LoginResult {
 
 export class ChoruzClient {
   private apiUrl: string;
+  private webUrl: string;
   private token: string | null = null;
   private principalId: string | null = null;
   private username: string;
   private password: string;
 
-  constructor(config: { api_url: string; username: string; password: string }) {
+  constructor(config: { api_url: string; web_url: string; username: string; password: string }) {
     this.apiUrl = config.api_url.replace(/\/+$/, '');
+    this.webUrl = config.web_url.replace(/\/+$/, '');
     this.username = config.username;
     this.password = config.password;
   }
@@ -71,14 +73,15 @@ export class ChoruzClient {
     path: string,
     body?: unknown,
     retry = true,
+    web = false,
   ): Promise<T> {
     const token = await this.ensureAuth();
-    const url = `${this.apiUrl}${path}`;
+    const url = `${web ? this.webUrl : this.apiUrl}${path}`;
 
     const res = await fetch(url, {
       method,
       headers: {
-        'Authorization': `Bearer ${token}`,
+        ...(web ? { Cookie: `choruz_session=${token}` } : { Authorization: `Bearer ${token}` }),
         'Content-Type': 'application/json',
       },
       ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
@@ -87,7 +90,7 @@ export class ChoruzClient {
     // Auto-refresh on 401 and retry once
     if (res.status === 401 && retry) {
       await this.login();
-      return this.request<T>(method, path, body, false);
+      return this.request<T>(method, path, body, false, web);
     }
 
     if (!res.ok) {
@@ -153,25 +156,27 @@ export class ChoruzClient {
 
   /**
    * Provision an agent via the Next.js /api/agents/provision route.
-   * The Next.js route expects `driver_type` (not `driver`) and an
-   * session cookie for auth, because it does a multi-step flow
-   * against the gateway on behalf of the caller.
+   * Uses the existing web provisioning owner with its session-cookie boundary.
+   * Drivers are exact Choruz driver IDs; instructions default to an empty role.
    */
   async provisionAgent(params: {
     name: string;
     driver: string;
     instructions?: string;
   }): Promise<{ principal_id: string }> {
-    // Map to the field the Next.js route reads (`driver_type`).
-    return this.request<{ principal_id: string }>(
+    const response = await this.request<{ agent: { id: string } }>(
       'POST',
       '/api/agents/provision',
       {
         name: params.name,
         driver_type: params.driver,
-        instructions: params.instructions,
+        instructions: params.instructions ?? '',
       },
+      true,
+      true,
     );
+    if (!response?.agent?.id) throw new Error('Provisioning returned no agent identity');
+    return { principal_id: response.agent.id };
   }
 
   // ── webhooks ────────────────────────────────────────────────────────

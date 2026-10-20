@@ -57,6 +57,19 @@ async fn cron_creation_and_timezone_only_update_store_calendar_occurrences() {
         ).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
     }
+    let (client, connection) = tokio_postgres::connect(&database.database_url, NoTls)
+        .await
+        .unwrap();
+    tokio::spawn(async move {
+        let _ = connection.await;
+    });
+    client.execute("INSERT INTO company(id,name,slug,owner_id,deleted_at) VALUES($1,$1,$1,$2,NOW()) ON CONFLICT(id) DO UPDATE SET deleted_at=NOW()", &[&human.workspace_id, &human.id]).await.unwrap();
+    let (status, _) = api_json_request(router, &human, Method::GET, uri).await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "a deleted native company grants no cron access"
+    );
 }
 
 #[tokio::test]

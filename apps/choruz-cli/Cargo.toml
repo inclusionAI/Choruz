@@ -10,6 +10,7 @@ name = "choruz"
 path = "src/main.rs"
 
 [dependencies]
+choruz-common = { path = "../../crates/choruz-common" }
 choruz-learning = { path = "../../crates/choruz-learning", features = ["native-source"] }
 choruz-evaluation = { path = "../../crates/choruz-evaluation" }
 choruz-community = { path = "../../crates/choruz-community" }

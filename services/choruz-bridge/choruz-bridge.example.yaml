@@ -1,5 +1,6 @@
 choruz:
   api_url: "http://localhost:3000"
+  web_url: "http://localhost:3100"
   username: "operator"
   password: "choruz-local"
 

@@ -4,6 +4,7 @@
 //! and their policy, determine whether the agent should be triggered.
 
 use crate::models::{AgentPolicy, AutoMode, ConversationMember, TriggerResult};
+use choruz_common::mentions::contains_mention;
 use choruz_store::ConversationEventRow;
 
 /// Evaluate whether an agent should be triggered for a given event.
@@ -115,41 +116,6 @@ fn evaluate_mention(
     }
 }
 
-fn contains_mention(content: &str, mention: &str, mention_candidates: &[String]) -> bool {
-    if mention.is_empty() {
-        return false;
-    }
-
-    let pattern = format!("@{mention}");
-    content.match_indices(&pattern).any(|(start, _)| {
-        mention_matches_at(content, mention, start)
-            && !mention_candidates
-                .iter()
-                .filter(|candidate| candidate.len() > mention.len())
-                .any(|candidate| mention_matches_at(content, candidate, start))
-    })
-}
-
-fn mention_matches_at(content: &str, mention: &str, start: usize) -> bool {
-    if mention.is_empty() {
-        return false;
-    }
-
-    let pattern = format!("@{mention}");
-    if !content[start..].starts_with(&pattern) {
-        return false;
-    }
-
-    let before = content[..start].chars().next_back();
-    let after = content[start + pattern.len()..].chars().next();
-
-    before.is_none_or(|ch| !is_mention_char(ch)) && after.is_none_or(|ch| !is_mention_char(ch))
-}
-
-fn is_mention_char(ch: char) -> bool {
-    ch.is_ascii_alphanumeric() || ch == '-' || ch == '_'
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -158,6 +124,20 @@ fn is_mention_char(ch: char) -> bool {
 mod tests {
     use super::*;
     use chrono::Utc;
+
+    #[test]
+    fn mention_case_matches_webhook_delivery() {
+        assert!(contains_mention(
+            "@backend dev please review",
+            "Backend Dev",
+            &[]
+        ));
+        assert!(!contains_mention(
+            "@Backend Devops please review",
+            "Backend Dev",
+            &[]
+        ));
+    }
 
     fn make_event(content: &str, metadata: serde_json::Value) -> ConversationEventRow {
         ConversationEventRow {

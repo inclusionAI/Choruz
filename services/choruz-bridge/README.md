@@ -23,6 +23,7 @@ Telegram (long poll) ──┘         ^
 - Node.js >= 18
 - PostgreSQL with the Choruz database
 - Choruz API gateway running (default: `http://localhost:3000`)
+- Choruz web app running for agent provisioning (default: `http://localhost:3100`)
 - (Optional) Slack Bot Token + App Token with Socket Mode enabled
 - (Optional) Telegram Bot Token from @BotFather
 
@@ -45,6 +46,7 @@ Edit `choruz-bridge.yaml` with your credentials:
 ```yaml
 choruz:
   api_url: "http://localhost:3000"
+  web_url: "http://localhost:3100"
   username: "operator"
   password: "choruz-local"
 
@@ -140,13 +142,21 @@ On first message from a new platform channel, the bridge automatically:
 1. Creates a Choruz group conversation (named `slack-{channel}` or `tg-{chat_title}`)
 2. Records the mapping in `bridge_channel_mappings`
 
-You can also explicitly link channels using the `/new-group` command.
+The `/new-group` and `/new_group` commands use the same channel mapping owner.
+An existing link is retained and its conversation ID is returned without creating
+another group. Concurrent first messages serialize creation through PostgreSQL.
+
+Agent creation uses exact driver IDs, for example
+`/new-agent helper codex_terminal`. The bridge authenticates to the gateway and
+sends the resulting session as a cookie only to the configured web provisioning
+endpoint. Both endpoints must belong to the same Choruz deployment.
 
 ## Configuration Reference
 
 | Key | Required | Description |
 |-----|----------|-------------|
 | `choruz.api_url` | Yes | Choruz API gateway URL |
+| `choruz.web_url` | Yes | Choruz web app URL for the existing provisioning route |
 | `choruz.username` | Yes | Login username |
 | `choruz.password` | Yes | Login password |
 | `slack.bot_token` | No | Slack Bot User OAuth Token (`xoxb-...`) |

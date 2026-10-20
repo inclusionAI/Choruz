@@ -347,18 +347,6 @@ async fn publish_watcher_reply(
         return;
     }
 
-    if let Err(e) = tx
-        .execute(
-            "UPDATE conversation SET total_msg_count = total_msg_count + 1 WHERE id = $1",
-            &[&conversation_id],
-        )
-        .await
-    {
-        tracing::warn!(session_key, conversation_id, error = %e, "outbox watcher: reply count update failed");
-        tx.rollback().await.ok();
-        return;
-    }
-
     if let Err(e) = tx.commit().await {
         tracing::warn!(session_key, conversation_id, error = %e, "outbox watcher: reply commit failed");
         return;

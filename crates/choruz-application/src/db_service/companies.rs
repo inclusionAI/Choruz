@@ -36,6 +36,25 @@ pub(super) async fn workspace_access(
 }
 
 impl DbService {
+    /// Return every workspace the active principal can access, excluding deleted
+    /// companies. A native workspace without a company row remains accessible.
+    /// Database failures propagate rather than becoming an empty permission set.
+    pub async fn accessible_workspace_ids(
+        &self,
+        principal_id: &str,
+    ) -> Result<std::collections::HashSet<String>, AppError> {
+        let principal = self.get_principal(principal_id).await?;
+        let client = self.store.connect().await?;
+        let mut ids = std::collections::HashSet::new();
+        if workspace_access(&client, &principal, &principal.workspace_id).await? {
+            ids.insert(principal.workspace_id.clone());
+        }
+        for company in self.list_companies(principal_id).await? {
+            ids.insert(company.id);
+        }
+        Ok(ids)
+    }
+
     pub(crate) async fn principal_can_access_workspace(
         &self,
         principal: &Principal,

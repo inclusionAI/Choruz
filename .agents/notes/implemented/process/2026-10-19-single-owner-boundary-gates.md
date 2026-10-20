@@ -10,6 +10,8 @@ Shared implementations can drift when a new adapter copies policy or bypasses it
 
 The [architecture boundary contract](../../../../docs/testing/architecture-boundaries.md) combines an executable source gate with independent consumer tracing. `scripts/check_architecture.py` owns narrow lexical rules and retired paths. Static checks runs the gate and its negative-control tests for every non-documentation change. Ownership evidence is part of implementation PRs and the pre-simplify audit; the audit distinguishes semantic policy from intentional adapter differences.
 
+The browser scope includes the group provisioning helper outside `lib/api`. Named caller guards also protect cache reconciliation, snapshot epochs, mention lexing, workspace access, authentication executable selection and service readiness. Transactional publication and bridge mapping semantics remain behavioral test contracts; lexical wiring checks do not certify them.
+
 The Rust test step supplies its read-only, ephemeral GitHub job token through `GITHUB_TOKEN` to the existing PostgreSQL downloader. The downloader remains the installation owner; no second download implementation, personal credential, test skip or retry is added. Step scoping avoids making the token a workflow-wide environment value.
 
 ## Alternatives considered

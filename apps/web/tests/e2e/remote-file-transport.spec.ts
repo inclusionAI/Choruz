@@ -2,10 +2,65 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createHmac, randomBytes } from "node:crypto";
+import { createServer } from "node:http";
+import { once } from "node:events";
 import { expect } from "@playwright/test";
 import { test, openRemoteDashboard } from "../fixtures/remote-dashboard";
 import { API_BASE, expandSidebarConversationSections, gotoDashboard, signup } from "../fixtures/auth";
-import { createAgent, createCompany, createGroup, sendMessage, uniqueName } from "../fixtures/api";
+import { createAgent, createCompany, createGroup, provisionAgent, sendMessage, uniqueName } from "../fixtures/api";
+
+test("remote template launch persists its group on B without an API on A", async ({ page, hostedDashboard, ownedResources }) => {
+  const { token, principal } = await signup(page, uniqueName("r-template"), "Owned-password-123!");
+  const company = await createCompany(page, token, principal.id, uniqueName("Template owner B"));
+  ownedResources.push(async (request) => {
+    expect((await request.delete(`${API_BASE}/v1/companies/${company.id}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })).ok()).toBeTruthy();
+  });
+  const webhook = createServer((request, response) => { request.resume(); response.writeHead(204).end(); });
+  ownedResources.push(async () => {
+    const closed = new Promise<void>((resolve, reject) => webhook.close((error) => error ? reject(error) : resolve()));
+    webhook.closeAllConnections();
+    await closed;
+  });
+  webhook.listen(0, "127.0.0.1");
+  await once(webhook, "listening");
+  const address = webhook.address();
+  if (!address || typeof address === "string") throw new Error("Owned template webhook did not bind TCP");
+  const agents = await Promise.all(["operator", "backend", "reviewer"].map((role) =>
+    provisionAgent(page, token, uniqueName(`B-${role}`), {
+      driver: "webhook_agent", workspaceId: company.id, webhookUrl: `http://127.0.0.1:${address.port}/hook`,
+    })));
+  for (const agent of agents) ownedResources.push(() => rm(agent.workspacePath, { recursive: true, force: true }));
+  await openRemoteDashboard(page, token, hostedDashboard.origin);
+  await page.locator(".company-selector-btn").click();
+  await page.locator(".company-dropdown-item-name").filter({ hasText: company.name }).click();
+  await page.getByRole("button", { name: "Actions menu", exact: true }).click();
+  await page.getByRole("button", { name: "New Group", exact: true }).click();
+  const modal = page.getByRole("dialog", { name: "Create Group" });
+  await modal.getByLabel("Start with").selectOption("software-development-team");
+  const name = uniqueName("B-template-result");
+  await modal.getByPlaceholder("What should this group accomplish?").fill(name);
+  await modal.getByLabel("Group name", { exact: true }).fill(name);
+  for (const [index, label] of ["Project Operator", "Backend Engineer · Required", "Code Reviewer · Required"].entries()) {
+    const role = modal.locator(".group-template-role-row").filter({ hasText: label });
+    await role.locator("select").first().selectOption("reuse");
+    await role.getByLabel("Existing agent").selectOption(agents[index].agentId);
+  }
+  await modal.getByRole("button", { name: "Review & Launch" }).click();
+  await modal.getByRole("button", { name: "Launch Group", exact: true }).click();
+  await expect(modal).toContainText("completed", { timeout: 30_000 });
+  const response = await page.request.get(`${API_BASE}/v1/bootstrap?limit=100`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  expect(response.ok()).toBeTruthy();
+  const snapshot = await response.json();
+  const group = snapshot.conversations.items.find((item: { conversation: { name: string } }) =>
+    item.conversation.name?.includes(name));
+  expect(group, "B's authoritative bootstrap contains the launched group").toBeDefined();
+  expect(Object.keys(group.conversation.members)).toEqual(expect.arrayContaining(agents.map((agent) => agent.agentId)));
+  expect(hostedDashboard.apiRequests).toEqual([]);
+});
 
 test("remote thread receipts clear unread state on B rather than the hosted origin", async ({ page, hostedDashboard, ownedResources }) => {
   const { token, principal } = await signup(page, uniqueName("r-thread"), "Owned-password-123!");

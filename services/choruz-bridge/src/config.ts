@@ -5,6 +5,7 @@ import yaml from 'js-yaml';
 export interface BridgeConfig {
   choruz: {
     api_url: string;
+    web_url: string;
     username: string;
     password: string;
   };
@@ -44,8 +45,8 @@ export function loadConfig(): BridgeConfig {
   }
 
   const choruz = parsed['choruz'] as BridgeConfig['choruz'] | undefined;
-  if (!choruz || !choruz.api_url || !choruz.username || !choruz.password) {
-    console.error('Missing required choruz config (api_url, username, password)');
+  if (!choruz || !choruz.api_url || !choruz.web_url || !choruz.username || !choruz.password) {
+    console.error('Missing required choruz config (api_url, web_url, username, password)');
     process.exit(1);
   }
 

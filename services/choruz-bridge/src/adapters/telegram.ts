@@ -68,12 +68,12 @@ export class TelegramAdapter {
 
   private registerCommands(): void {
     // /new_agent <name> <driver> [instructions]
-    // Example: /new_agent backend-dev claude Write backend Rust code
+    // Example: /new_agent backend-dev claude_terminal Write backend Rust code
     this.bot.command('new_agent', async (ctx) => {
       const args = (ctx.match as string).trim().split(/\s+/);
       if (args.length < 2 || !args[0]) {
         await ctx.reply(
-          'Usage: /new_agent <name> <driver> [instructions]\nExample: /new_agent backend-dev claude',
+          'Usage: /new_agent <name> <driver> [instructions]\nExample: /new_agent backend-dev claude_terminal',
         );
         return;
       }
@@ -109,21 +109,15 @@ export class TelegramAdapter {
 
       try {
         const chatId = String(ctx.chat.id);
-        const group = await this.choruz.createGroup({
-          name,
-          member_ids: [this.bridgePrincipalId],
-        });
-
-        // The current database column is renamed in the Phase 3B migration.
-        await this.mappings.createMapping({
-          platform: 'telegram',
-          platform_channel_id: chatId,
-          choruz_conversation_id: group.id,
-          platform_channel_name: ctx.chat.title ?? chatId,
-        });
+        const conversation = await this.mappings.getOrCreate(
+          'telegram', chatId, ctx.chat.title ?? chatId,
+          async () => (await this.choruz.createGroup({
+            name, member_ids: [this.bridgePrincipalId],
+          })).id,
+        );
 
         await ctx.reply(
-          `Group "${name}" created in Choruz (id: ${group.id}). This Telegram chat is now linked.`,
+          `This Telegram chat is linked to Choruz conversation ${conversation}. Existing links are retained.`,
         );
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
