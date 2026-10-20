@@ -38,6 +38,8 @@ plugin gate"); the reviewer reads the section against the diff.
 
 ## 2. Prove the affected behaviour
 
+Before changing an implementation, apply [architecture boundaries](../../../docs/testing/architecture-boundaries.md#before-changing-a-capability) and fill the template's Ownership section. Locate the current owner and authoritative state, trace affected local/remote callers, and remove replaced paths in the same change. For a new detectable bypass, extend the existing boundary checker with a rejecting fixture; do not claim it detects arbitrary semantic duplicates.
+
 Do this before anything else. A `bugfix` without a failing-then-passing
 regression test is not ready. Put e2e coverage next to the feature's spec so
 `select_e2e_specs.py` picks it up (add a rule there when you add a spec for a

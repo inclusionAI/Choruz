@@ -34,6 +34,10 @@
 
 <!-- What changes and why. Link the issue if there is one. -->
 
+## Ownership
+
+<!-- Implementation changes: docs/testing/architecture-boundaries.md. Name existing business owner + authoritative state, affected entry/caller paths (local/remote where applicable), removed/replaced paths, and intentional adapter differences. Name the boundary guard or behavioral failure assertion. Prose-only changes: not applicable with a reason. -->
+
 ## Tests
 
 <!-- Follow docs/testing/pr-test-policy.md#behaviour-acceptance-evidence. For each affected contract, name the user action/result and owning test/assertion, the production entry exercised and any substituted boundary. For a bugfix or guard, name the negative control. For prose-only changes, say why no product scenario applies. -->

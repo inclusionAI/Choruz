@@ -51,6 +51,8 @@ later. Do not require all skills or the full suite to fill a table.
 
 ### 2. The change does not create structural debt
 
+Apply [architecture boundaries](../../../docs/testing/architecture-boundaries.md) independently of the author's Ownership statement. Follow affected production callers to the business owner and authoritative state; compare local/remote adapters and trace replaced symbols, including dynamic consumers. Check that the guard rejects a representative bypass and that behavioral tests cover failures the lexical checker cannot establish (such as commit-before-success). For rule changes, inspect whether a weakened scope, exception or removed rule hides the regression. Record intentional differences with their distinct contracts. Green scans or references to a shared helper alone do not establish single ownership.
+
 For structural candidates, use the consumer-evidence criteria in
 [choruz-find-simplifications](../choruz-find-simplifications/SKILL.md).
 Look for duplicate implementations of one contract, parallel sources of truth,

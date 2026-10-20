@@ -86,6 +86,8 @@ The author checks this evidence before declaring the PR ready; the review proced
 
 ## What CI runs for which paths
 
+Static checks runs the [architecture boundary gate](architecture-boundaries.md) and its negative-control tests on every non-documentation change, including new source files. This enforces named seams; independent ownership audit and behavioral tests cover semantic duplication and durability ordering.
+
 | Changed path | Jobs |
 |---|---|
 | `crates/**`, `services/**`, `apps/choruz-*/**` | Rust lint and tests for the changed crates and every crate that depends on them (`select_rust_packages.py`), DB and API smoke, e2e (P0 set) |

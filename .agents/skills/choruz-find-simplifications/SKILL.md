@@ -32,6 +32,8 @@ Use parallel subagents when the user asks for breadth, one domain each, evidence
 
 ## Prove or reject each candidate
 
+For duplicate-owner audits, apply [architecture boundaries](../../../docs/testing/architecture-boundaries.md): run its gate, then trace semantic ownership and authoritative state in the requested scope. Report mechanically scanned paths separately from consumer-reviewed paths. Keep distinct provider protocols, transports, leases and independent library storage contracts when their consumers justify the difference. When fixing a confirmed recurrence, add a precise guard or strengthen the shared behavioral contract instead of creating a second implementation-specific suite.
+
 Classify consumers before writing:
 
 - **Production corpus:** `crates/*/src`, `services/*/src`, `apps/*/src`, `apps/web/{app,components,lib,hooks}`, `infra/`, `migrations/`.

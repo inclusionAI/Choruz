@@ -67,6 +67,8 @@ if matches '^\.github/(workflows|actions|scripts)/'; then
 fi
 echo
 echo "Run locally before opening the PR:"
+echo "  python3 scripts/check_architecture.py"
+echo "  python3 -m unittest discover scripts/tests -p test_check_architecture.py"
 if matches '^(\.agents/notes/|scripts/verify_agent_notes\.py)'; then
   echo "  python3 scripts/verify_agent_notes.py"
 fi

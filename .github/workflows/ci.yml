@@ -302,6 +302,10 @@ jobs:
           curl -fsSL -o /tmp/cargo-deny.tar.gz https://github.com/EmbarkStudios/cargo-deny/releases/download/0.20.2/cargo-deny-0.20.2-x86_64-unknown-linux-musl.tar.gz
           tar -xzf /tmp/cargo-deny.tar.gz -C /tmp
           sudo install -m 755 /tmp/cargo-deny-0.20.2-x86_64-unknown-linux-musl/cargo-deny /usr/local/bin/cargo-deny
+      - name: Architecture boundaries
+        run: |
+          python3 -m unittest discover scripts/tests -p test_check_architecture.py
+          python3 scripts/check_architecture.py
       - name: Cache trivy database
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
