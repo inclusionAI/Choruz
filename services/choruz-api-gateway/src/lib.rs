@@ -5,7 +5,6 @@ mod background;
 mod behavior_worker;
 mod browser_completion_worker;
 pub mod config;
-mod db_projection;
 mod decision_worker;
 mod evaluation_worker;
 mod experience_diagnostics;
@@ -44,6 +43,7 @@ mod host_link;
 mod host_runtime;
 pub mod ingress;
 mod keepalive;
+mod learning_sources;
 mod local_auth;
 mod meta_handlers;
 mod online_groups;
@@ -64,8 +64,7 @@ pub(crate) use auth::{
     ApiError, authenticated_principal, bearer_token_value, require_actor, require_human_operator,
     require_self,
 };
-pub(crate) use db_projection::{db_persist, persist_principal_to_db};
-pub(crate) use webhook::{WebhookFlushResponse, flush_webhooks, flush_webhooks_all};
+pub(crate) use webhook::{WebhookFlushResponse, flush_webhooks};
 
 #[cfg(test)]
 pub(crate) mod test_support {
@@ -523,7 +522,7 @@ pub fn router_with_runtime(
 
             let (remote_control_bridges, bridge_refreshes) =
                 remote_control_bridge::RemoteControlBridgeHub::new();
-            let online = online_groups::OnlineHub::spawn(app.clone(), db.clone());
+            let online = online_groups::OnlineHub::spawn(db.clone());
             let mut state = ApiState {
                 experience_worker: None,
                 account_retirement_worker: None,

@@ -9,6 +9,10 @@ mod browser_handoff;
 #[path = "experience_reliability.rs"]
 mod reliability;
 
+#[cfg(unix)]
+#[path = "experience_evidence.rs"]
+mod evidence;
+
 #[tokio::test]
 async fn completed_program_trials_cannot_resume_under_renewed_consent() {
     use choruz_application::db_service::ProgramTrialAdmission;
@@ -917,7 +921,7 @@ async fn decision_worker_builds_on_device_then_evaluates_selects_and_executes() 
         remote_control_bridges: crate::remote_control_bridge::RemoteControlBridgeHub::new().0,
         local_host: crate::host_runtime::LocalHost::new(),
         host_links: links,
-        online: crate::online_groups::OnlineHub::spawn(app, db.clone()),
+        online: crate::online_groups::OnlineHub::spawn(db.clone()),
     };
     let cases: Vec<choruz_evaluation::evaluation::TraceCase> = (0..30).map(|i| serde_json::from_value(json!({"episode_ref":format!("objective-{i}"),"evidence":[format!("source-{i}")],"input":format!("Billing ticket number {i}"),"check":{"type":"judge","expected":"billing_queue","rubric":"Select the billing queue for billing tickets."},"reason":"Confirmed by user"})).unwrap()).collect();
     let suite =

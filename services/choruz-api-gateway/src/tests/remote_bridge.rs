@@ -103,7 +103,7 @@ async fn exercise_sockets(silent: Option<&str>) {
         remote_control_bridges: RemoteControlBridgeHub::new().0,
         local_host: crate::host_runtime::LocalHost::new(),
         host_links: crate::host_link::HostLinkHub::default(),
-        online: crate::online_groups::OnlineHub::spawn(app, db),
+        online: crate::online_groups::OnlineHub::spawn(db),
         event_store: store,
     };
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

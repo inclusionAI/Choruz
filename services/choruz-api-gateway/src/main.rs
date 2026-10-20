@@ -138,10 +138,8 @@ async fn main() -> Result<(), std::io::Error> {
 }
 
 /// Build the ChatApp shell from PostgreSQL tables (source of truth).
-/// Loads principals, conversations, companies, and webhook configs.
-/// Messages and audit logs are NOT loaded — they are read on-demand via DbService.
-/// The in-memory ChatApp is kept only for backward-compatible inject calls
-/// and webhook event delivery during the ongoing stateless migration.
+/// Loads identity metadata for process-local projections. Messages, audits and
+/// webhook delivery state are read directly from PostgreSQL.
 async fn build_app_from_db(store: &RuntimeStore) -> Result<ChatApp, String> {
     use choruz_domain::PrincipalType;
 
@@ -360,50 +358,6 @@ async fn build_app_from_db(store: &RuntimeStore) -> Result<ChatApp, String> {
         audit_logs,
         120,
     );
-
-    // ── Load event webhook configs ──
-    let wh_rows = client
-        .query(
-            "SELECT principal_id, url, event_types, cursor, webhook_secret, updated_at
-             FROM event_webhook",
-            &[],
-        )
-        .await
-        .unwrap_or_default();
-    let wh_count = wh_rows.len();
-    for row in wh_rows {
-        app.inject_event_webhook(choruz_application::EventWebhookConfig {
-            principal_id: row.get("principal_id"),
-            url: row.get("url"),
-            event_types: row.get::<_, Vec<String>>("event_types"),
-            cursor: row.get::<_, i64>("cursor") as u64,
-            updated_at: row.get("updated_at"),
-            webhook_secret: row.get("webhook_secret"),
-        });
-    }
-    if wh_count > 0 {
-        tracing::info!(count = wh_count, "loaded event webhooks from DB");
-    }
-
-    // ── Align event sequence numbers with runner cursors ──
-    // The runner saves cursor positions per binding. If next_event_seq < cursor,
-    // the runner will skip all new events. Ensure seq >= max cursor for each agent.
-    let cursor_rows = client
-        .query(
-            "SELECT agent_principal_id, MAX(last_event_cursor) as max_cursor
-             FROM agent_runtime_bindings
-             GROUP BY agent_principal_id",
-            &[],
-        )
-        .await
-        .unwrap_or_default();
-    for row in cursor_rows {
-        let pid: String = row.get("agent_principal_id");
-        let cursor: i64 = row.get("max_cursor");
-        if cursor > 0 {
-            app.ensure_event_seq_at_least(&pid, cursor as u64 + 1);
-        }
-    }
 
     Ok(app)
 }

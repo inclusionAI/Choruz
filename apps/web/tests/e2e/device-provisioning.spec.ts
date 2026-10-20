@@ -5,7 +5,7 @@ import { mkdtemp, mkdir, writeFile, readFile, realpath, rm } from "node:fs/promi
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { API_BASE, login, gotoDashboard } from "../fixtures/auth";
-import { createCompany, deleteCompany, uniqueName } from "../fixtures/api";
+import { createCompany, createGroup, deleteCompany, sendMessage, uniqueName } from "../fixtures/api";
 import { randomUUID } from "node:crypto";
 import { postgresQueryClient } from "../../lib/groups/group-provisioning-db";
 import { createGroupProvisioningStore } from "../../lib/groups/group-provisioning-store";
@@ -63,6 +63,9 @@ test("remote creation reads B's harness and writes B's custom workspace through 
   const harness = process.env.CHORUZ_PLUGINS?.split(",").map((id) => id.trim()).includes("opencode") ? "opencode" : "muse";
   const binary = path.join(home, harness);
   const config = path.join(home, "connector.json");
+  const groupName = uniqueName("device-headless");
+  const reply = `Device B completed the workspace inspection ${randomUUID()}`;
+  const marker = `.headless-device-${randomUUID()}`;
   const connector = path.resolve("../../target/debug/choruz-connector");
   const headers = { Authorization: `Bearer ${session.token}` };
   let processB: ReturnType<typeof spawn> | undefined;
@@ -70,7 +73,22 @@ test("remote creation reads B's harness and writes B's custom workspace through 
     await mkdir(workspace);
     // Only the external CLI is a deterministic substitute. Pairing, Web/API
     // validation, host dispatch, workspace writes and binding storage are real.
-    await writeFile(binary, '#!/bin/sh\ncase "$1" in\n--version) echo device-b-cli;;\nmodels) printf "fixture/device-b-model\\nAvailable models:\\n- fixture/device-b-model\\n";;\n*) exit 0;;\nesac\n', { mode: 0o700 });
+    const nativeCompletion = harness === "muse"
+      ? { schema_version: 1, stream: { kind: "session", id: "device-b-native-session" }, payload_type: "run.terminal.completed", payload: { text: "Native diagnostic, not the group reply" } }
+      : { type: "text", sessionID: "device-b-native-session", part: { text: "Native diagnostic, not the group reply" } };
+    await writeFile(binary, `#!/bin/sh
+set -eu
+case "$1" in
+--version) echo device-b-cli;;
+models) printf "fixture/device-b-model\\nAvailable models:\\n- fixture/device-b-model\\n";;
+exec|run)
+  pwd > "$CHORUZ_FIXTURE_MARKER"
+  "$CHORUZ_SEND" "$CHORUZ_FIXTURE_REPLY"
+  printf '%s\\n' '${JSON.stringify(nativeCompletion)}'
+  ;;
+*) exit 0;;
+esac
+`, { mode: 0o700 });
     await mkdir(path.join(home, ".local/bin"), { recursive: true });
     await writeFile(path.join(home, ".local/bin/bsk"), '#!/bin/sh\ncase "$1" in\n--version) echo device-b-browser;;\ninstall-skill) mkdir -p "$HOME/.agents/skills/browser-skill"; echo device-b-skill > "$HOME/.agents/skills/browser-skill/SKILL.md";;\ndoctor) echo \'[{"name":"Browser extension on B","ok":false,"hint":"Connect B browser"}]\'; exit 1;;\nesac\n', { mode: 0o700 });
     const pairing = await page.request.post(`${API_BASE}/v1/companies/${company.id}/runtime-host-pairings`, { headers });
@@ -80,7 +98,7 @@ test("remote creation reads B's harness and writes B's custom workspace through 
     expect(redeemed.ok()).toBeTruthy();
     const { host, host_token } = await redeemed.json();
     await writeFile(config, JSON.stringify({ api_url: API_BASE, host_id: host.id, host_name: host.name, host_token, max_concurrency: 1 }), { mode: 0o600 });
-    processB = spawn(connector, ["run", "--config", config], { env: { ...process.env, PATH: "/usr/bin:/bin", HOME: home, CHORUZ_FS_BROWSE_ROOTS: home, [`CHORUZ_${harness.toUpperCase()}_BINARY`]: binary }, stdio: "ignore" });
+    processB = spawn(connector, ["run", "--config", config], { env: { ...process.env, PATH: "/usr/bin:/bin", HOME: home, CHORUZ_FS_BROWSE_ROOTS: home, [`CHORUZ_${harness.toUpperCase()}_BINARY`]: binary, CHORUZ_FIXTURE_MARKER: marker, CHORUZ_FIXTURE_REPLY: JSON.stringify({ type: "send", group: groupName, content: reply }) }, stdio: "ignore" });
     await expect.poll(async () => {
       const response = await page.request.post(`${API_BASE}/v1/runtime-hosts/${host.id}/operations`, { headers, data: { kind: "filesystem.home" } });
       return response.ok() ? (await response.json()).home : null;
@@ -137,6 +155,21 @@ test("remote creation reads B's harness and writes B's custom workspace through 
     const binding = await page.request.get(`${API_BASE}/v1/runtime/bindings/${created.binding.id}`, { headers });
     expect(binding.ok()).toBeTruthy();
     expect(await binding.json()).toMatchObject({ runtime_host_id: host.id, driver_type: `${harness}_terminal`, model: "fixture/device-b-model" });
+
+    const group = await createGroup(page, session.token, session.principal.id, groupName, [created.agent.id], company.id);
+    await sendMessage(page, session.token, session.principal.id, group.id, `@${created.agent.name} Inspect this workspace and report the result.`);
+    const database = await postgresQueryClient();
+    await expect.poll(async () => {
+      const result = await database.query<{ content: string; metadata: { runtime_host_id: string } }>(
+        "SELECT content, metadata FROM conversation_events WHERE conversation_id=$1 AND sender_id=$2 AND content=$3",
+        [group.id, created.agent.id, reply],
+      );
+      return result.rows;
+    }, { timeout: 30_000 }).toEqual([{ content: reply, metadata: expect.objectContaining({ runtime_host_id: host.id }) }]);
+    expect((await readFile(path.join(workspace, marker), "utf8")).trim()).toBe(workspace);
+    for (const controllerPath of [path.resolve(marker), path.resolve("../..", marker)]) {
+      await expect(readFile(controllerPath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    }
   } finally {
     if (processB && processB.exitCode === null) {
       const exited = once(processB, "exit");

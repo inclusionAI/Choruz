@@ -1,6 +1,6 @@
 //! Online's background owner. Its typed group messages cannot invoke runtime APIs.
 use choruz_application::{
-    ChatApp, DbService, SendMessageRequest,
+    DbService, SendMessageRequest,
     db_service::{OnlineGroupLink, OnlineIdentity},
 };
 use choruz_domain::Principal;
@@ -26,7 +26,7 @@ impl Drop for Session {
 #[derive(Clone, Default)]
 pub(crate) struct OnlineHub(Arc<Mutex<HashMap<String, Session>>>);
 impl OnlineHub {
-    pub fn spawn(app: ChatApp, db: DbService) -> Self {
+    pub fn spawn(db: DbService) -> Self {
         let hub = Self::default();
         let weak = Arc::downgrade(&hub.0);
         tokio::spawn(async move {
@@ -61,9 +61,8 @@ impl OnlineHub {
                     let id = actor.id.clone();
                     let device = identity.device_id.clone();
                     let db = db.clone();
-                    let app = app.clone();
                     let task = tokio::spawn(async move {
-                        maintain(app, db, actor, identity, client, events).await;
+                        maintain(db, actor, identity, client, events).await;
                     });
                     sessions.insert(
                         id,
@@ -159,7 +158,6 @@ async fn peer(
 }
 
 pub(crate) async fn process(
-    app: &ChatApp,
     db: &DbService,
     actor: &Principal,
     link: &OnlineGroupLink,
@@ -214,7 +212,6 @@ pub(crate) async fn process(
                 })?
             };
             let message = super::handlers_messages::publish_message(
-                app,
                 db,
                 SendMessageRequest {
                     actor_id: sender,
@@ -246,7 +243,6 @@ pub(crate) async fn process(
 }
 
 async fn maintain(
-    app: ChatApp,
     db: DbService,
     actor: Principal,
     identity: OnlineIdentity,
@@ -307,7 +303,7 @@ async fn maintain(
                         if tick%10==1 { db.queue_online_resync(&actor,&link.id).await?; }
                         for (id,body) in db.online_incoming(&actor,&link.id).await? {
                             let current=db.online_group(&actor,&link.id).await?;
-                            match process(&app,&db,&actor,&current,&id,&body).await {
+                            match process(&db,&actor,&current,&id,&body).await {
                                 Ok(())=>{},
                                 Err(e @ (choruz_common::AppError::Validation(_)|choruz_common::AppError::Forbidden(_)))=> { db.online_processed(&actor,&id).await?; tracing::warn!(event="online.delivery_rejected",link_id=%link.id,delivery_id=%id,kind=body["kind"].as_str().unwrap_or("invalid"),reason=%e,"Online message rejected by group permission or protocol"); },
                                 Err(e)=>return Err(e),
@@ -318,7 +314,7 @@ async fn maintain(
                                 let Some(input)=db.next_online_agent_input(&actor,&link.id).await? else {break};
                                 let seq=input.metadata["online_seq"].as_i64().unwrap_or(0);
                                 let shared_id=input.metadata["online_message_id"].as_str().unwrap_or("").to_owned();
-                                let message=super::handlers_messages::publish_message(&app,&db,input).await?;
+                                let message=super::handlers_messages::publish_message(&db,input).await?;
                                 db.finish_online_agent_input(&actor,&link.id,&message.conversation_id,seq).await?;
                                 tracing::info!(event="online.agent_input_published",link_id=%link.id,shared_message_id=%shared_id,message_id=%message.id,conversation_id=%message.conversation_id,seq,"Shared message entered the guest's normal Agent pipeline");
                             }

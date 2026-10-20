@@ -233,7 +233,7 @@ async fn guest_agent_roundtrip(company_agent: bool) {
         .unwrap();
     let current = host_db.online_group(&owner, &host.id).await.unwrap();
     // Replace only mailbox delivery here; exercise the real protocol receiver and two independent stores.
-    crate::online_groups::process(&app, &host_db, &owner, &current, &delivery, &registration)
+    crate::online_groups::process(&host_db, &owner, &current, &delivery, &registration)
         .await
         .unwrap();
     let (ack_id, ack) = host_db
@@ -319,7 +319,7 @@ async fn guest_agent_roundtrip(company_agent: bool) {
             .into_iter()
             .find(|(_, v)| v["kind"] == "agent_join" && v["agent"]["id"] == id)
             .unwrap();
-        crate::online_groups::process(&app, &host_db, &owner, &current, &delivery, &registration)
+        crate::online_groups::process(&host_db, &owner, &current, &delivery, &registration)
             .await
             .unwrap();
         let (_, ack) = host_db
@@ -341,7 +341,6 @@ async fn guest_agent_roundtrip(company_agent: bool) {
         host_db.online_accepted(&owner, &id).await.unwrap();
     }
     let message = crate::handlers_messages::publish_message(
-        &app,
         &host_db,
         SendMessageRequest {
             actor_id: owner.id.clone(),
@@ -394,10 +393,10 @@ async fn guest_agent_roundtrip(company_agent: bool) {
         workspace
     );
     let seq = input.metadata["online_seq"].as_i64().unwrap();
-    let delivered = crate::handlers_messages::publish_message(&app, &guest_db, input.clone())
+    let delivered = crate::handlers_messages::publish_message(&guest_db, input.clone())
         .await
         .unwrap();
-    let retry = crate::handlers_messages::publish_message(&app, &guest_db, input)
+    let retry = crate::handlers_messages::publish_message(&guest_db, input)
         .await
         .unwrap();
     assert_eq!(delivered.id, retry.id);
@@ -421,7 +420,7 @@ async fn guest_agent_roundtrip(company_agent: bool) {
                 .workspace_id,
             guest.workspace_id
         );
-        let result = crate::handlers_messages::publish_message(&app, &guest_db, other)
+        let result = crate::handlers_messages::publish_message(&guest_db, other)
             .await
             .unwrap();
         guest_db
@@ -502,10 +501,10 @@ async fn guest_agent_roundtrip(company_agent: bool) {
             .all(|c| c.is_ascii_hexdigit() || c == b'-')
     );
     let (id, body) = &replies[0];
-    crate::online_groups::process(&app, &host_db, &owner, &current, id, body)
+    crate::online_groups::process(&host_db, &owner, &current, id, body)
         .await
         .unwrap();
-    crate::online_groups::process(&app, &host_db, &owner, &current, id, body)
+    crate::online_groups::process(&host_db, &owner, &current, id, body)
         .await
         .unwrap();
     let history = host_db.list_messages(&group.id, None, None).await.unwrap();
@@ -556,7 +555,6 @@ async fn guest_agent_roundtrip(company_agent: bool) {
     let forged = json!({"kind":"agent_say","agent_id":owner.id,"content":"forged"});
     assert!(
         crate::online_groups::process(
-            &app,
             &host_db,
             &owner,
             &current,

@@ -197,9 +197,7 @@ impl<'a> LearningCheck<'a> {
 }
 
 pub(crate) fn execution_context(spec: &choruz_host_runtime::TerminalSpec) -> Value {
-    json!({"driver":spec.driver_type,"binary":spec.binary_path,"workspace":spec.workspace_path,"model":spec.model,
-        "host":spec.harness_account["runtime_host_id"],"account":spec.harness_account["harness_account_id"],
-        "profile":spec.harness_account["harness_account_profile_kind"],"directory":spec.harness_account["harness_account_profile_directory"]})
+    json!(choruz_host_runtime::execution_identity::ExecutionIdentity::from(spec))
 }
 
 fn digest(bytes: &[u8]) -> String {

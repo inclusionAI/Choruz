@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { ApiRequestError, markThreadViewed } from "./choruz-api";
 import {
   activeTransport,
   gatewaySocketUrl,
@@ -33,6 +34,32 @@ describe("gatewaySocketUrl", () => {
 });
 
 describe("active transport", () => {
+  it("records thread receipts through the active relay and reports its failure and success", async () => {
+    vi.stubGlobal("window", {});
+    const directFetch = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", directFetch);
+    const finish = vi.fn();
+    setRequestObserver(() => ({ traceId: "thread-receipt-trace", finish }));
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(Response.json({ error: { detail: "Owner unavailable" } }, { status: 503 }))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+    setActiveTransport({ fetch, socket: vi.fn() });
+
+    await expect(markThreadViewed("remote-session", "conversation/1", "root/2"))
+      .rejects.toEqual(new ApiRequestError(503, "Owner unavailable"));
+    expect(finish).toHaveBeenLastCalledWith({ status: 503, outcome: "failed" });
+    await expect(markThreadViewed("remote-session", "conversation/1", "root/2"))
+      .resolves.toBeUndefined();
+    expect(finish).toHaveBeenLastCalledWith({ status: 204, outcome: "succeeded" });
+    expect(fetch).toHaveBeenCalledTimes(2);
+    for (const [url, init] of fetch.mock.calls) {
+      expect(url).toBe("/api/v1/conversations/conversation%2F1/threads/root%2F2/view");
+      expect(init.method).toBe("POST");
+      expect(new Headers(init.headers).get("authorization")).toBe("Bearer remote-session");
+      expect(new Headers(init.headers).get("x-trace-id")).toBe("thread-receipt-trace");
+    }
+    expect(directFetch).not.toHaveBeenCalled();
+  });
   it("correlates responses and cancellation without consuming the response body", async () => {
     vi.stubGlobal("window", {});
     const finish = vi.fn();

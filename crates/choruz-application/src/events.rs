@@ -11,7 +11,7 @@ use crate::{
 /// Generate a 32-byte hex signing secret for outbound webhook HMAC.
 /// Format: 64 lower-case hex chars (matches how apps typically echo it
 /// back). Entropy source: `rand::rngs::OsRng`.
-fn generate_webhook_secret() -> String {
+pub(crate) fn generate_webhook_secret() -> String {
     let mut bytes = [0u8; 32];
     rand::rngs::OsRng.fill_bytes(&mut bytes);
     hex::encode(bytes)

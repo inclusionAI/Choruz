@@ -1,13 +1,10 @@
 # choruz-executor
 
-Executor-side building blocks the pipeline uses to run an agent turn: `SandboxManager` provisions the per-session workspace directory, `AdapterWal` logs prompt injections and responses to a local SQLite write-ahead log for crash recovery, and `CliAdapter` is the trait a CLI adapter (`codex_adapter.rs`) implements. `services/choruz-pipeline` depends on it.
+Local SQLite turn records and incomplete-turn inspection. The pipeline reads these records during startup recovery; device execution belongs to `choruz-host-runtime` and uses the binding's workspace.
 
 ## Entry points
 
-- `src/sandbox.rs` — `SandboxManager`, `WorkspaceConfig`
 - `src/wal.rs` — `AdapterWal`, `find_incomplete_turns`
-- `src/adapter.rs` — `CliAdapter`, `CliResponse`
-- `src/codex_adapter.rs` — the Codex adapter
 - `src/error.rs` — `ExecutorError`
 
 ## Tests
@@ -19,5 +16,5 @@ This package does not depend on the platform session store or PostgreSQL.
 ## Related
 
 - [docs/subsystems/message-pipeline.md](../../docs/subsystems/message-pipeline.md) — the headless executor loop in `services/choruz-pipeline`
-- [docs/subsystems/agent-runtime.md](../../docs/subsystems/agent-runtime.md) — sandbox and WAL as seen from a running agent
+- [docs/subsystems/agent-runtime.md](../../docs/subsystems/agent-runtime.md) — execution ownership and WAL
 - [docs/architecture.md](../../docs/architecture.md)

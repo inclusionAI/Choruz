@@ -10,6 +10,8 @@ New tasks created fresh bindings, losing prior learning. Curation only saw the c
 
 Reference the existing owned policy from matching tasks; do not copy mutable learning state. Keep captured sources in a separate learning-only ledger instead of using historical anchors to resume a CLI. Select explicit models on existing idle Agents without changing their session identity.
 
+Analysis and behavior-card preparation use the [shared evidence resolver](../bug-fix/2026-10-19-shared-learning-evidence-identity.md) to recover that ledger under current access checks.
+
 The [runtime contract](../../../../docs/subsystems/agent-runtime.md#behavior-community) owns scope, consent and lifecycle behavior. The [data model](../../../../docs/data-model.md#experience_policy-and-experience_revision) owns persistence.
 
 ## Alternatives considered

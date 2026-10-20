@@ -301,11 +301,6 @@ export type Company = {
   updated_at: string;
 };
 
-export type CompanyMember = {
-  principal_id: string;
-  joined_at: string;
-};
-
 export type LocalLoginResponse = {
   principal: Principal;
   session_token: string;
@@ -486,63 +481,12 @@ export async function revokeRuntimeHost(sessionToken: string, hostId: string) {
 
 // ── Company API ──
 
-export async function fetchCompanies(sessionToken: string): Promise<Company[]> {
-  return apiJson<Company[]>("/v1/companies", {}, sessionToken);
-}
-
-export async function createCompany(
-  sessionToken: string,
-  payload: { actor_id: string; name: string; slug?: string; description?: string; folder_path?: string },
-): Promise<Company> {
-  return apiJson<Company>("/v1/companies", {
-    method: "POST",
-    body: JSON.stringify(payload),
-  }, sessionToken);
-}
-
 export async function fetchCompany(sessionToken: string, companyId: string): Promise<Company> {
   return apiJson<Company>(`/v1/companies/${companyId}`, {}, sessionToken);
 }
 
-export async function updateCompany(
-  sessionToken: string,
-  companyId: string,
-  payload: { actor_id: string; name?: string; description?: string },
-): Promise<Company> {
-  return apiJson<Company>(`/v1/companies/${companyId}`, {
-    method: "PATCH",
-    body: JSON.stringify(payload),
-  }, sessionToken);
-}
-
-export async function deleteCompany(sessionToken: string, companyId: string): Promise<void> {
-  await apiJson(`/v1/companies/${companyId}`, { method: "DELETE" }, sessionToken);
-}
-
-export async function fetchCompanyMembers(sessionToken: string, companyId: string): Promise<CompanyMember[]> {
-  return apiJson<CompanyMember[]>(`/v1/companies/${companyId}/members`, {}, sessionToken);
-}
-
-export async function addCompanyMember(
-  sessionToken: string,
-  companyId: string,
-  payload: { actor_id: string; principal_id: string },
-): Promise<CompanyMember> {
-  return apiJson<CompanyMember>(`/v1/companies/${companyId}/members`, {
-    method: "POST",
-    body: JSON.stringify(payload),
-  }, sessionToken);
-}
-
 export async function fetchRuntimeBindings(sessionToken: string): Promise<RuntimeBinding[]> {
   return apiJson<RuntimeBinding[]>("/v1/runtime/bindings", {}, sessionToken);
-}
-
-export async function fetchRuntimeBinding(
-  sessionToken: string,
-  bindingId: string,
-): Promise<RuntimeBinding> {
-  return apiJson<RuntimeBinding>(`/v1/runtime/bindings/${bindingId}`, {}, sessionToken);
 }
 
 export async function rebindRuntimeBinding(
@@ -702,21 +646,11 @@ export async function markThreadViewed(
   conversationId: string,
   threadRootId: string,
 ): Promise<void> {
-  const headers = new Headers();
-  headers.set("authorization", `Bearer ${sessionToken}`);
-  const response = await fetch(
-    `${apiBaseUrl()}/v1/conversations/${encodeURIComponent(conversationId)}/threads/${encodeURIComponent(threadRootId)}/view`,
-    { method: "POST", headers, cache: "no-store" },
+  await apiEmpty(
+    `/v1/conversations/${encodeURIComponent(conversationId)}/threads/${encodeURIComponent(threadRootId)}/view`,
+    { method: "POST" },
+    sessionToken,
   );
-  if (!response.ok) {
-    let detail = `${response.status} ${response.statusText}`;
-    try {
-      const payload = (await response.json()) as { error?: { detail?: string } | string };
-      if (typeof payload.error === "string") detail = payload.error;
-      else if (payload.error && typeof payload.error.detail === "string") detail = payload.error.detail;
-    } catch {}
-    throw new Error(detail);
-  }
 }
 
 export async function createAgent(

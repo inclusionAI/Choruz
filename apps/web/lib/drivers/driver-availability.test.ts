@@ -7,7 +7,7 @@ import {
   defaultPiRuntimeCheck,
   getDriverAvailability,
 } from "./driver-availability";
-import { resolveDriverBinary } from "./driver-registry";
+import { DRIVER_IDS, driverDisplayName, resolveDriverBinary } from "./driver-registry";
 
 describe("driver availability", () => {
   it("uses provisioning-compatible env/default binary resolution", () => {
@@ -48,51 +48,53 @@ describe("driver availability", () => {
       checkPiRuntime: async () => ({ available: true }),
     });
 
+    expect(new Set(items.map((item) => item.driverId))).toEqual(new Set(DRIVER_IDS));
+    for (const item of items) expect(item.label).toBe(driverDisplayName(item.driverId));
     expect(items).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          label: "Claude",
+          label: driverDisplayName("claude_terminal"),
           driverId: "claude_terminal",
           available: false,
           status: "unavailable",
-          reason: "Claude CLI was not found.",
+          reason: `${driverDisplayName("claude_terminal")} CLI was not found.`,
           setupHint: expect.stringContaining("CHORUZ_CLAUDE_BINARY"),
           envVar: "CHORUZ_CLAUDE_BINARY",
         }),
         expect.objectContaining({
-          label: "Codex Terminal",
+          label: driverDisplayName("codex_terminal"),
           driverId: "codex_terminal",
           available: true,
           status: "available",
-          reason: "Codex Terminal CLI is available.",
+          reason: `${driverDisplayName("codex_terminal")} CLI is available.`,
           envVar: "CHORUZ_CODEX_BINARY",
         }),
         expect.objectContaining({
-          label: "Pi Agent",
+          label: driverDisplayName("pi_terminal"),
           driverId: "pi_terminal",
           available: true,
           envVar: "CHORUZ_PI_BINARY",
         }),
         expect.objectContaining({
-          label: "Grok Build",
+          label: driverDisplayName("grok_terminal"),
           driverId: "grok_terminal",
           available: false,
           envVar: "CHORUZ_GROK_BINARY",
         }),
         expect.objectContaining({
-          label: "OpenCode",
+          label: driverDisplayName("opencode_terminal"),
           driverId: "opencode_terminal",
           available: false,
           envVar: "CHORUZ_OPENCODE_BINARY",
         }),
         expect.objectContaining({
-          label: "MathCode",
+          label: driverDisplayName("mathcode_terminal"),
           driverId: "mathcode_terminal",
           available: false,
           envVar: "CHORUZ_MATHCODE_BINARY",
         }),
         expect.objectContaining({
-          label: "Webhook",
+          label: driverDisplayName("webhook_agent"),
           driverId: "webhook_agent",
           available: true,
           reason: expect.stringContaining("do not require a local CLI"),

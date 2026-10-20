@@ -17,6 +17,7 @@ pub use decision_programs::ProgramTrialAdmission;
 mod evaluation;
 mod events;
 mod experience;
+mod learning_feedback;
 pub use behavior::{BehaviorClaim, PublicationClaim};
 mod task_difficulty;
 mod trace_cases;
@@ -38,6 +39,7 @@ mod principals;
 mod sync;
 mod task_learning;
 mod telemetry;
+mod workspace_migrations;
 
 use std::collections::HashMap;
 use std::sync::Mutex;

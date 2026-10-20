@@ -135,69 +135,11 @@ async fn review(
     let mut windows = vec![("feedback".to_owned(), feedback)];
     let mut native_sources = Vec::new();
     {
-        let mut sessions = Vec::new();
-        let mut seen = std::collections::HashSet::new();
-        for id in state
-            .db
-            .learning_source_bindings(&claim.workspace_id, &claim.binding_id)
-            .await?
-        {
-            let binding = if id == target.id {
-                target.clone()
-            } else {
-                match authorize_terminal_binding(state, &actor, &id).await {
-                    Ok(binding) => binding,
-                    Err(crate::ApiError(AppError::Forbidden(_) | AppError::NotFound(_))) => {
-                        continue;
-                    }
-                    Err(error) => return Err(error.0),
-                }
-            };
-            if state
-                .db
-                .learning_binding_id(&claim.workspace_id, &binding.id, Some(&claim.owner_id))
+        for source in
+            crate::learning_sources::native_sources(state, &actor, &claim.workspace_id, &target)
                 .await?
-                != claim.binding_id
-            {
-                continue;
-            }
-            let mut retained = state.runtime.retained_native_sources(&binding).await?;
-            if let Some(anchor) = binding.valid_terminal_session_anchor_for_context(
-                None,
-                None,
-                Some(binding.terminal_generation()),
-                None,
-            ) && !retained
-                .iter()
-                .any(|source| source.session_id == anchor.session_id)
-            {
-                retained.push(anchor);
-            }
-            for source in retained {
-                if seen.insert(source.session_id.clone()) {
-                    sessions.push((
-                        binding.clone(),
-                        Some(source.session_id),
-                        Some(source.native_home_path),
-                    ));
-                }
-            }
-            if let Some(external) = &binding.external_session_id
-                && seen.insert(external.clone())
-            {
-                sessions.push((binding.clone(), Some(external.clone()), None));
-            }
-        }
-        if sessions.is_empty() {
-            sessions.push((target.clone(), None, None));
-        }
-        for (binding, resume, home) in sessions {
-            let session_key = resume.as_deref().unwrap_or("live");
-            let key = if binding.id == target.id {
-                session_key.to_owned()
-            } else {
-                format!("task:{}:{session_key}", binding.id)
-            };
+        {
+            let key = source.key;
             let cursor: choruz_learning::source::Cursor = checkpoint
                 .get(&key)
                 .cloned()
@@ -205,13 +147,7 @@ async fn review(
                 .transpose()
                 .map_err(|_| AppError::Internal("Invalid stored source cursor".into()))?
                 .unwrap_or_default();
-            let mut spec = terminal_spec(
-                &binding,
-                120,
-                40,
-                resume.clone(),
-                home.filter(|path| !path.is_empty()),
-            );
+            let mut spec = source.spec;
             let window: Value = check
                 .call(
                     &source_host,

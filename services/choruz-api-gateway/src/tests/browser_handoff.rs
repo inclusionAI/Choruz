@@ -94,7 +94,7 @@ print(json.dumps(out))
         remote_control_bridges: crate::remote_control_bridge::RemoteControlBridgeHub::new().0,
         local_host: crate::host_runtime::LocalHost::new(),
         host_links: links,
-        online: crate::online_groups::OnlineHub::spawn(chat, db.clone()),
+        online: crate::online_groups::OnlineHub::spawn(db.clone()),
     };
     let app = axum::Router::new()
         .route(

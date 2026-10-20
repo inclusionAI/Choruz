@@ -6,6 +6,25 @@ use super::DbService;
 use super::helpers::row_to_audit_log;
 
 impl DbService {
+    /// Read process-wide gauges from their durable owners, not an incomplete
+    /// in-memory identity projection. A storage failure fails the scrape.
+    pub async fn metrics_snapshot(&self) -> Result<crate::MetricsSnapshot, AppError> {
+        let row = self.store.connect().await?.query_one(
+            "SELECT (SELECT COUNT(*) FROM principal WHERE deleted_at IS NULL) AS principals,
+                    (SELECT COUNT(*) FROM conversation) AS conversations,
+                    (SELECT COUNT(*) FROM conversation_events WHERE event_type IN ('message','message.created','reply')) AS messages,
+                    (SELECT COUNT(*) FROM audit_log) AS audits,
+                    (SELECT COUNT(*) FROM outbox_event WHERE acknowledged_at IS NULL) AS backlog", &[],
+        ).await.map_err(|e|AppError::Internal(format!("metrics snapshot: {e}")))?;
+        Ok(crate::MetricsSnapshot {
+            principals_total: row.get::<_, i64>("principals") as usize,
+            conversations_total: row.get::<_, i64>("conversations") as usize,
+            messages_total: row.get::<_, i64>("messages") as usize,
+            audit_logs_total: row.get::<_, i64>("audits") as usize,
+            event_backlog_total: row.get::<_, i64>("backlog") as usize,
+        })
+    }
+
     // ── Audit log reads (Phase 1D) ──────────────────────────────────────
 
     /// List audit logs for a workspace from the database.

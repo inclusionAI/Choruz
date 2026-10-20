@@ -1,9 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createChannelTaskFromMessage,
-  createCompany,
-  deleteCompany,
-  fetchCompanies,
   fetchChannelTask,
   fetchChannelTasks,
   fetchCompany,
@@ -41,9 +38,9 @@ afterEach(() => {
 describe("apiJson — URL construction", () => {
   it("prefixes the path with apiBaseUrl()", async () => {
     const fn = captureFetch(() => jsonResponse([]));
-    await fetchCompanies("session-1");
+    await fetchCompany("session-1", "c1");
     expect(fn).toHaveBeenCalledWith(
-      "http://gateway.test/v1/companies",
+      "http://gateway.test/v1/companies/c1",
       expect.any(Object),
     );
   });
@@ -58,7 +55,7 @@ describe("apiJson — URL construction", () => {
 describe("apiJson — auth + content-type headers", () => {
   it("sets Authorization Bearer header when sessionToken is provided", async () => {
     const fn = captureFetch(() => jsonResponse([]));
-    await fetchCompanies("token-abc");
+    await fetchCompany("token-abc", "c1");
     const init = fn.mock.calls[0][1] as RequestInit;
     const auth = (init.headers as Headers).get("authorization");
     expect(auth).toBe("Bearer token-abc");
@@ -66,14 +63,14 @@ describe("apiJson — auth + content-type headers", () => {
 
   it("auto-sets content-type=application/json when a body is present", async () => {
     const fn = captureFetch(() => jsonResponse({ id: "c1" }));
-    await createCompany("t", { actor_id: "actor-1", name: "Acme" });
+    await localLogin("alice", "pw");
     const init = fn.mock.calls[0][1] as RequestInit;
     expect((init.headers as Headers).get("content-type")).toBe("application/json");
   });
 
   it("does NOT set content-type when there is no body", async () => {
     const fn = captureFetch(() => jsonResponse([]));
-    await fetchCompanies("t");
+    await fetchCompany("t", "c1");
     const init = fn.mock.calls[0][1] as RequestInit;
     // GET, no body
     expect(init.body).toBeUndefined();
@@ -82,7 +79,7 @@ describe("apiJson — auth + content-type headers", () => {
 
   it("uses no-store cache to avoid stale auth responses", async () => {
     const fn = captureFetch(() => jsonResponse([]));
-    await fetchCompanies("t");
+    await fetchCompany("t", "c1");
     const init = fn.mock.calls[0][1] as RequestInit;
     expect(init.cache).toBe("no-store");
   });
@@ -104,13 +101,6 @@ describe("apiJson — methods", () => {
     await localSignup("alice", "pw");
     const init = fn.mock.calls[0][1] as RequestInit;
     expect(init.method).toBe("POST");
-  });
-
-  it("uses DELETE for deleteCompany", async () => {
-    const fn = captureFetch(() => jsonResponse({}));
-    await deleteCompany("t", "c1");
-    const init = fn.mock.calls[0][1] as RequestInit;
-    expect(init.method).toBe("DELETE");
   });
 
   it("accepts an empty 204 response when revoking a runtime host", async () => {
@@ -176,12 +166,12 @@ describe("apiJson — methods", () => {
 describe("apiJson — error responses", () => {
   it("throws with payload.error.detail when error is an object", async () => {
     captureFetch(() => jsonResponse({ error: { detail: "company not found" } }, 404));
-    await expect(fetchCompanies("t")).rejects.toThrow("company not found");
+    await expect(fetchCompany("t", "c1")).rejects.toThrow("company not found");
   });
 
   it("throws with payload.error when error is a string", async () => {
     captureFetch(() => jsonResponse({ error: "rate limit exceeded" }, 429));
-    await expect(fetchCompanies("t")).rejects.toThrow("rate limit exceeded");
+    await expect(fetchCompany("t", "c1")).rejects.toThrow("rate limit exceeded");
   });
 
   it("falls back to status + statusText when error body cannot be parsed", async () => {
@@ -189,13 +179,12 @@ describe("apiJson — error responses", () => {
       status: 500,
       statusText: "Server Error",
     }));
-    await expect(fetchCompanies("t")).rejects.toThrow(/500.*Server Error/);
+    await expect(fetchCompany("t", "c1")).rejects.toThrow(/500.*Server Error/);
   });
 
   it("returns parsed JSON when response is ok", async () => {
-    captureFetch(() => jsonResponse([{ id: "c1", name: "Acme" }]));
-    const result = await fetchCompanies("t");
-    expect(Array.isArray(result)).toBe(true);
-    expect(result[0]).toMatchObject({ id: "c1", name: "Acme" });
+    captureFetch(() => jsonResponse({ id: "c1", name: "Acme" }));
+    const result = await fetchCompany("t", "c1");
+    expect(result).toMatchObject({ id: "c1", name: "Acme" });
   });
 });

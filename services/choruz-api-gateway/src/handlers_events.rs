@@ -8,8 +8,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::{
-    ApiError, ApiState, authenticated_principal, db_persist, flush_webhooks, flush_webhooks_all,
-    require_actor, require_self,
+    ApiError, ApiState, authenticated_principal, flush_webhooks, require_actor, require_self,
 };
 
 // ── Telemetry ─────────────────────────────────────────────────────────
@@ -91,30 +90,9 @@ pub(crate) async fn set_event_webhook(
     Json(payload): Json<choruz_application::SetEventWebhookRequest>,
 ) -> Result<Json<choruz_application::EventWebhookConfig>, ApiError> {
     require_actor(&headers, &state, &payload.actor_id).await?;
-    let config = state.app.set_event_webhook(&principal_id, payload)?;
-    let _ = flush_webhooks(&state.app).await;
-
-    // Persist webhook config to DB
-    {
-        let event_types: Vec<&str> = config.event_types.iter().map(|s| s.as_str()).collect();
-        let cursor = config.cursor as i64;
-        db_persist(
-            &state.event_store,
-            "INSERT INTO event_webhook (principal_id, url, event_types, cursor, webhook_secret, updated_at)
-             VALUES ($1, $2, $3, $4, $5, NOW())
-             ON CONFLICT (principal_id)
-             DO UPDATE SET url = EXCLUDED.url, event_types = EXCLUDED.event_types,
-                           cursor = EXCLUDED.cursor, webhook_secret = EXCLUDED.webhook_secret,
-                           updated_at = NOW()",
-            &[
-                &config.principal_id,
-                &config.url,
-                &event_types,
-                &cursor,
-                &config.webhook_secret,
-            ],
-            "set_event_webhook",
-        ).await;
+    let config = state.db.set_event_webhook(&principal_id, payload).await?;
+    if let Err(error) = flush_webhooks(&state.db).await {
+        tracing::warn!(%error, "configured webhook delivery deferred");
     }
 
     Ok(Json(config))
@@ -128,7 +106,7 @@ pub(crate) async fn flush_webhook_deliveries(
     State(state): State<ApiState>,
 ) -> Result<Json<crate::WebhookFlushResponse>, ApiError> {
     authenticated_principal(&headers, &state).await?;
-    let response = flush_webhooks_all(&state.app, &state.db).await;
+    let response = flush_webhooks(&state.db).await?;
 
     Ok(Json(response))
 }

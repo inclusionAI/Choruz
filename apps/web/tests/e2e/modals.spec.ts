@@ -1,3 +1,4 @@
+import { driverDisplayName } from "../../lib/drivers/driver-registry";
 import { expect, test, type Page } from "@playwright/test";
 import { randomUUID } from "node:crypto";
 
@@ -871,7 +872,7 @@ test.describe("Modals (Create Agent, Create Group, Create Company)", () => {
         body: JSON.stringify({
           drivers: [
             {
-              label: "Codex Terminal",
+              label: driverDisplayName("codex_terminal"),
               driverId: "codex_terminal",
               status: "available",
               reason: "Codex CLI is available.",

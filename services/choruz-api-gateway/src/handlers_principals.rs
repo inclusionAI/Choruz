@@ -9,10 +9,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::{
-    ApiError, ApiState, authenticated_principal, flush_webhooks, persist_principal_to_db,
-    require_actor,
-};
+use crate::{ApiError, ApiState, authenticated_principal, flush_webhooks, require_actor};
 
 // ── Login ─────────────────────────────────────────────────────────────
 
@@ -54,7 +51,6 @@ pub(crate) async fn local_bootstrap(
     }
 
     let principal = state.auth.ensure_operator(&state.db).await?;
-    persist_principal_to_db(&state.event_store, &principal).await;
     let session_token = state.auth.issue_user_session_token(&principal)?;
     let location = format!("http://127.0.0.1:{}/dashboard", query.return_port);
 
@@ -105,7 +101,6 @@ pub(crate) async fn local_login(
         && payload.password == state.auth.operator_password
     {
         let principal = state.auth.ensure_operator(&state.db).await?;
-        persist_principal_to_db(&state.event_store, &principal).await;
         return Ok(Json(LocalLoginResponse {
             session_token: state.auth.issue_user_session_token(&principal)?,
             principal,
@@ -443,14 +438,10 @@ pub(crate) async fn create_agent(
 
     let response = state.db.create_agent(payload).await.map_err(ApiError)?;
 
-    // Mirror the newly-created agent into the in-memory `ChatApp` state so
-    // immediately-following calls that still read from memory (e.g.
-    // `set_event_webhook` for webhook-driver agents) can find it without
-    // requiring a gateway restart. Without this the install flow 404s on
-    // the webhook registration step.
+    // Keep the process-local identity projection downstream of the commit.
     state.app.inject_principal(response.principal.clone());
 
-    let _ = flush_webhooks(&state.app).await;
+    let _ = flush_webhooks(&state.db).await;
 
     Ok((StatusCode::CREATED, Json(response)))
 }
@@ -470,7 +461,7 @@ pub(crate) async fn rotate_agent_secret(
         .rotate_agent_secret(&agent_id, payload)
         .await
         .map_err(ApiError)?;
-    let _ = flush_webhooks(&state.app).await;
+    let _ = flush_webhooks(&state.db).await;
 
     Ok(Json(response))
 }
@@ -489,14 +480,11 @@ pub(crate) async fn migrate_principal_workspace(
             "authenticated principal does not match actor_id".into(),
         )));
     }
-    let principal = state.app.migrate_principal_workspace(
-        &principal_id,
-        &payload.workspace_id,
-        &operator.id,
-    )?;
-
-    // Persist workspace_id change to DB
-    persist_principal_to_db(&state.event_store, &principal).await;
+    let principal = state
+        .db
+        .migrate_principal_workspace(&principal_id, &payload.workspace_id, &operator.id)
+        .await?;
+    state.app.inject_principal(principal.clone());
 
     Ok(Json(principal))
 }

@@ -2,7 +2,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   fetchConversationRuntimeStatus,
-  fetchRuntimeBinding,
   fetchRuntimeBindings,
   executeRuntimeHostOperation,
   importWorkspaceSessions,
@@ -76,24 +75,20 @@ describe("runtime binding API helpers", () => {
     expect(new Headers(init.headers).get("authorization")).toBe("Bearer session-token");
   });
 
-  it("targets the correct runtime binding endpoints for detail and actions", async () => {
+  it("rebinds the selected runtime binding", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({ id: "binding-1" }),
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    await fetchRuntimeBinding("session-token", "binding-1");
     await rebindRuntimeBinding("session-token", "binding-1", "/worktrees/next");
 
     expect(fetchMock.mock.calls[0]?.[0]).toBe(
-      "http://127.0.0.1:3000/v1/runtime/bindings/binding-1",
-    );
-    expect(fetchMock.mock.calls[1]?.[0]).toBe(
       "http://127.0.0.1:3000/v1/runtime/bindings/binding-1/rebind",
     );
 
-    const rebindInit = fetchMock.mock.calls[1]?.[1] as RequestInit;
+    const rebindInit = fetchMock.mock.calls[0]?.[1] as RequestInit;
     expect(rebindInit.method).toBe("POST");
     expect(rebindInit.body).toBe(JSON.stringify({ workspace_path: "/worktrees/next" }));
   });

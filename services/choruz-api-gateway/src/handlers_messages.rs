@@ -19,7 +19,7 @@ use serde::Deserialize;
 use crate::{
     ApiError, ApiState,
     attachments::{AttachmentRecord, UploadAttachmentRequest},
-    authenticated_principal, flush_webhooks_all, require_actor, require_self,
+    authenticated_principal, flush_webhooks, require_actor, require_self,
 };
 
 // ── Send message ──────────────────────────────────────────────────────
@@ -78,19 +78,19 @@ pub(crate) async fn send_message(
             .map(|s| s.to_string());
     }
 
-    let message = publish_message(&state.app, &state.db, payload).await?;
+    let message = publish_message(&state.db, payload).await?;
     Ok((StatusCode::CREATED, Json(message)))
 }
 
 pub(crate) async fn publish_message(
-    app: &choruz_application::ChatApp,
     db: &choruz_application::DbService,
     payload: choruz_application::SendMessageRequest,
 ) -> Result<choruz_domain::Message, AppError> {
     db.check_rate_limit(&payload.actor_id)?;
     let message = db.send_message(payload).await?;
-    app.inject_message_with_event(message.clone());
-    let _ = flush_webhooks_all(app, db).await;
+    if let Err(error) = flush_webhooks(db).await {
+        tracing::warn!(%error, "persisted message webhook delivery deferred");
+    }
     Ok(message)
 }
 

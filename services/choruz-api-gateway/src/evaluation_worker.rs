@@ -37,10 +37,7 @@ pub(crate) fn fingerprint(spec: &TerminalSpec) -> Result<String, AppError> {
             "Select an explicit model before evaluating guidance".into(),
         ));
     }
-    let context = json!({"driver":spec.driver_type,"model":spec.model,"binary":spec.binary_path,
-        "workspace":spec.workspace_path,"host":spec.harness_account["runtime_host_id"],
-        "account":spec.harness_account["harness_account_id"],
-        "profile":spec.harness_account["harness_account_profile_kind"]});
+    let context = json!(choruz_host_runtime::execution_identity::ExecutionIdentity::from(spec));
     Ok(hex::encode(Sha256::digest(
         format!("{}:{}", context, choruz_learning::JUDGE_SKILL).as_bytes(),
     )))
@@ -325,4 +322,48 @@ pub(crate) async fn assess_output(
         output,
     )
     .await
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+
+    #[test]
+    fn execution_identity_changes_fence_evaluation_but_not_attachment_metadata() {
+        let base = json!({"authentication":false,"terminal_id":"binding","driver_type":"codex_terminal",
+            "binary_path":"/bin/codex","workspace_path":"/work","cols":120,"rows":40,"model":"model-a",
+            "harness_account":{"runtime_host_id":"host-a","harness_account_id":"account-a",
+                "harness_account_profile_kind":"isolated","harness_account_profile_directory":"/profiles/a"}});
+        let spec: TerminalSpec = serde_json::from_value(base.clone()).unwrap();
+        let original = fingerprint(&spec).unwrap();
+        for pointer in [
+            "/driver_type",
+            "/binary_path",
+            "/workspace_path",
+            "/model",
+            "/harness_account/runtime_host_id",
+            "/harness_account/harness_account_id",
+            "/harness_account/harness_account_profile_kind",
+            "/harness_account/harness_account_profile_directory",
+        ] {
+            let mut changed = base.clone();
+            *changed.pointer_mut(pointer).unwrap() = json!("different");
+            let changed = serde_json::from_value(changed).unwrap();
+            assert_ne!(fingerprint(&changed).unwrap(), original, "{pointer}");
+        }
+        let mut changed = spec.clone();
+        changed.terminal_id = "other-attachment".into();
+        changed.cols = 80;
+        changed.rows = 20;
+        changed.harness_account["private_token"] = json!("must-not-enter-identity");
+        assert_eq!(fingerprint(&changed).unwrap(), original);
+        let identity =
+            json!(choruz_host_runtime::execution_identity::ExecutionIdentity::from(&changed));
+        assert!(!identity.to_string().contains("must-not-enter-identity"));
+        assert_ne!(
+            analyst_fingerprint(&spec).unwrap(),
+            original,
+            "procedure scopes remain distinct"
+        );
+    }
 }

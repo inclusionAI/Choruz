@@ -4,6 +4,37 @@ use choruz_domain::{Company, CompanyMember, Principal, PrincipalType};
 use super::DbService;
 use super::helpers::{row_to_company, row_to_company_member, row_to_principal};
 
+pub(super) async fn workspace_access(
+    client: &impl deadpool_postgres::GenericClient,
+    principal: &Principal,
+    workspace_id: &str,
+) -> Result<bool, AppError> {
+    if principal.workspace_id == workspace_id {
+        let row = client
+            .query_opt(
+                "SELECT deleted_at FROM company WHERE id = $1",
+                &[&workspace_id],
+            )
+            .await
+            .map_err(|e| AppError::Internal(format!("workspace company access check: {e}")))?;
+        return Ok(row
+            .map(|row| {
+                row.get::<_, Option<chrono::DateTime<chrono::Utc>>>("deleted_at")
+                    .is_none()
+            })
+            .unwrap_or(true));
+    }
+    let row = client
+        .query_opt(
+            "SELECT 1 FROM company_member cm JOIN company c ON c.id=cm.company_id
+         WHERE cm.company_id=$1 AND cm.principal_id=$2 AND c.deleted_at IS NULL",
+            &[&workspace_id, &principal.id],
+        )
+        .await
+        .map_err(|e| AppError::Internal(format!("company workspace access check: {e}")))?;
+    Ok(row.is_some())
+}
+
 impl DbService {
     pub(crate) async fn principal_can_access_workspace(
         &self,
@@ -11,36 +42,7 @@ impl DbService {
         workspace_id: &str,
     ) -> Result<bool, AppError> {
         let client = self.store.connect().await?;
-        if principal.workspace_id == workspace_id {
-            let row = client
-                .query_opt(
-                    "SELECT deleted_at FROM company WHERE id = $1",
-                    &[&workspace_id],
-                )
-                .await
-                .map_err(|e| AppError::Internal(format!("workspace company access check: {e}")))?;
-            return Ok(row
-                .map(|row| {
-                    row.get::<_, Option<chrono::DateTime<chrono::Utc>>>("deleted_at")
-                        .is_none()
-                })
-                .unwrap_or(true));
-        }
-
-        let row = client
-            .query_opt(
-                "SELECT 1
-                 FROM company_member cm
-                 JOIN company c ON c.id = cm.company_id
-                 WHERE cm.company_id = $1
-                   AND cm.principal_id = $2
-                   AND c.deleted_at IS NULL",
-                &[&workspace_id, &principal.id],
-            )
-            .await
-            .map_err(|e| AppError::Internal(format!("company workspace access check: {e}")))?;
-
-        Ok(row.is_some())
+        workspace_access(&client, principal, workspace_id).await
     }
 
     // ── Company reads (Phase 1C) ──────────────────────────────────────

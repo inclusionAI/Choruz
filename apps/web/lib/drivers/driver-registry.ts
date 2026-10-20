@@ -91,19 +91,63 @@ export function isTerminalDriver(driverType: string): boolean {
   return LOCAL_TERMINAL_DRIVER_ID_SET.has(driverType);
 }
 
-const DRIVER_LABELS: Record<DriverId, string> = {
-  claude_terminal: "Claude Code",
-  codex_terminal: "Codex",
-  muse_terminal: "Muse Code",
-  codex_exec: "Codex",
-  pi_terminal: "Pi Agent",
-  grok_terminal: "Grok Build",
-  opencode_terminal: "OpenCode",
-  mathcode_terminal: "MathCode",
-  webhook_agent: "External agent",
+type DriverDefinition = {
+  label: string;
+  driverId: DriverId;
+  setupHint: string;
 };
+
+export const DRIVER_DEFINITIONS: DriverDefinition[] = [
+  {
+    label: "Muse Code",
+    driverId: "muse_terminal",
+    setupHint: "Install Muse Code or set CHORUZ_MUSE_BINARY to an executable path.",
+  },
+  {
+    label: "Claude Code",
+    driverId: "claude_terminal",
+    setupHint: "Install the Claude CLI or set CHORUZ_CLAUDE_BINARY to an executable path.",
+  },
+  {
+    label: "Codex",
+    driverId: "codex_terminal",
+    setupHint: "Install the Codex CLI or set CHORUZ_CODEX_BINARY to an executable path.",
+  },
+  {
+    label: "Codex",
+    driverId: "codex_exec",
+    setupHint: "Install the Codex CLI or set CHORUZ_CODEX_BINARY to an executable path.",
+  },
+  {
+    label: "Pi Agent",
+    driverId: "pi_terminal",
+    setupHint: "Install Pi Agent or set CHORUZ_PI_BINARY to an executable path.",
+  },
+  {
+    label: "Grok Build",
+    driverId: "grok_terminal",
+    setupHint: "Install Grok Build or set CHORUZ_GROK_BINARY to an executable path.",
+  },
+  {
+    label: "OpenCode",
+    driverId: "opencode_terminal",
+    setupHint: "Install OpenCode or set CHORUZ_OPENCODE_BINARY to an executable path.",
+  },
+  {
+    label: "MathCode",
+    driverId: "mathcode_terminal",
+    setupHint: "Install MathCode or set CHORUZ_MATHCODE_BINARY to an executable path.",
+  },
+  {
+    label: "External agent",
+    driverId: "webhook_agent",
+    setupHint: "Provide an HTTPS webhook endpoint when creating the agent.",
+  },
+];
+
+const DRIVER_LABELS = new Map(DRIVER_DEFINITIONS.map(({ driverId, label }) => [driverId, label]));
 
 /** Human-readable driver name; unknown ids fall back to the raw id. */
 export function driverDisplayName(driverType: string): string {
-  return DRIVER_LABELS[driverType as DriverId] ?? driverType;
+  return DRIVER_LABELS.get(driverType as DriverId) ?? driverType;
 }

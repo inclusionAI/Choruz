@@ -14,6 +14,17 @@ Terminal creation and resize accept 1–512 columns and 1–256 rows. Invalid di
 
 `DriverCatalog` inspects harness executables and default-profile models on this device. The web-facing `drivers.inspect` operation uses the existing authenticated host link; explicit harness-account models remain owned by the account probe. Custom workspace paths are validated by the device that provisions them, not against the controller's home directory.
 
+## Headless turns
+
+`headless::command` resolves this device's executable and account profile,
+constructs the native arguments and applies the shared execution environment.
+The pipeline and connector supply their respective outbox endpoints.
+`headless::run` owns the process group, timeout and cancellation; cancellation
+or timeout kills the container and waits for child exit before returning.
+Resume-error classification and native output parsing are shared across devices.
+Database leases, durable session writeback and delivery remain with the caller.
+Execution uses the binding workspace rather than a second sandbox directory.
+
 ## Structured conversations
 
 `session::execute` owns Claude Code stream-JSON and Codex app-server processes.
@@ -70,5 +81,7 @@ Background calls use [`choruz-learning::native_cli::CliRunner`](../choruz-learni
 Native evidence parsing uses [`choruz-learning::native_source`](../choruz-learning/README.md#native-evidence). This host selects the binding's account and session and checks that the current turn has finished before requesting a new analysis window. Standalone readers supply their own authorization and turn-completion gate.
 
 `learning_executor::LearningExecutor` connects the shared evaluation workflow to an authorized `LearningHost` and account-specific `TerminalSpec`. `LocalLearningHost` dispatches on this machine; the gateway implements the same interface for paired devices. Neither adapter replaces a disconnected remote host with local execution. Evaluation, replay, team preparation and independent judging use the same host operations as the full platform.
+
+`execution_identity::ExecutionIdentity` projects stable execution fields without credentials or terminal attachment metadata. Learning callers combine that identity with their fixed procedure and durable reservation scope; it does not authorize execution or replace consent checks.
 
 Instruction fragments and test fixtures live inside this package. A path consumer needs the sibling library dependencies, but not a checkout of the web app or root template directory. No durable service is started by adding this dependency.
