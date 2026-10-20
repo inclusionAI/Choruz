@@ -232,6 +232,8 @@ jobs:
             cat "$RUNNER_TEMP/postgres.log"; exit 1
           fi
       - name: Rust tests
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           export CHORUZ_REQUIRE_TEST_DATABASE=1
           source ./infra/host/setup_test_database.sh
