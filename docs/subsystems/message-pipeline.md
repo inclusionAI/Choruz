@@ -143,7 +143,7 @@ separate process-down alert. See the [WAL recovery runbook](../operations/runboo
 | Database unreachable at boot | `run_pipeline` logs and returns before spawning tasks | process exits; `/readyz` absent |
 | Database unreachable at runtime | `/readyz` returns 503 `not_ready`; loops log and continue | watchdog restarts on `/readyz` failure |
 | Any core task exits | `tokio::select!` in `run_pipeline` fires, `ExecutorContext::shutdown_all` runs, process exits | `... task exited` error log |
-| CLI hangs | `tokio::time::timeout(executor_timeout)` with `kill_on_drop(true)`; error `[kind=timeout]` is retriable | `cli_hard_timeout` log event |
+| CLI hangs | `choruz_host_runtime::headless::run` kills the process group after `executor_timeout` and waits for child exit; error `[kind=timeout]` is retriable | `cli_hard_timeout` log event |
 | CLI binary missing | `classify_cli_start_error` maps `NotFound` to `driver_unavailable`, which is not retriable, so the command dead-letters | `executor_command_failed` with `error_kind`; `dead_letters` row |
 | Executor node dies mid-turn | `run_lease_monitor` finds `session_registry` rows past `lease_timeout_secs`; `handle_lease_expiry` bumps the epoch and moves the command to `retry_scheduled` or `dead_letter` | `lease expired` warn log |
 | Command pending longer than 24h | `dead_letter_stale_pending_commands(86400, ...)` in the retry scheduler | `dead-lettered stale pending commands` warn |
