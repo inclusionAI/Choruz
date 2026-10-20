@@ -37,7 +37,7 @@ Content review and observed execution outcomes are separate fields. A successful
 
 ## Consequences
 
-Analysis consumes the selected account's quota and sends source content to its model provider. The settings panel discloses this before opt-in. Raw source windows are not stored in revision history; summaries, evidence references and guidance are. Native reasoning records are excluded.
+Analysis consumes the selected account's quota and sends source content to its model provider. The settings panel discloses this before opt-in. Raw source windows are not stored in revision history; summaries, evidence references and guidance are. The separate [resumable-stage decision](../bug-fix/2026-10-19-resumable-learning-stages.md) owns temporary private visible-window continuations and their cancellation cleanup. Native reasoning records are excluded.
 
 The implementation supports Claude Code and Codex. Byte-level PTY input is not rewritten; learned context applies to Choruz-owned structured and headless submissions. A missing native source, disconnected device or oversized record leaves the active revision unchanged and exposes a retryable error. Window summaries are lossy model output, so references and subsequent user feedback remain necessary when judging a recommendation.
 

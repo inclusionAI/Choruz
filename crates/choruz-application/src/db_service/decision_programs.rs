@@ -244,9 +244,7 @@ impl DbService {
         corpus: &str,
         context: &Value,
     ) -> Result<ProgramTrialAdmission, AppError> {
-        let key = hex::encode(Sha256::digest(
-            serde_json::to_vec(context).map_err(|error| AppError::Internal(error.to_string()))?,
-        ));
+        let key = decision_trial_key(context, claim.generation)?;
         let mut client = self.store.connect().await?;
         let tx = client
             .transaction()
@@ -275,11 +273,24 @@ impl DbService {
         if rows.len() >= 4 {
             return Ok(ProgramTrialAdmission::BudgetExhausted);
         }
-        tx.execute("INSERT INTO experience_decision_trial(workspace_id,binding_id,corpus,context_key,context,state,claim_token) VALUES($1,$2,$3,$4,$5,'reserved',$6)", &[&claim.workspace_id,&claim.binding_id,&corpus,&key,&context,&claim.token]).await.map_err(|error|AppError::Internal(error.to_string()))?;
+        tx.execute("INSERT INTO experience_decision_trial(workspace_id,binding_id,corpus,context_key,context,state,claim_token,policy_generation) VALUES($1,$2,$3,$4,$5,'reserved',$6,$7)", &[&claim.workspace_id,&claim.binding_id,&corpus,&key,&context,&claim.token,&claim.generation]).await.map_err(|error|AppError::Internal(error.to_string()))?;
         tx.commit()
             .await
             .map_err(|error| AppError::Internal(error.to_string()))?;
         Ok(ProgramTrialAdmission::Reserved(key))
+    }
+
+    /// Recover an already completed external trial after its owning window was
+    /// interrupted before revision commit. The current policy still owns consent.
+    pub async fn completed_decision_program_trial(
+        &self,
+        claim: &super::ExperienceClaim,
+        corpus: &str,
+        context: &Value,
+    ) -> Result<Option<Value>, AppError> {
+        let key = decision_trial_key(context, claim.generation)?;
+        let row = self.store.connect().await?.query_opt("SELECT t.outcome FROM experience_decision_trial t JOIN experience_policy p ON p.workspace_id=t.workspace_id AND p.binding_id=t.binding_id WHERE t.workspace_id=$1 AND t.binding_id=$2 AND t.corpus=$3 AND t.context_key=$4 AND t.state='completed' AND t.policy_generation=$5 AND p.generation=$5 AND p.lease_token=$6 AND p.enabled AND p.lease_until>NOW()", &[&claim.workspace_id,&claim.binding_id,&corpus,&key,&claim.generation,&claim.token]).await.map_err(|e|AppError::Internal(e.to_string()))?;
+        Ok(row.and_then(|row| row.get(0)))
     }
 
     pub async fn update_decision_program_trial(
@@ -362,4 +373,11 @@ impl DbService {
             .ok_or_else(|| AppError::Conflict("No selected program with enabled learning and decision consent".into()))?;
         Ok((row.get("id"), row.get("trial")))
     }
+}
+
+fn decision_trial_key(context: &Value, generation: i64) -> Result<String, AppError> {
+    Ok(hex::encode(Sha256::digest(
+        serde_json::to_vec(&(generation, context))
+            .map_err(|e| AppError::Internal(e.to_string()))?,
+    )))
 }

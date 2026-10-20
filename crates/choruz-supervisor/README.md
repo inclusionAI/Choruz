@@ -9,7 +9,7 @@ Host-side plumbing for a self-contained Choruz backend: `EmbeddedPg` downloads a
 
 ## Tests
 
-`cargo test -p choruz-supervisor`; the tests cover migration splitting, readiness probing against a local HTTP stub and child reaping, no PostgreSQL.
+`cargo test -p choruz-supervisor` covers migration splitting, readiness probing against a local HTTP stub and child reaping. The embedded installation test downloads the pinned distribution into a private temporary directory, starts PostgreSQL on a dynamically selected port, writes a row and verifies it after a restart. It requires network access, not an installed system PostgreSQL. Incompatible-data tests check rejection before installation without modifying the data.
 
 ## Related
 

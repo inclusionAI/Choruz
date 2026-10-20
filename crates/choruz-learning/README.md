@@ -16,6 +16,8 @@ The example uses deterministic responses, not a model. It runs the same `workflo
 
 The returned analysis is a proposal, not installed guidance. Persist its checkpoint and evidence under the original reservation before considering activation. Standalone consumers provide their own storage and scheduling; this library does not start another background service or install a Codex plugin.
 
+When research is unavailable, `analysis_workflow::analyze_window` returns source-grounded observations and reviewed tasks with `research_status: "pending"`, no instruction and a failed content-review status. This is not a completed search with no findings. A caller can retain the exact workflow input and successful executor outputs to resume research without repeating completed inference; it must not consume the source cursor or install pending guidance.
+
 ## Native evidence
 
 Enable `native-source` to read Claude Code or Codex transcripts with `native_source::read`. Supply one account home, workspace and native session identifier through `Source`; no ambient account selection, credential read, process launch or platform database is involved. The caller must authorize the source and wait until its turn has finished. The platform retains that live-session gate in its host adapter.

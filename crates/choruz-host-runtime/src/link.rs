@@ -53,6 +53,8 @@ pub enum DeviceFrame {
     /// The terminal's child exited or the terminal was closed; no more
     /// output follows for this attachment.
     TerminalExit { terminal_id: String },
+    /// Reattach for a screen snapshot after the incremental byte stream lags.
+    TerminalResync { terminal_id: String },
 }
 
 /// Frames the controller sends to a device.
@@ -338,6 +340,7 @@ async fn handle_call(
             let outbound = outbound.clone();
             let id = terminal_id.clone();
             let forwarder = tokio::spawn(async move {
+                let mut resync = false;
                 loop {
                     tokio::select! {
                         frame = output.recv() => match frame {
@@ -351,7 +354,9 @@ async fn handle_call(
                                 }
                             }
                             Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                                tracing::warn!(skipped, terminal_id = %id, "terminal output lagged over the link");
+                                tracing::warn!(skipped, terminal_id = %id, "terminal output lost synchronization; closing attachment for snapshot recovery");
+                                resync = true;
+                                break;
                             }
                             Err(_) => break,
                         },
@@ -364,8 +369,14 @@ async fn handle_call(
                 }
                 let _ = send_frame(
                     &outbound,
-                    &DeviceFrame::TerminalExit {
-                        terminal_id: id.clone(),
+                    &if resync {
+                        DeviceFrame::TerminalResync {
+                            terminal_id: id.clone(),
+                        }
+                    } else {
+                        DeviceFrame::TerminalExit {
+                            terminal_id: id.clone(),
+                        }
                     },
                 )
                 .await;
@@ -780,19 +791,20 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn device_link_streams_an_attached_terminal_and_its_exit() {
-        terminal_link_roundtrip(false, false).await;
-        terminal_link_roundtrip(true, false).await;
+        terminal_link_roundtrip(false, false, false).await;
+        terminal_link_roundtrip(true, false, false).await;
+        terminal_link_roundtrip(false, false, true).await;
     }
 
     #[cfg(unix)]
     #[tokio::test]
     async fn disconnect_stops_authentication_but_preserves_agent_terminals() {
-        terminal_link_roundtrip(false, true).await;
-        terminal_link_roundtrip(true, true).await;
+        terminal_link_roundtrip(false, true, false).await;
+        terminal_link_roundtrip(true, true, false).await;
     }
 
     #[cfg(unix)]
-    async fn terminal_link_roundtrip(authentication: bool, disconnect: bool) {
+    async fn terminal_link_roundtrip(authentication: bool, disconnect: bool, lag: bool) {
         use std::os::unix::fs::PermissionsExt;
 
         let temp = tempfile::tempdir().unwrap();
@@ -876,6 +888,64 @@ mod tests {
             .iter()
             .flat_map(|frame| decode_bytes(frame.as_str().unwrap()).unwrap())
             .collect::<Vec<u8>>();
+
+        if lag {
+            let original = pool.lock().unwrap().get("binding-link").unwrap().clone();
+            // A deterministic producer burst exceeds broadcast retention before
+            // the forwarder gets CPU; the screen still belongs to the real PTY.
+            for _ in 0..8192 {
+                let _ = original.output_tx.send(b"burst\r\n".to_vec());
+            }
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    let frame: DeviceFrame =
+                        serde_json::from_str(&controller_rx.recv().await.unwrap()).unwrap();
+                    if matches!(frame, DeviceFrame::TerminalResync { .. }) {
+                        break;
+                    }
+                }
+            })
+            .await
+            .expect("device must explicitly report output desynchronization");
+            let (recovered, _) = call(
+                &controller_tx,
+                &mut controller_rx,
+                "reattach",
+                LinkRequest::TerminalAttach {
+                    terminal_id: "binding-link".into(),
+                },
+            )
+            .await;
+            assert!(matches!(
+                recovered,
+                DeviceFrame::Result {
+                    ok: Some(_),
+                    error: None,
+                    ..
+                }
+            ));
+            assert!(Arc::ptr_eq(
+                &original,
+                pool.lock().unwrap().get("binding-link").unwrap()
+            ));
+            assert!(
+                original.is_child_alive(),
+                "a lost display frame is not a reason to restart native work"
+            );
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    if crate::terminal::close_terminal(&pool, "binding-link").is_ok() {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            drop(controller_tx);
+            assert_eq!(link.await.unwrap(), Ok(()));
+            return;
+        }
 
         let (reply, write_events) = call(
             &controller_tx,

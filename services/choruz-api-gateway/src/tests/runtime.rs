@@ -2714,176 +2714,205 @@ async fn runtime_host_pairing_is_single_use_and_host_token_is_revocable() {
         "attached-data".as_bytes()
     );
 
-    let (offline_revoke_status, _) = api_json_payload_request(
+    // The preceding scenario explicitly moved this binding to the controller.
+    // Place it back on B before testing offline device removal.
+    let (placed_back, _) = api_json_payload_request(
         router.clone(),
         &operator,
-        Method::DELETE,
-        format!("/v1/runtime-hosts/{host_id}"),
-        Value::Null,
+        Method::PUT,
+        format!(
+            "/v1/runtime/bindings/{}/host",
+            binding["id"].as_str().unwrap()
+        ),
+        json!({"runtime_host_id":host_id}),
     )
     .await;
-    assert_eq!(offline_revoke_status, StatusCode::CONFLICT);
-    client
-        .execute(
-            "UPDATE agent_runtime_bindings SET config_json=jsonb_set(
-          config_json, '{runtime_host_id}', to_jsonb($2::text)) WHERE id=$1",
-            &[&binding["id"].as_str().unwrap(), &host_id],
-        )
+    assert_eq!(placed_back, StatusCode::NO_CONTENT);
+    let mut barrier = RuntimeStore::new(database.database_url.clone())
+        .connect()
         .await
         .unwrap();
-    let expected_closes: i64 = client
-        .query_one(
-            "SELECT count(*) FROM agent_runtime_bindings WHERE config_json->>'runtime_host_id'=$1",
-            &[&host_id],
-        )
+    let held = barrier.transaction().await.unwrap();
+    crate::handlers_terminals::lock_terminal_launch(&held, binding["id"].as_str().unwrap())
+        .await
+        .unwrap();
+    let holder: i32 = held
+        .query_one("SELECT pg_backend_pid()", &[])
         .await
         .unwrap()
         .get(0);
-    assert!(expected_closes > 1);
-    let moved_away_id: String = client.query_one(
-        "SELECT id FROM agent_runtime_bindings WHERE config_json->>'runtime_host_id'=$1 ORDER BY id DESC LIMIT 1",
-        &[&host_id],
-    ).await.unwrap().get(0);
-    let other_host = Uuid::now_v7().to_string();
-    client
-        .execute(
-            "INSERT INTO runtime_host (id, company_id, name, token_hash, status)
-         SELECT $2, company_id, 'Other destination', $2, 'offline' FROM runtime_host WHERE id=$1",
-            &[&host_id, &other_host],
-        )
-        .await
-        .unwrap();
-    let expected_closes = expected_closes - 1;
-    let mut reconnected = connect_host_link(&base_url, &host_id, &host_token)
-        .await
-        .unwrap();
-    let (close_started, observed_close) = tokio::sync::oneshot::channel();
-    let (release_close, wait_for_assignment) = tokio::sync::oneshot::channel();
-    let close_acknowledgements = tokio::spawn(async move {
-        let mut count = 0;
-        let mut close_started = Some(close_started);
-        let mut wait_for_assignment = Some(wait_for_assignment);
-        while let Some(Ok(Message::Text(text))) = reconnected.next().await {
-            let call: Value = serde_json::from_str(&text).unwrap();
-            if call["kind"] != "call" {
-                continue;
-            }
-            assert_eq!(call["request"]["call"], "terminal_close");
-            count += 1;
-            if let Some(started) = close_started.take() {
-                started.send(()).unwrap();
-                wait_for_assignment.take().unwrap().await.unwrap();
-            }
-            reconnected
-                .send(Message::Text(
-                    json!({"kind":"result", "id":call["id"], "ok":null})
-                        .to_string()
-                        .into(),
-                ))
-                .await
-                .unwrap();
-            if count == expected_closes {
-                break;
-            }
-        }
-        count
-    });
     let revoke_router = router.clone();
     let revoke_actor = operator.clone();
-    let revoke_id = host_id.clone();
-    let revocation = tokio::spawn(async move {
+    let revoke_host = host_id.clone();
+    let revoking = tokio::spawn(async move {
         api_json_payload_request(
             revoke_router,
             &revoke_actor,
             Method::DELETE,
-            format!("/v1/runtime-hosts/{revoke_id}"),
+            format!("/v1/runtime-hosts/{revoke_host}"),
             Value::Null,
         )
         .await
     });
-    tokio::time::timeout(std::time::Duration::from_secs(10), observed_close)
-        .await
-        .unwrap()
-        .unwrap();
-    // Revocation has enumerated A's bindings and is waiting for the first
-    // device acknowledgement. Commit a move of a later binding to B under the
-    // same binding lock used by assignment. Revocation must not close B.
-    let mut moving_client = RuntimeStore::new(database.database_url.clone())
-        .connect()
-        .await
-        .unwrap();
-    let moving_tx = moving_client.transaction().await.unwrap();
-    crate::handlers_terminals::lock_terminal_launch(&moving_tx, &moved_away_id)
-        .await
-        .unwrap();
-    moving_tx
-        .execute(
-            "UPDATE agent_runtime_bindings SET config_json=jsonb_set(
-          config_json - 'terminal_session' - 'terminal_capture',
-          '{runtime_host_id}', to_jsonb($2::text)), updated_at=NOW() WHERE id=$1",
-            &[&moved_away_id, &other_host],
-        )
-        .await
-        .unwrap();
-    moving_tx.commit().await.unwrap();
-    let moving_id: String = client.query_one(
-        "SELECT id FROM agent_runtime_bindings WHERE config_json->>'runtime_host_id'=$1 ORDER BY id LIMIT 1",
-        &[&host_id],
-    ).await.unwrap().get(0);
+    // Observe the production revoke transaction waiting on our binding guard,
+    // after it owns the host-row lock. No timing sleep stands in for overlap.
+    let revoker = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let Some(row) = client
+                .query_opt(
+                    "SELECT pid FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid))",
+                    &[&holder],
+                )
+                .await
+                .unwrap()
+            {
+                break row.get::<_, i32>(0);
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("revocation reaches the binding barrier");
     let assign_router = router.clone();
     let assign_actor = operator.clone();
     let assign_host = host_id.clone();
-    let assign_id = moving_id.clone();
-    let assignment = tokio::spawn(async move {
+    let assign_binding = binding["id"].as_str().unwrap().to_owned();
+    let assigning = tokio::spawn(async move {
         api_json_payload_request(
             assign_router,
             &assign_actor,
             Method::PUT,
-            format!("/v1/runtime/bindings/{assign_id}/host"),
+            format!("/v1/runtime/bindings/{assign_binding}/host"),
             json!({"runtime_host_id":assign_host}),
         )
         .await
     });
-    // The device acknowledgement holds revocation open. Wait for the competing
-    // assignment's database lock, not a scheduler-dependent sleep.
-    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+    tokio::time::timeout(Duration::from_secs(10),async {
         loop {
-            let blocked: bool = client.query_one(
-                "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock')", &[],
-            ).await.unwrap().get(0);
-            if blocked { break; }
+            let blocked:bool=client.query_one("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid)))", &[&revoker]).await.unwrap().get(0);
+            if blocked {break;}
             tokio::task::yield_now().await;
         }
-    }).await.unwrap();
-    release_close.send(()).unwrap();
-    let (revoke_status, _) = revocation.await.unwrap();
-    assert_eq!(revoke_status, StatusCode::NO_CONTENT);
-    assert_eq!(close_acknowledgements.await.unwrap(), expected_closes);
-    let (assign_status, _) = assignment.await.unwrap();
-    assert_eq!(assign_status, StatusCode::BAD_REQUEST);
-    let assigned: Option<String> = client
+    }).await.expect("assignment reads the old binding then waits behind revocation");
+    held.commit().await.unwrap();
+    let (offline_revoke_status, _) = revoking.await.unwrap();
+    let (late_assignment, _) = assigning.await.unwrap();
+    assert_eq!(
+        late_assignment,
+        StatusCode::BAD_REQUEST,
+        "an overlapping assignment cannot reactivate a revoked device"
+    );
+    assert_eq!(offline_revoke_status, StatusCode::NO_CONTENT);
+    let retired = client.query_one(
+        "SELECT config_json->>'runtime_host_id',state,last_error FROM agent_runtime_bindings WHERE id=$1",
+        &[&binding["id"].as_str().unwrap()],
+    ).await.unwrap();
+    assert_eq!(retired.get::<_, String>(0), host_id);
+    assert_eq!(retired.get::<_, String>(1), "disabled");
+    assert!(retired.get::<_, String>(2).contains("device removed"));
+    let pending: i64 = client.query_one(
+        "SELECT count(*) FROM agent_commands WHERE metadata->>'runtime_host_id'=$1 AND status IN ('pending','retry_scheduled','leased','started','heartbeating')",
+        &[&host_id],
+    ).await.unwrap().get(0);
+    assert_eq!(
+        pending, 0,
+        "revocation must not requeue work on either device"
+    );
+    let cancelled = client
         .query_one(
-            "SELECT config_json->>'runtime_host_id' FROM agent_runtime_bindings WHERE id=$1",
-            &[&moving_id],
+            "SELECT status,metadata->>'runtime_host_id' FROM agent_commands WHERE command_id=$1",
+            &[&remote_with_attachment.command_id],
+        )
+        .await
+        .unwrap();
+    assert_eq!(cancelled.get::<_, String>(0), "dead_letter");
+    assert_eq!(cancelled.get::<_, String>(1), host_id);
+    let mut admission = RuntimeStore::new(database.database_url.clone())
+        .connect()
+        .await
+        .unwrap();
+    let tx = admission.transaction().await.unwrap();
+    let fenced = choruz_session::store::runtime_host_metadata(&tx, &agent.id, &json!({})).await;
+    assert!(
+        fenced.is_err(),
+        "disabled device binding cannot silently select local execution"
+    );
+    tx.rollback().await.unwrap();
+    let (assign_status, _) = api_json_payload_request(
+        router.clone(),
+        &operator,
+        Method::PUT,
+        format!(
+            "/v1/runtime/bindings/{}/host",
+            binding["id"].as_str().unwrap()
+        ),
+        json!({"runtime_host_id":host_id}),
+    )
+    .await;
+    assert_eq!(assign_status, StatusCode::BAD_REQUEST);
+    let account = Uuid::now_v7().to_string();
+    client.execute("INSERT INTO harness_account(id,company_id,runtime_host_id,driver_type,name,profile_kind,status) VALUES($1,$2,$3,'codex_terminal','Retired device account','default','active')", &[&account,&operator.workspace_id,&host_id]).await.unwrap();
+    client
+        .execute(
+            "UPDATE agent_runtime_bindings SET config_json=config_json||$2::jsonb WHERE id=$1",
+            &[
+                &binding["id"].as_str().unwrap(),
+                &json!({"harness_account_id":account,"harness_account_profile_kind":"default"}),
+            ],
+        )
+        .await
+        .unwrap();
+    let assignment_path = format!(
+        "/v1/runtime/bindings/{}/host",
+        binding["id"].as_str().unwrap()
+    );
+    let (wrong_account, _) = api_json_payload_request(
+        router.clone(),
+        &operator,
+        Method::PUT,
+        assignment_path.clone(),
+        json!({"runtime_host_id":null}),
+    )
+    .await;
+    assert_eq!(
+        wrong_account,
+        StatusCode::BAD_REQUEST,
+        "an explicit move must not reuse another device's account"
+    );
+    client.execute("UPDATE agent_runtime_bindings SET config_json=config_json-'harness_account_id'-'harness_account_profile_kind'-'harness_account_name' WHERE id=$1", &[&binding["id"].as_str().unwrap()]).await.unwrap();
+    let (moved, move_result) = api_json_payload_request(
+        router.clone(),
+        &operator,
+        Method::PUT,
+        assignment_path,
+        json!({"runtime_host_id":null}),
+    )
+    .await;
+    assert_eq!(
+        moved,
+        StatusCode::NO_CONTENT,
+        "an account-free binding can explicitly recover without reconnecting a revoked device: {move_result}"
+    );
+    let recovered = client
+        .query_one(
+            "SELECT state,config_json->>'runtime_host_id' FROM agent_runtime_bindings WHERE id=$1",
+            &[&binding["id"].as_str().unwrap()],
+        )
+        .await
+        .unwrap();
+    assert_eq!(recovered.get::<_, String>(0), "idle");
+    assert_eq!(recovered.get::<_, Option<String>>(1), None);
+    let retained_history: i64 = client
+        .query_one(
+            "SELECT count(*) FROM conversation_events WHERE conversation_id=$1",
+            &[&conversation.id],
         )
         .await
         .unwrap()
         .get(0);
     assert!(
-        assigned.is_none(),
-        "a revoked device cannot receive a late assignment"
-    );
-    let kept_host: String = client
-        .query_one(
-            "SELECT config_json->>'runtime_host_id' FROM agent_runtime_bindings WHERE id=$1",
-            &[&moved_away_id],
-        )
-        .await
-        .unwrap()
-        .get(0);
-    assert_eq!(
-        kept_host, other_host,
-        "revoking A must leave the moved B binding alone"
+        retained_history > 0,
+        "device removal and explicit reassignment retain conversation history"
     );
     let rejected = router
         .oneshot(
@@ -3525,7 +3554,38 @@ async fn remote_terminal_binding_streams_through_the_host_link() {
     })
     .await
     .expect("closing the browser socket closes the device terminal");
+    let (mut terminal, _) = tokio_tungstenite::connect_async(format!(
+        "{}/v1/ws/terminals/{}?token={}&cols=80&rows=24",
+        base_url.replacen("http://", "ws://", 1),
+        binding.id,
+        session_token(&operator),
+    ))
+    .await
+    .unwrap();
+    read_terminal_until(&mut terminal, &mut Vec::new(), "READY").await;
+    let (revoked, _) = api_json_payload_request(
+        router.clone(),
+        &operator,
+        Method::DELETE,
+        format!("/v1/runtime-hosts/{host_id}"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(revoked, StatusCode::NO_CONTENT);
+    let retained = runtime.get_binding(&binding.id).await.unwrap();
+    assert_eq!(retained.state, BindingState::Disabled);
+    assert_eq!(retained.config_json["runtime_host_id"], host_id);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while choruz_host_runtime::live_terminal_exists(&pool, &binding.id) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("online revocation stops the actual device child");
+    choruz_host_runtime::terminal::close_terminal(&pool, &binding.id).unwrap();
+    let _ = terminal.close(None).await;
     device.abort();
+    let _ = device.await;
 }
 
 async fn read_terminal_until(

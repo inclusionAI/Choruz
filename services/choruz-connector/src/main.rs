@@ -736,7 +736,7 @@ async fn command_heartbeat(
     client: &Client,
     config: &ConnectorConfig,
     command: &ClaimedCommand,
-) -> Result<(), String> {
+) -> Result<(), (bool, String)> {
     let response = authenticated(
         client.post(endpoint(
             config,
@@ -750,13 +750,19 @@ async fn command_heartbeat(
     .json(&serde_json::json!({ "attempt_id": command.attempt_id }))
     .send()
     .await
-    .map_err(|error| error.to_string())?;
+    .map_err(|error| (false, error.to_string()))?;
     if response.status().is_success() {
         Ok(())
     } else {
-        Err(format!(
-            "command heartbeat returned HTTP {}",
-            response.status()
+        Err((
+            matches!(
+                response.status(),
+                StatusCode::UNAUTHORIZED
+                    | StatusCode::FORBIDDEN
+                    | StatusCode::NOT_FOUND
+                    | StatusCode::CONFLICT
+            ),
+            format!("command heartbeat returned HTTP {}", response.status()),
         ))
     }
 }
@@ -987,15 +993,20 @@ async fn execute(
     let heartbeat_client = client.clone();
     let heartbeat_config = Arc::clone(&config);
     let heartbeat_command = command.clone();
+    let (lease_lost, mut lease_cancelled) = tokio::sync::oneshot::channel();
     let heartbeat_task = tokio::spawn(async move {
         let mut interval = tokio::time::interval(COMMAND_HEARTBEAT);
         interval.tick().await;
         loop {
             interval.tick().await;
-            if let Err(reason) =
+            if let Err((rejected, reason)) =
                 command_heartbeat(&heartbeat_client, &heartbeat_config, &heartbeat_command).await
             {
                 warn!(command_id = %heartbeat_command.command_id, %reason, "command heartbeat failed");
+                if rejected {
+                    let _ = lease_lost.send(reason);
+                    break;
+                }
             }
         }
     });
@@ -1003,6 +1014,11 @@ async fn execute(
         let account_job = choruz_agent_runtime::process_scope::Job::begin(
             command.harness_account.as_ref().map(|a| a.id.as_str()),
         )
+        .map_err(std::io::Error::other)?;
+        let host_job = choruz_agent_runtime::process_scope::Job::begin(Some(&format!(
+            "host:{}",
+            config.host_id
+        )))
         .map_err(std::io::Error::other)?;
         let mut prompt = prompt;
         if let Some(role) = &command.preflight {
@@ -1058,7 +1074,10 @@ async fn execute(
             .kill_on_drop(true);
         #[cfg(unix)]
         process_command.process_group(0);
-        if account_job.is_cancelled() {
+        if account_job.is_cancelled()
+            || host_job.is_cancelled()
+            || lease_cancelled.try_recv().is_ok()
+        {
             return Err(std::io::Error::other("Harness account was removed"));
         }
         let child = process_command.spawn()?;
@@ -1073,6 +1092,16 @@ async fn execute(
                 if let Some(container)=&container{container.kill_all();}
                 let _=output.await?;
                 Err(std::io::Error::new(std::io::ErrorKind::Interrupted,"Harness account was removed"))
+            }
+            _=host_job.cancelled()=>{
+                if let Some(container)=&container{container.kill_all();}
+                let _=output.await?;
+                Err(std::io::Error::new(std::io::ErrorKind::Interrupted,"Runtime host authorization was revoked"))
+            }
+            reason=&mut lease_cancelled=>{
+                if let Some(container)=&container{container.kill_all();}
+                let _=output.await?;
+                Err(std::io::Error::new(std::io::ErrorKind::Interrupted,reason.unwrap_or_else(|_| "Command lease monitor stopped".into())))
             }
         }
     };
@@ -1151,7 +1180,11 @@ async fn execute(
         Ok(Err(error)) => (
             false,
             Vec::new(),
-            Some(format!("Harness could not start ({:?})", error.kind())),
+            Some(if error.kind() == std::io::ErrorKind::Interrupted {
+                format!("Harness execution cancelled: {error}")
+            } else {
+                format!("Harness could not start ({:?})", error.kind())
+            }),
             0,
             None,
             false,
@@ -1631,8 +1664,9 @@ async fn run(args: &[String]) -> Result<(), String> {
     });
     let shipper_client = client.clone();
     let shipper_config = Arc::clone(&config);
+    let shipper_terminals = terminals.clone();
     tokio::spawn(async move {
-        ship_pending_outboxes(shipper_client, shipper_config, terminals).await;
+        ship_pending_outboxes(shipper_client, shipper_config, shipper_terminals).await;
     });
     let mut failures = 0u32;
     loop {
@@ -1662,6 +1696,25 @@ async fn run(args: &[String]) -> Result<(), String> {
             Err(reason) => {
                 drop(permit);
                 if reason.contains("401 Unauthorized") || reason.contains("403 Forbidden") {
+                    let drain = choruz_agent_runtime::process_scope::retire(&format!(
+                        "host:{}",
+                        config.host_id
+                    ));
+                    drain.wait().await;
+                    while jobs.join_next().await.is_some() {}
+                    let ids = terminals
+                        .lock()
+                        .expect("terminal pool")
+                        .keys()
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    for id in ids {
+                        if let Err(error) =
+                            choruz_host_runtime::terminal::close_terminal(&terminals, &id)
+                        {
+                            warn!(%id, %error, "revoked host terminal cleanup failed");
+                        }
+                    }
                     return Err("runtime host authorization was revoked".into());
                 }
                 failures = failures.saturating_add(1);
@@ -1727,6 +1780,151 @@ async fn main() -> ExitCode {
 mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn rejected_command_lease_stops_and_reaps_native_work() {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(root) = env::var("CHORUZ_REVOKE_TEST_ROOT") {
+            let command = serde_json::from_value(serde_json::json!({
+                "command_id":"command","attempt_id":"attempt","binding_id":"binding","agent_id":"agent","conversation_id":"conversation","turn_id":"turn",
+                "prompt":"Work until cancelled","driver_type":"codex_terminal","workspace_path":root,
+                "model":null,"external_session_id":null,"harness_account":null
+            })).unwrap();
+            let config = ConnectorConfig {
+                api_url: env::var("CHORUZ_REVOKE_TEST_API").unwrap(),
+                relay: None,
+                host_id: "fixture".into(),
+                host_name: "Fixture".into(),
+                host_token: "fixture".into(),
+                max_concurrency: 1,
+            };
+            execute(Client::new(), Arc::new(config), command)
+                .await
+                .unwrap();
+            return;
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let binary = directory.path().join("codex");
+        fs::write(
+            &binary,
+            "#!/bin/sh\necho $$ > \"$CHORUZ_REVOKE_TEST_ROOT/pid\"\nwhile :; do sleep 1; done\n",
+        )
+        .unwrap();
+        fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let pid_file = directory.path().join("pid");
+        struct NativeFixtureGuard(PathBuf);
+        impl Drop for NativeFixtureGuard {
+            fn drop(&mut self) {
+                if let Ok(pid) = fs::read_to_string(&self.0)
+                    && let Ok(pid) = pid.trim().parse::<u32>()
+                    && pid > 1
+                {
+                    let _ = std::process::Command::new("kill")
+                        .args(["-KILL", "--", &format!("-{pid}")])
+                        .status();
+                }
+            }
+        }
+        let _native_cleanup = NativeFixtureGuard(pid_file.clone());
+        let observed = pid_file.clone();
+        let server = tokio::spawn(async move {
+            let mut heartbeats = 0;
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                let (end, length) = loop {
+                    let mut bytes = [0; 4096];
+                    let count = stream.read(&mut bytes).await.unwrap();
+                    assert!(count > 0);
+                    request.extend_from_slice(&bytes[..count]);
+                    if let Some(end) = request.windows(4).position(|bytes| bytes == b"\r\n\r\n") {
+                        let header = String::from_utf8_lossy(&request[..end]);
+                        let length = header
+                            .lines()
+                            .find_map(|line| {
+                                line.to_ascii_lowercase()
+                                    .strip_prefix("content-length:")
+                                    .map(|value| value.trim().parse::<usize>().unwrap())
+                            })
+                            .unwrap_or(0);
+                        if request.len() >= end + 4 + length {
+                            break (end, length);
+                        }
+                    }
+                };
+                let header = String::from_utf8_lossy(&request[..end]);
+                if header.contains("/heartbeat ") {
+                    heartbeats += 1;
+                    assert!(observed.exists(), "the native child must really be running");
+                    let status = if heartbeats == 1 {
+                        "503 Service Unavailable"
+                    } else {
+                        "409 Conflict"
+                    };
+                    stream.write_all(format!("HTTP/1.1 {status}\r\ncontent-length: 0\r\nconnection: close\r\n\r\n").as_bytes()).await.unwrap();
+                } else {
+                    assert!(header.contains("/complete "), "{header}");
+                    let body: serde_json::Value =
+                        serde_json::from_slice(&request[end + 4..end + 4 + length]).unwrap();
+                    assert_eq!(
+                        heartbeats, 2,
+                        "a transient server failure must not cancel the command"
+                    );
+                    assert_eq!(body["succeeded"], false);
+                    assert!(body["error"].as_str().unwrap().contains("409"));
+                    let pid = fs::read_to_string(observed).unwrap();
+                    let status = std::process::Command::new("kill")
+                        .args(["-0", pid.trim()])
+                        .status()
+                        .unwrap();
+                    assert!(
+                        !status.success(),
+                        "completion must follow child reaping, not just a kill request"
+                    );
+                    stream
+                        .write_all(
+                            b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+                        )
+                        .await
+                        .unwrap();
+                    break;
+                }
+            }
+        });
+        let mut child = Command::new(env::current_exe().unwrap());
+        child
+            .args([
+                "--exact",
+                "tests::rejected_command_lease_stops_and_reaps_native_work",
+                "--nocapture",
+            ])
+            .env("CHORUZ_REVOKE_TEST_ROOT", directory.path())
+            .env("CHORUZ_REVOKE_TEST_API", format!("http://{address}"))
+            .env(
+                "PATH",
+                format!(
+                    "{}:{}",
+                    directory.path().display(),
+                    env::var("PATH").unwrap_or_default()
+                ),
+            )
+            .env_remove("CHORUZ_CODEX_BINARY")
+            .env_remove("CHORUZ_CODEX_CLI_PATH")
+            .kill_on_drop(true);
+        let output = tokio::time::timeout(Duration::from_secs(35), child.output())
+            .await
+            .expect("command must stop after lease rejection")
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        server.await.unwrap();
+    }
 
     #[cfg(unix)]
     #[tokio::test]

@@ -10,6 +10,34 @@ import { API_BASE, WEB_BASE, login, gotoDashboard } from "../fixtures/auth";
 import { createGroup, createCompany, deleteCompany, provisionAgent, sendMessage, uniqueName } from "../fixtures/api";
 import { runtimeTest } from "../fixtures/runtime-device";
 
+test("new-task harness changes clear the previous harness model", async ({ page }) => {
+  const { token, principal } = await login(page);
+  const company = await createCompany(page, token, principal.id, uniqueName("harness-model"));
+  try {
+    await page.route("**/api/drivers/availability", (route) => route.fulfill({ json: { drivers: [
+      { driverId: "codex_terminal", label: "Codex", status: "available" },
+      { driverId: "claude_terminal", label: "Claude Code", status: "available" },
+      { driverId: "muse_terminal", label: "Muse Code", status: "available" },
+    ] } }));
+    await gotoDashboard(page);
+    await page.locator(".company-selector-btn").click();
+    await page.locator(".company-dropdown-item").filter({ hasText: company.name }).locator(".company-dropdown-item-name").click();
+    await page.getByRole("button", { name: "New task", exact: true }).click();
+    const harness = page.getByLabel("Task harness", { exact: true });
+    const model = page.getByLabel("Task model", { exact: true });
+    await harness.selectOption("codex_terminal");
+    await model.fill("codex-only-model");
+    await harness.selectOption("claude_terminal");
+    await expect(model).toHaveValue("");
+    await model.fill("claude-only-model");
+    await harness.selectOption("muse_terminal");
+    await expect(model).toHaveValue("");
+    await expect(harness).toHaveValue("muse_terminal");
+  } finally {
+    await deleteCompany(page, token, company.id);
+  }
+});
+
 test("new task uses the project's shared learning through its native CLI", async ({ page }) => {
   test.setTimeout(90_000);
   const { token, principal } = await login(page);
@@ -834,7 +862,7 @@ test.describe("Terminal view (PTY)", () => {
   /*  Reconnection                                                           */
   /* ---------------------------------------------------------------------- */
 
-  test("reconnects the terminal after a dropped socket", async ({
+  test("reconnects with a clean emulator before restoring the terminal screen", async ({
     page,
   }) => {
     const sockets: string[] = [];
@@ -848,14 +876,30 @@ test.describe("Terminal view (PTY)", () => {
           super(url, protocols);
           if (String(url).includes("/ws/terminals/")) {
             (window as unknown as { closeTestTerminal: () => void }).closeTestTerminal = () => this.close(1000, "test disconnect");
+            (window as unknown as { staleTestTerminal: () => void }).staleTestTerminal = () => this.dispatchEvent(new MessageEvent("message", { data: "\u001b[41m\u001b[2J\u001b[HSTALE SCREEN" }));
           }
         }
       };
     });
     await selectDirectAgentConv(page);
     await expect.poll(() => sockets.length).toBe(1);
+    const centerPixel = async () => {
+      const screenshot = await page.locator(".xterm-screen").screenshot();
+      return page.evaluate(async bytes => {
+        const image = await createImageBitmap(new Blob([new Uint8Array(bytes)], { type: "image/png" }));
+        const canvas = new OffscreenCanvas(image.width, image.height);
+        const context = canvas.getContext("2d")!;
+        context.drawImage(image, 0, 0);
+        return Array.from(context.getImageData(Math.floor(image.width / 2), Math.floor(image.height / 2), 1, 1).data).slice(0, 3);
+      }, [...screenshot]);
+    };
+    // A lost incremental stream can leave ANSI attributes half-applied.
+    // Inject only that renderer state; reconnect still uses the real API/PTY.
+    await page.evaluate(() => (window as unknown as { staleTestTerminal: () => void }).staleTestTerminal());
+    await expect.poll(centerPixel).toEqual([203, 75, 22]);
     await page.evaluate(() => (window as unknown as { closeTestTerminal: () => void }).closeTestTerminal());
     await expect.poll(() => sockets.length, {timeout:10000}).toBeGreaterThan(1);
+    await expect.poll(centerPixel).toEqual([250, 249, 245]);
   });
 
   /* ---------------------------------------------------------------------- */

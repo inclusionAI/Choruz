@@ -741,6 +741,10 @@ test.describe("Modals (Create Agent, Create Group, Create Company)", () => {
   });
 
   test("should ignore a stale model scan after the harness changes", async ({ page }) => {
+    // This scenario owns driver discovery, not an installed account's models.
+    // A concurrent default-account response would legitimately replace the scan.
+    await page.route(/\/api\/harness-accounts\?/, (route) => route.fulfill({ json: { accounts: [] } }));
+    await page.route(/\/api\/harness-accounts\/default$/, (route) => route.fulfill({ status: 204 }));
     await page.evaluate(() => {
       const originalFetch = window.fetch.bind(window);
       let releaseClaude: (() => void) | undefined;

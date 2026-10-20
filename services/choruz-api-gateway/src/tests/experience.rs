@@ -5,6 +5,291 @@ use choruz_application::db_service::ExperienceReport;
 #[path = "browser_handoff.rs"]
 mod browser_handoff;
 
+#[cfg(unix)]
+#[path = "experience_reliability.rs"]
+mod reliability;
+
+#[tokio::test]
+async fn completed_program_trials_cannot_resume_under_renewed_consent() {
+    use choruz_application::db_service::ProgramTrialAdmission;
+    let database = TestDatabase::create().await;
+    let db =
+        choruz_application::DbService::new(choruz_store::EventStore::new(&database.database_url));
+    let owner = db
+        .create_human_user("trial-generations", "password-123")
+        .await
+        .unwrap();
+    let target = learning_binding(&database, &owner).await;
+    let analyst = learning_binding(&database, &owner).await;
+    db.configure_experience(
+        &owner.workspace_id,
+        &owner.id,
+        &target,
+        &analyst,
+        true,
+        None,
+    )
+    .await
+    .unwrap();
+    let settings = choruz_decision::settings::LearningSettings {
+        model: "fixture-model".into(),
+        minimum_confidence: 0.9,
+        classify: false,
+        supervise: false,
+        assist_turns: true,
+        complete_turns: false,
+        builder_binding_id: None,
+    };
+    db.configure_decisions(&owner.workspace_id, &owner.id, &target, Some(&settings))
+        .await
+        .unwrap();
+    let claim = db.claim_experience().await.unwrap().unwrap();
+    let context = json!({"model":"fixture-model","builder":"same-builder"});
+    let ProgramTrialAdmission::Reserved(key) = db
+        .reserve_decision_program_trial(&claim, "same-corpus", &context)
+        .await
+        .unwrap()
+    else {
+        panic!("first attempt must reserve")
+    };
+    db.update_decision_program_trial(&claim, "same-corpus", &key, "generating", None)
+        .await
+        .unwrap();
+    db.update_decision_program_trial(
+        &claim,
+        "same-corpus",
+        &key,
+        "completed",
+        Some(&json!({"status":"not_suitable"})),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        db.completed_decision_program_trial(&claim, "same-corpus", &context)
+            .await
+            .unwrap(),
+        Some(json!({"status":"not_suitable"})),
+        "same-generation continuation can recover a completed result"
+    );
+    db.configure_decisions(&owner.workspace_id, &owner.id, &target, Some(&settings))
+        .await
+        .unwrap();
+    let next = db.claim_experience().await.unwrap().unwrap();
+    assert_ne!(next.generation, claim.generation);
+    assert!(
+        db.completed_decision_program_trial(&next, "same-corpus", &context)
+            .await
+            .unwrap()
+            .is_none(),
+        "saving identical settings must not resume an old consent generation's result"
+    );
+    let ProgramTrialAdmission::Reserved(next_key) = db
+        .reserve_decision_program_trial(&next, "same-corpus", &context)
+        .await
+        .unwrap()
+    else {
+        panic!("new consent must reserve independently")
+    };
+    assert_ne!(
+        key, next_key,
+        "the storage owner includes consent generation in trial identity"
+    );
+    db.configure_experience(
+        &owner.workspace_id,
+        &owner.id,
+        &target,
+        &analyst,
+        false,
+        None,
+    )
+    .await
+    .unwrap();
+    db.configure_experience(
+        &owner.workspace_id,
+        &owner.id,
+        &target,
+        &analyst,
+        true,
+        None,
+    )
+    .await
+    .unwrap();
+    let enabled_again = db.claim_experience().await.unwrap().unwrap();
+    assert!(
+        db.completed_decision_program_trial(&enabled_again, "same-corpus", &context)
+            .await
+            .unwrap()
+            .is_none(),
+        "disabling and re-enabling cannot revive a cancelled automatic continuation"
+    );
+}
+
+#[tokio::test]
+async fn learning_stage_checkpoints_reuse_completed_work_and_fence_revoked_claims() {
+    let database = TestDatabase::create().await;
+    let db =
+        choruz_application::DbService::new(choruz_store::EventStore::new(&database.database_url));
+    let owner = db
+        .create_human_user("learning-checkpoints", "password-123")
+        .await
+        .unwrap();
+    let target = learning_binding(&database, &owner).await;
+    let analyst = learning_binding(&database, &owner).await;
+    db.configure_experience(
+        &owner.workspace_id,
+        &owner.id,
+        &target,
+        &analyst,
+        true,
+        None,
+    )
+    .await
+    .unwrap();
+    let claim = db.claim_experience().await.unwrap().unwrap();
+    assert!(
+        db.begin_experience_stage(&claim, "analysis", "request-a")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    db.finish_experience_stage(
+        &claim,
+        "analysis",
+        "request-a",
+        Some(&json!({"summary":"completed once"})),
+        false,
+    )
+    .await
+    .unwrap();
+    db.release_experience(&claim, Some("research temporarily unavailable"))
+        .await
+        .unwrap();
+    let runtime = RuntimeStore::new(&database.database_url);
+    let client = runtime.connect().await.unwrap();
+    make_learning_due(&**client, &target).await;
+    let next = db.claim_experience().await.unwrap().unwrap();
+    assert_ne!(claim.token, next.token);
+    assert_eq!(
+        db.begin_experience_stage(&next, "analysis", "request-a")
+            .await
+            .unwrap(),
+        Some(json!({"summary":"completed once"})),
+        "successful model work survives a worker claim boundary"
+    );
+    assert!(
+        db.begin_experience_stage(&next, "research", "request-b")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    db.finish_experience_stage(&next, "research", "request-b", None, true)
+        .await
+        .unwrap();
+    assert!(
+        db.begin_experience_stage(&next, "research", "request-b")
+            .await
+            .unwrap()
+            .is_none(),
+        "an observed failed response can be retried"
+    );
+    db.finish_experience_stage(&next, "research", "request-b", None, false)
+        .await
+        .unwrap();
+    let interrupted = db
+        .begin_experience_stage(&next, "research", "request-b")
+        .await
+        .unwrap_err();
+    assert!(
+        interrupted.to_string().contains("Save learning settings"),
+        "unknown dispatches require actionable renewed consent, not automatic duplicate charges"
+    );
+    client.execute("UPDATE experience_policy SET lease_until=NOW()+INTERVAL '1 minute' WHERE binding_id=$1",&[&target]).await.unwrap();
+    assert!(db.renew_experience(&next).await.unwrap());
+    let remaining: bool = client.query_one("SELECT lease_until>NOW()+INTERVAL '14 minutes' FROM experience_policy WHERE binding_id=$1",&[&target]).await.unwrap().get(0);
+    assert!(remaining, "a live long-running stage keeps its lease");
+    db.experience_window(
+        &next,
+        Some(&json!({"source":{"records":[{"ref":"private-visible-record"}]}})),
+    )
+    .await
+    .unwrap();
+    db.configure_experience(
+        &owner.workspace_id,
+        &owner.id,
+        &target,
+        &analyst,
+        false,
+        None,
+    )
+    .await
+    .unwrap();
+    assert!(!db.renew_experience(&next).await.unwrap());
+    for table in [
+        "experience_stage_checkpoint",
+        "experience_window_checkpoint",
+    ] {
+        let retained: i64 = client
+            .query_one(
+                &format!("SELECT COUNT(*) FROM {table} WHERE binding_id=$1"),
+                &[&target],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(
+            retained, 0,
+            "turning learning off deletes its private {table} continuation"
+        );
+    }
+    assert!(
+        db.begin_experience_stage(&next, "analysis", "request-a")
+            .await
+            .is_err(),
+        "cached success cannot bypass revoked consent"
+    );
+    db.configure_experience(
+        &owner.workspace_id,
+        &owner.id,
+        &target,
+        &analyst,
+        true,
+        None,
+    )
+    .await
+    .unwrap();
+    let refreshed = db.claim_experience().await.unwrap().unwrap();
+    assert_ne!(refreshed.generation, next.generation);
+    assert!(
+        db.begin_experience_stage(&refreshed, "research", "request-b")
+            .await
+            .unwrap()
+            .is_none(),
+        "saving settings authorizes a fresh generation"
+    );
+    for _ in 0..2 {
+        db.finish_experience_stage(&refreshed, "research", "request-b", None, true)
+            .await
+            .unwrap();
+        assert!(
+            db.begin_experience_stage(&refreshed, "research", "request-b")
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+    db.finish_experience_stage(&refreshed, "research", "request-b", None, true)
+        .await
+        .unwrap();
+    assert!(
+        db.begin_experience_stage(&refreshed, "research", "request-b")
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("three observed attempts"),
+        "known failures have a bounded automatic retry budget"
+    );
+}
+
 #[tokio::test]
 async fn new_tasks_share_owned_learning_without_copying_policy_state() {
     let database = TestDatabase::create().await;
@@ -2792,13 +3077,19 @@ async fn evaluation_compares_frozen_revisions_with_judging_and_isolated_replay()
 #[cfg(unix)]
 #[tokio::test]
 async fn enabling_learning_runs_native_source_through_background_analyst_and_persists_revision() {
-    background_learning_cross_window_marker(false).await;
+    background_learning_cross_window_marker(false, false).await;
 }
 
 #[cfg(unix)]
 #[tokio::test]
 async fn background_learning_verifies_marker_body_even_when_its_reference_was_retained() {
-    background_learning_cross_window_marker(true).await;
+    background_learning_cross_window_marker(true, false).await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn learning_search_outage_preserves_observations_without_installing_guidance() {
+    background_learning_cross_window_marker(false, true).await;
 }
 
 async fn make_learning_due(client: &impl tokio_postgres::GenericClient, binding: &str) {
@@ -2813,7 +3104,7 @@ async fn make_learning_due(client: &impl tokio_postgres::GenericClient, binding:
 }
 
 #[cfg(unix)]
-async fn background_learning_cross_window_marker(retain_marker: bool) {
+async fn background_learning_cross_window_marker(retain_marker: bool, search_unavailable: bool) {
     use std::io::Write;
     use std::os::unix::fs::PermissionsExt;
     let database = TestDatabase::create().await;
@@ -2845,11 +3136,15 @@ async fn background_learning_cross_window_marker(retain_marker: bool) {
     }
     drop(transcript);
     let cli = files.path().join("analyst");
-    fs::write(
-        &cli,
-        include_str!("../../../../crates/choruz-host-runtime/tests/fixtures/experience-analyst.py"),
-    )
-    .unwrap();
+    let mut model_fixture =
+        include_str!("../../../../crates/choruz-host-runtime/tests/fixtures/experience-analyst.py")
+            .to_owned();
+    if search_unavailable {
+        fs::write(files.path().join("search-outage"), "").unwrap();
+        model_fixture = model_fixture.replace("source = sys.stdin.read()", "source = sys.stdin.read()\nimport pathlib, hashlib\nroot = pathlib.Path(__file__).parent\nwith (root / 'model-calls').open('a') as log:\n    log.write(('research' if 'web_search=\"live\"' in sys.argv else hashlib.sha256(source.encode()).hexdigest()) + '\\n')");
+        model_fixture = model_fixture.replace("    assert \"source-workspace\" not in source", "    if (root / 'search-outage').exists():\n        print(json.dumps({\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"Search unavailable\"}}))\n        sys.exit(0)\n    assert \"source-workspace\" not in source");
+    }
+    fs::write(&cli, model_fixture).unwrap();
     fs::set_permissions(&cli, fs::Permissions::from_mode(0o700)).unwrap();
     let runtime = RuntimeStore::new(&database.database_url);
     let binding = runtime.get_binding(&target).await.unwrap();
@@ -2873,7 +3168,7 @@ async fn background_learning_cross_window_marker(retain_marker: bool) {
             .valid_terminal_session_anchor_for_context(None, None, Some(0), None)
             .is_some()
     );
-    if !retain_marker {
+    if !retain_marker && !search_unavailable {
         let shared: choruz_community::behavior::BehaviorRecord = serde_json::from_value(json!({
             "schema_version":1,"id":"shared-event","occurrence_id":"shared-objective",
             "problem":{"id":"shared-verification","title":"Skipped verification","input_background":"A task required verification.","expected_behavior":"Verify the check.","bad_behavior":"Skipped verification.","applicability":"Explicit acceptance checks","tags":["verification"]},
@@ -2920,6 +3215,69 @@ async fn background_learning_cross_window_marker(retain_marker: bool) {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
+    if search_unavailable {
+        tokio::time::timeout(Duration::from_secs(90), async {
+            loop {
+                let reports = db.experience_revisions(&owner.workspace_id,&owner.id,&target).await.unwrap();
+                if let Some(report) = reports.iter().find(|report| report.validation["research_status"] == "pending") {
+                    assert!(report.validation["problems"].as_array().is_some_and(|p| !p.is_empty()));
+                    assert_eq!(report.validation["review"], "not_passed");
+                    assert_eq!(report.disposition,"no_change");
+                    assert!(db.experience_for_turn(&owner.workspace_id,&target).await.unwrap().is_none(),"search failure must never install the initial unreviewed suggestion");
+                    let row = client.query_one("SELECT source_cursor FROM experience_policy WHERE binding_id=$1",&[&target]).await.unwrap();
+                    assert!(row.get::<_,Value>(0).is_object());
+                    let retained: i64 = client.query_one("SELECT COUNT(*) FROM experience_window_checkpoint WHERE binding_id=$1",&[&target]).await.unwrap().get(0);
+                    assert_eq!(retained,1,"pending research retains its exact continuation rather than discarding successful model stages");
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        }).await.expect("search outage must not discard the completed source analysis");
+        fs::remove_file(files.path().join("search-outage")).unwrap();
+        tokio::time::timeout(Duration::from_secs(90), async {
+            loop {
+                make_learning_due(&**client, &target).await;
+                if db
+                    .experience_for_turn(&owner.workspace_id, &target)
+                    .await
+                    .unwrap()
+                    .is_some()
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect(
+            "restored search must finish the retained workflow and install only reviewed guidance",
+        );
+        let mut counts = std::collections::BTreeMap::new();
+        for request in fs::read_to_string(files.path().join("model-calls"))
+            .unwrap()
+            .lines()
+            .filter(|line| *line != "research")
+        {
+            *counts.entry(request.to_owned()).or_insert(0) += 1;
+        }
+        assert!(
+            counts.values().all(|count| *count == 1),
+            "completed pure model stages must not be charged twice across research retry: {counts:?}"
+        );
+        let retained: i64 = client
+            .query_one(
+                "SELECT COUNT(*) FROM experience_window_checkpoint WHERE binding_id=$1",
+                &[&target],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(
+            retained, 0,
+            "successful workflows remove their private continuation"
+        );
+        return;
+    }
     tokio::time::timeout(Duration::from_secs(90), async {
         loop {
             let error = client.query_one("SELECT last_error,source_cursor FROM experience_policy WHERE binding_id=$1", &[&target]).await.unwrap();

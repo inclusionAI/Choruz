@@ -690,7 +690,8 @@ pub(crate) async fn revoke_host(
         .await
         .map_err(internal("find runtime host"))?
         .ok_or_else(|| ApiError(AppError::NotFound(format!("runtime host {host_id}"))))?;
-    require_company_access(&headers, &state, row.get("company_id")).await?;
+    let company_id: String = row.get("company_id");
+    let actor = require_company_access(&headers, &state, &company_id).await?;
     let tx = client
         .transaction()
         .await
@@ -705,6 +706,7 @@ pub(crate) async fn revoke_host(
     let bindings = tx
         .query("SELECT id FROM agent_runtime_bindings WHERE config_json->>'runtime_host_id' = $1 ORDER BY id", &[&host_id])
         .await.map_err(internal("find revoked host sessions"))?;
+    let mut affected = Vec::new();
     for row in bindings {
         let id: String = row.get("id");
         lock_terminal_launch(&tx, &id).await?;
@@ -712,7 +714,13 @@ pub(crate) async fn revoke_host(
         if binding.config_json["runtime_host_id"].as_str() != Some(host_id.as_str()) {
             continue;
         }
-        close_direct_session_before_move(&state, &binding).await?;
+        tx.execute(
+            "SELECT pg_advisory_xact_lock(hashtext($1)::bigint)",
+            &[&binding.agent_principal_id],
+        )
+        .await
+        .map_err(internal("fence revoked host admissions"))?;
+        affected.push(id);
     }
     tx.execute(
         "UPDATE runtime_host SET status = 'revoked', revoked_at = NOW(), updated_at = NOW()
@@ -724,16 +732,17 @@ pub(crate) async fn revoke_host(
     tx.execute(
         "UPDATE agent_runtime_bindings
          SET config_json = jsonb_set(
-               config_json - 'runtime_host_id' - 'terminal_session' - 'terminal_capture',
+               config_json - 'terminal_session' - 'terminal_capture',
                '{terminal_generation}',
                to_jsonb(COALESCE((config_json->>'terminal_generation')::bigint, 0) + 1)),
              external_session_id = NULL, external_thread_id = NULL,
-             state = 'idle', updated_at = NOW()
+             state = 'disabled', last_error = 'Execution device removed; create an Agent on an available device with its own workspace and account',
+             in_flight_turn_id = NULL, updated_at = NOW()
          WHERE config_json->>'runtime_host_id' = $1",
         &[&host_id],
     )
     .await
-    .map_err(internal("return host bindings to local execution"))?;
+    .map_err(internal("disable revoked host bindings"))?;
     tx.execute(
         "UPDATE session_registry
          SET epoch = epoch + 1, status = 'idle', executor_node_id = NULL,
@@ -749,9 +758,7 @@ pub(crate) async fn revoke_host(
     .map_err(internal("fence revoked host attempts"))?;
     tx.execute(
         "UPDATE agent_commands
-         SET metadata = metadata - 'runtime_host_id',
-             status = CASE WHEN status IN ('leased', 'started', 'heartbeating')
-                           THEN 'pending' ELSE status END,
+         SET status = 'dead_letter', last_error = 'Execution device removed [kind=device_removed]',
              current_attempt_id = NULL, current_epoch = NULL,
              next_retry_at = NULL, updated_at = NOW()
          WHERE metadata->>'runtime_host_id' = $1
@@ -759,10 +766,37 @@ pub(crate) async fn revoke_host(
         &[&host_id],
     )
     .await
-    .map_err(internal("requeue revoked host commands"))?;
+    .map_err(internal("cancel revoked host commands"))?;
+    tx.execute(
+        "INSERT INTO audit_log(id,workspace_id,actor_id,action,target_type,target_id,metadata,created_at)
+         VALUES($1,$2,$3,'runtime_host.revoked','runtime_host',$4,$5,NOW())",
+        &[&new_id(), &company_id, &actor.id, &host_id, &serde_json::json!({"disabled_bindings":affected.len(),"implicit_migration":false})],
+    ).await.map_err(internal("audit runtime host revocation"))?;
     tx.commit()
         .await
         .map_err(internal("commit runtime host revocation"))?;
+    // The durable fence precedes best-effort cleanup; offline devices are
+    // removable and no pending work is implicitly transferred to this host.
+    if let Some(link) = state.host_links.get(&host_id) {
+        let cleanup = async {
+            for id in affected {
+                if let Err(error) = link
+                    .call(choruz_host_runtime::link::LinkRequest::TerminalClose { terminal_id: id })
+                    .await
+                {
+                    tracing::warn!(%host_id, %error, "revoked device session cleanup unavailable");
+                }
+            }
+        };
+        if tokio::time::timeout(std::time::Duration::from_secs(5), cleanup)
+            .await
+            .is_err()
+        {
+            tracing::warn!(%host_id, "revoked device cleanup unacknowledged; durable execution fence remains active");
+        }
+        state.host_links.revoke(&host_id);
+    }
+    tracing::info!(%host_id, "runtime host revoked; execution fenced without migration");
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -835,7 +869,26 @@ pub(crate) async fn assign_binding_host(
     {
         return Ok(StatusCode::NO_CONTENT);
     }
-    close_direct_session_before_move(&state, &current).await?;
+    crate::handlers_runtime::validate_harness_account(
+        &state, &agent.workspace_id, current.driver_type.clone(), target_host_id.as_deref(), Some(&current.config_json),
+    ).await.map_err(|error| match error.0 {
+        AppError::Validation(_) => ApiError(AppError::Validation("The current account does not belong to the destination device. Create an Agent using that device's workspace and account; this conversation's history remains available.".into())),
+        other => ApiError(other),
+    })?;
+    let retired_device = if let Some(host_id) = current.config_json["runtime_host_id"].as_str() {
+        tx.query_opt(
+            "SELECT 1 FROM runtime_host WHERE id=$1 AND revoked_at IS NOT NULL",
+            &[&host_id],
+        )
+        .await
+        .map_err(internal("check previous device revocation"))?
+        .is_some()
+    } else {
+        false
+    };
+    if !retired_device {
+        close_direct_session_before_move(&state, &current).await?;
+    }
     tx.execute(
         "UPDATE session_registry sr
          SET epoch = epoch + 1, status = 'idle', executor_node_id = NULL,
@@ -873,7 +926,7 @@ pub(crate) async fn assign_binding_host(
                  to_jsonb(COALESCE((config_json->>'terminal_generation')::bigint, 0) + 1)),
                  external_session_id = NULL,
                  external_thread_id = NULL,
-                 state = 'idle',
+                 state = 'idle', last_error = NULL,
                  updated_at = NOW()
              WHERE id = $1",
         &[&binding_id, &target_host_id],

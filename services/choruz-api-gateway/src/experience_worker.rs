@@ -29,39 +29,72 @@ pub(crate) fn spawn(mut state: ApiState) -> std::sync::Arc<crate::background::Wo
 async fn run_analysis(state: &ApiState) {
     let mut interval = tokio::time::interval(Duration::from_secs(15));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut jobs = tokio::task::JoinSet::new();
     loop {
-        interval.tick().await;
-        match state.db.claim_experience().await {
-            Ok(Some(mut claim)) => {
-                prepare_curation(&mut claim, chrono::Utc::now().timestamp());
-                let check = LearningCheck::new(state, &claim);
-                let outcome = async {
-                    check.record("check", json!({"outcome":"started"})).await?;
-                    review(state, &claim, &check).await
+        tokio::select! {
+            _ = interval.tick() => {
+                // A slow device must not hold up every other learning profile.
+                // Database leases retain per-binding exclusion across processes.
+                while jobs.len() < 4 {
+                    match state.db.claim_experience().await {
+                        Ok(Some(claim)) => {
+                            let state = state.clone();
+                            jobs.spawn(async move { process_claim(&state, claim).await });
+                        }
+                        Ok(None) => break,
+                        Err(error) => {
+                            tracing::warn!(%error,"learning queue unavailable");
+                            break;
+                        }
+                    }
                 }
-                .await;
-                let details = match &outcome {
-                    Ok(()) => json!({"outcome":"completed"}),
-                    Err(error) => failure(error),
-                };
-                if let Err(error) = check.record("check", details).await {
-                    tracing::warn!(trace_id=%check.id, binding_id=%claim.binding_id, %error, "learning diagnostic persistence failed");
+            }
+            result = jobs.join_next(), if !jobs.is_empty() => {
+                if let Some(Err(error)) = result {
+                    tracing::warn!(%error,"learning task exited unexpectedly");
                 }
-                // Diagnostics never include the trace, model output or credentials.
-                let error = outcome.err().map(|error| match error {
+            }
+        }
+    }
+}
+
+async fn process_claim(state: &ApiState, mut claim: ExperienceClaim) {
+    prepare_curation(&mut claim, chrono::Utc::now().timestamp());
+    let check = LearningCheck::new(state, &claim);
+    let outcome = async {
+        check.record("check", json!({"outcome":"started"})).await?;
+        let review = review(state, &claim, &check);
+        tokio::pin!(review);
+        let mut renew = tokio::time::interval(Duration::from_secs(30));
+        renew.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tokio::select! {
+                result = &mut review => break result,
+                _ = renew.tick() => {
+                    if !state.db.renew_experience(&claim).await? {
+                        break Err(AppError::Conflict("Learning settings changed or reservation expired".into()));
+                    }
+                }
+            }
+        }
+    }.await;
+    let details = match &outcome {
+        Ok(()) => json!({"outcome":"completed"}),
+        Err(error) => failure(error),
+    };
+    if let Err(error) = check.record("check", details).await {
+        tracing::warn!(trace_id=%check.id, binding_id=%claim.binding_id, %error, "learning diagnostic persistence failed");
+    }
+    // Diagnostics never include the trace, model output or credentials.
+    let error = outcome.err().map(|error| match error {
                         AppError::NotFound(message) | AppError::Conflict(message) | AppError::Validation(message) => message,
                         AppError::Forbidden(_) | AppError::Unauthorized(_) => "Learning no longer has access to the selected Agent or workspace.".into(),
                         _ => "Background analysis failed. Check the selected account and device; learning will retry.".into(),
                     });
-                if let Err(error) = state.db.release_experience(&claim, error.as_deref()).await {
-                    tracing::warn!(binding_id=%claim.binding_id, %error, "learning lease release failed");
-                }
-                tracing::info!(trace_id=%check.id, binding_id=%claim.binding_id, success=error.is_none(), "learning check finished");
-            }
-            Ok(None) => {}
-            Err(error) => tracing::warn!(%error, "learning queue unavailable"),
-        }
+    if let Err(error) = state.db.release_experience(&claim, error.as_deref()).await {
+        tracing::warn!(binding_id=%claim.binding_id, %error, "learning lease release failed");
     }
+    tracing::info!(trace_id=%check.id, binding_id=%claim.binding_id, success=error.is_none(), "learning check finished");
 }
 
 /// Revisit retained original evidence daily, after the preceding paged sweep
@@ -93,7 +126,7 @@ async fn review(
         .await
         .map_err(|e| e.0)?;
     let source_host = RuntimeHost::for_binding(state, &target)?;
-    let existing_cases = state
+    let mut existing_cases = state
         .db
         .experience_trace_cases(&claim.workspace_id, &claim.binding_id)
         .await?;
@@ -210,21 +243,52 @@ async fn review(
             .as_array()
             .is_some_and(|records| !records.is_empty())
     });
-    let known_problems = state.db.experience_problems(claim).await?;
-    let next = pending.next().or_else(|| {
-        let unfinished: Vec<_> = known_problems
-            .as_array()?
-            .iter()
-            .filter(|problem| problem["prompt_revision_id"].is_null())
-            .map(|problem| problem["key"].clone())
-            .collect();
-        (!unread && !unfinished.is_empty()).then(|| {
+    let mut known_problems = state.db.experience_problems(claim).await?;
+    let execution_context = json!({
+        "target":crate::experience_diagnostics::execution_context(&terminal_spec(&target,120,40,None,None)),
+        "analyst":crate::experience_diagnostics::execution_context(&terminal_spec(&analyst,120,40,None,None)),
+    });
+    let retained_window = state.db.experience_window(claim, None).await?;
+    if let Some(window) = &retained_window {
+        let mut feedback_references = Vec::new();
+        continuation_feedback_references(window, &mut feedback_references);
+        if !state
+            .db
+            .experience_window_feedback_current(claim, &feedback_references)
+            .await?
+        {
+            return Err(AppError::Forbidden("Learning continuation includes feedback that is no longer shared. Save learning settings to cancel it.".into()));
+        }
+    }
+    if retained_window
+        .as_ref()
+        .is_some_and(|window| window["context"] != execution_context)
+    {
+        return Err(AppError::Conflict("Learning account, model or device changed. Save learning settings to cancel the old continuation and start a fresh attempt.".into()));
+    }
+    let next = retained_window
+        .as_ref()
+        .map(|window| {
             (
-                "_pending_problems".to_owned(),
-                json!({"records":[],"cursor":unfinished,"more":false}),
+                window["key"].as_str().unwrap_or("_continuation").to_owned(),
+                window["source"].clone(),
             )
         })
-    });
+        .or_else(|| pending.next())
+        .or_else(|| {
+            let unfinished: Vec<_> = known_problems
+                .as_array()?
+                .iter()
+                .filter(|problem| problem["prompt_revision_id"].is_null())
+                .map(|problem| problem["key"].clone())
+                .collect();
+            (!unread && !unfinished.is_empty()).then(|| {
+                (
+                    "_pending_problems".to_owned(),
+                    json!({"records":[],"cursor":unfinished,"more":false}),
+                )
+            })
+        });
     let Some((key, mut source)) = next else {
         check
             .record(
@@ -259,17 +323,21 @@ async fn review(
         return Ok(());
     };
     // Do not activate guidance from feedback while older native work is unread.
-    source["more"] = json!(unread || pending.next().is_some());
-    if claim.trace_cases {
+    if retained_window.is_none() {
+        source["more"] = json!(unread || pending.next().is_some());
+    }
+    if claim.trace_cases && retained_window.is_none() {
         source["curation_cycle"] = claim.source_cursor["_curation_started"].clone();
     }
-    if let Some(guidance) = guidance {
+    if let Some(guidance) = guidance.filter(|_| retained_window.is_none()) {
         source["project_guidance"] = guidance;
     }
-    checkpoint.insert(key, source["cursor"].clone());
+    source = choruz_activity::sanitize_value(source);
+    checkpoint.insert(key.clone(), source["cursor"].clone());
     checkpoint.insert("_more".into(), source["more"].clone());
     let digest = hex::encode(Sha256::digest(source.to_string().as_bytes()));
     if state.db.experience_source_seen(claim, &digest).await? {
+        state.db.finish_experience_window(claim).await?;
         check
             .record(
                 "source_selection",
@@ -278,6 +346,35 @@ async fn review(
             .await?;
         return Ok(());
     }
+    let initial_input = choruz_learning::analysis_workflow::AnalysisInput {
+        instruction: claim.instruction.clone(),
+        active_revision_id: claim.active_revision_id.clone(),
+        source_summary: claim.source_summary.clone(),
+        source_references: claim.source_references.clone(),
+        trace_cases: claim.trace_cases,
+        measured: claim.measured,
+    };
+    let window = match retained_window {
+        Some(window) => window,
+        None => state
+            .db
+            .experience_window(
+                claim,
+                Some(&json!({"key":key,"source":source,
+            "context":execution_context,"input":initial_input,"known_problems":known_problems,
+            "existing_cases":existing_cases,"checkpoint":checkpoint})),
+            )
+            .await?
+            .ok_or_else(|| AppError::Internal("Learning continuation was not reserved".into()))?,
+    };
+    check.scope_window(&window)?;
+    let input = serde_json::from_value(window["input"].clone())
+        .map_err(|e| AppError::Internal(format!("restore learning input: {e}")))?;
+    known_problems = window["known_problems"].clone();
+    existing_cases = serde_json::from_value(window["existing_cases"].clone())
+        .map_err(|e| AppError::Internal(format!("restore learning objectives: {e}")))?;
+    checkpoint = serde_json::from_value(window["checkpoint"].clone())
+        .map_err(|e| AppError::Internal(format!("restore learning cursor: {e}")))?;
     check.record("source_selection", json!({"outcome":"selected","source_digest":digest,"source_cursor":source["cursor"],"source_complete":source["more"] == false})).await?;
     let services = PlatformAnalysis {
         state,
@@ -290,14 +387,7 @@ async fn review(
     };
     let analyzed = choruz_learning::analysis_workflow::analyze_window(
         &services,
-        &choruz_learning::analysis_workflow::AnalysisInput {
-            instruction: claim.instruction.clone(),
-            active_revision_id: claim.active_revision_id.clone(),
-            source_summary: claim.source_summary.clone(),
-            source_references: claim.source_references.clone(),
-            trace_cases: claim.trace_cases,
-            measured: claim.measured,
-        },
+        &input,
         &source,
         &known_problems,
         &existing_cases,
@@ -317,7 +407,7 @@ async fn review(
                 .iter()
                 .map(|record| json!({"ref":record.reference,"record":record.record})),
         );
-        crate::decision_worker::build(
+        match crate::decision_worker::build(
             state,
             claim,
             check,
@@ -326,11 +416,41 @@ async fn review(
             evaluation_cases,
             &program_records,
         )
-        .await?
+        .await
+        {
+            Ok(report) => report,
+            Err(error) => {
+                check.record("program_pending", failure(&error)).await?;
+                json!({"status":"pending","failure":failure(&error),
+                    "recovery":"Check the selected program builder account and device. Core learning is saved independently."})
+            }
+        }
     } else {
         Value::Null
     };
     let mut validation = analyzed.validation;
+    let current_target = authorize_terminal_binding(state, &actor, &claim.binding_id)
+        .await
+        .map_err(|e| e.0)?;
+    let current_analyst = authorize_terminal_binding(state, &actor, &claim.analyst_binding_id)
+        .await
+        .map_err(|e| e.0)?;
+    let current_context = json!({
+        "target":crate::experience_diagnostics::execution_context(&terminal_spec(&current_target,120,40,None,None)),
+        "analyst":crate::experience_diagnostics::execution_context(&terminal_spec(&current_analyst,120,40,None,None)),
+    });
+    if current_context != window["context"] {
+        return Err(AppError::Conflict("Learning execution context changed before publication. Save learning settings to restart.".into()));
+    }
+    let research_pending = validation["research_status"] == "pending";
+    let program_pending = program_trial["status"] == "pending";
+    let commit_digest = if research_pending {
+        format!("{digest}:research_pending")
+    } else if program_pending {
+        format!("{digest}:program_pending")
+    } else {
+        digest.clone()
+    };
     validation["decisions"] = decisions;
     validation["program_trial"] = program_trial;
     validation["trace_id"] = json!(check.id);
@@ -339,25 +459,75 @@ async fn review(
         .save_experience_candidate(
             claim,
             ExperienceReport {
-                digest: &digest,
+                digest: &commit_digest,
                 references: &json!(analyzed.analysis.evidence),
                 analysis: &analyzed.analysis.summary,
                 instruction: analyzed.instruction.as_deref(),
                 validation: &validation,
-                checkpoint: Some(&Value::Object(checkpoint)),
+                checkpoint: (!(research_pending || program_pending))
+                    .then_some(&Value::Object(checkpoint)),
                 activate: analyzed.review_passed && !claim.measured,
             },
         )
         .await?;
-    if revision.is_none() {
+    if revision.is_none() && !(research_pending || program_pending) {
         check
             .record(
                 "revision_commit",
                 json!({"outcome":"stale_or_duplicate_claim"}),
             )
             .await?;
+        return Err(AppError::Conflict(
+            "Learning result was not committed because its reservation changed".into(),
+        ));
     }
+    if research_pending {
+        return Err(AppError::Validation("Source analysis was saved, but research is pending. Check search access; save learning settings to authorize a fresh attempt after an interrupted model call.".into()));
+    }
+    if program_pending {
+        return Err(AppError::Validation("Core learning was saved, but program construction is pending. Check or reselect the program builder account and device in learning settings.".into()));
+    }
+    state.db.finish_experience_window(claim).await?;
     Ok(())
+}
+
+fn continuation_feedback_references(value: &Value, references: &mut Vec<String>) {
+    match value {
+        Value::Array(values) => values
+            .iter()
+            .for_each(|value| continuation_feedback_references(value, references)),
+        Value::Object(values) => {
+            for (key, value) in values {
+                if matches!(
+                    key.as_str(),
+                    "ref"
+                        | "episode_ref"
+                        | "evidence"
+                        | "source_references"
+                        | "prior_references"
+                        | "references"
+                ) {
+                    if let Some(reference) = value
+                        .as_str()
+                        .filter(|reference| reference.starts_with("message:"))
+                    {
+                        references.push(reference.to_owned());
+                    }
+                    if let Some(values) = value.as_array() {
+                        references.extend(
+                            values
+                                .iter()
+                                .filter_map(Value::as_str)
+                                .filter(|reference| reference.starts_with("message:"))
+                                .map(str::to_owned),
+                        );
+                    }
+                }
+                continuation_feedback_references(value, references);
+            }
+        }
+        _ => {}
+    }
 }
 
 struct PlatformAnalysis<'a> {

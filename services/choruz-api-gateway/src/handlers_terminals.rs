@@ -646,6 +646,7 @@ async fn terminal_bridge(
     let binding_for_capture = binding.clone();
     let binding_id_for_first_output = binding_id.clone();
     let sent_bytes = output_bytes.clone();
+    let output_resync = attachment.resync.clone();
     let mut send_task = tokio::spawn(async move {
         let mut binding_for_capture = binding_for_capture;
         let capture_workspace_id = binding_for_capture
@@ -694,10 +695,10 @@ async fn terminal_bridge(
                 None => match output.recv().await {
                     Some(data) => data,
                     None => {
-                        tracing::info!(
-                            "PTY child exited; closing WebSocket so client can reconnect"
-                        );
-                        let _ = ws_sender.send(WsMessage::Close(None)).await;
+                        let close = output_resync.load(Ordering::Acquire).then(|| axum::extract::ws::CloseFrame {
+                            code: 1012, reason: "Terminal stream lost synchronization; reconnect for a screen snapshot".into(),
+                        });
+                        let _ = ws_sender.send(WsMessage::Close(close)).await;
                         break;
                     }
                 },
@@ -780,6 +781,7 @@ async fn terminal_bridge(
         }
     });
 
+    let resync = attachment.resync.clone();
     // Stop and join the other leg before recording final counters or closing the PTY.
     let ended_leg = tokio::select! {
         _ = &mut send_task => {
@@ -807,6 +809,12 @@ async fn terminal_bridge(
         }),
     )
     .await;
+
+    if resync.load(Ordering::Acquire) {
+        // The process is still running. The browser reconnects to its current
+        // screen rather than restarting a task whose delivery is uncertain.
+        return;
+    }
 
     if is_codex_terminal {
         match capture_codex_terminal_before_cleanup(&host, &runtime, &binding_id, binding).await {

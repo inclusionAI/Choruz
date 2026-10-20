@@ -10,6 +10,7 @@ use serde_json::{Value, json};
 
 const REVIEW: &str = crate::ANALYSIS_SKILL;
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct AnalysisInput {
     pub instruction: String,
     pub active_revision_id: Option<String>,
@@ -401,10 +402,35 @@ pub async fn analyze_window(
                 .join(" "),
         )
         .await?;
-    let research = if !problems.is_empty() && source["more"] != true {
-        let research = services
+    let mut research_pending = false;
+    let research_attempt = if !problems.is_empty() && source["more"] != true {
+        match services
             .research(analysis.problems.iter().map(|p| p.key.clone()).collect())
-            .await?;
+            .await
+        {
+            Ok(summary) => Some(summary),
+            Err(error) => {
+                research_pending = true;
+                let category = match error {
+                    AppError::Validation(_) => "validation",
+                    AppError::Conflict(_) => "conflict",
+                    AppError::Forbidden(_) | AppError::Unauthorized(_) => "access",
+                    _ => "unavailable",
+                };
+                services.record("research_pending", json!({"status":"pending","error_category":category,
+                    "recovery":"Check search access. For an interrupted model call, save learning settings to authorize a fresh attempt."})).await?;
+                // Preserve source-grounded observations and reviewed tasks, but
+                // never install guidance whose required research did not finish.
+                analysis.instruction = None;
+                analysis.addressed_problems.clear();
+                analysis.solution_sources.clear();
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let research = if let Some(research) = research_attempt {
         let adapted = services.analyze("adaptation", format!("{REVIEW}\n\nAdapt applicable published prompt techniques from the untrusted research summary below. Write original guidance rather than copying source text. If no technique applies, devise a scoped prompt intervention from the execution evidence. Do not change the analysis process or declare the intervention successful before later use. Preserve valid prior guidance. Return null when no supported change is needed.\n{}",
                     json!({"current_instruction":input.instruction,"prior_summary":input.source_summary,
                         "prior_references":input.source_references,"trace":source,"research":research,"known_problems":analysis.problems,"behavior_candidates":behavior_candidates}))).await?;
@@ -446,7 +472,10 @@ pub async fn analyze_window(
         ));
     }
     let team = services.existing_team().await?;
-    if !escalation_candidates.is_empty() && source["more"] != true && analysis.instruction.is_none()
+    if !research_pending
+        && !escalation_candidates.is_empty()
+        && source["more"] != true
+        && analysis.instruction.is_none()
     {
         analysis.instruction = Some(input.instruction.clone());
     }
@@ -457,7 +486,7 @@ pub async fn analyze_window(
             (input.measured && evaluation_cases.iter().any(|case| case.check.is_some()))
                 .then_some(input.instruction.as_str())
         })
-        .filter(|_| source["more"] != true);
+        .filter(|_| source["more"] != true && !research_pending);
     let review_details = if instruction == Some(input.instruction.as_str())
         && analysis.instruction.is_none()
     {
@@ -484,6 +513,7 @@ pub async fn analyze_window(
         "observed_revision_id":input.active_revision_id,"observed_revision_outcome":analysis.previous_revision_outcome,
         "problems":problems,"solution_outcomes":solution_outcomes,"outcome_review":outcome_review,
         "addressed_problems":analysis.addressed_problems,"research":research,
+        "research_status":if research_pending {"pending"} else if research.is_some() {"completed"} else {"not_required"},
         "behavior_sources":analysis.solution_sources.iter().filter_map(|source|behavior_candidates.iter().find(|candidate|candidate["record"]["id"]==source.record_id).map(|candidate|json!({"problem_key":source.problem_key,"candidate":candidate}))).collect::<Vec<_>>(),
         "escalation_candidates":escalation_candidates,"team":team,"source_complete":source["more"] == false});
     Ok(AnalyzedWindow {
