@@ -16,6 +16,15 @@ SPEC.loader.exec_module(MODULE)
 
 
 class CheckCiResultsTests(unittest.TestCase):
+    def test_embedded_postgres_download_has_a_step_scoped_read_only_token(self):
+        workflow = (SCRIPT.parents[2] / ".github/workflows/ci.yml").read_text()
+        rust = workflow.split("  rust-test:\n", 1)[1].split("\n  web:\n", 1)[0]
+        step = rust.split("      - name: Rust tests\n", 1)[1].split("      - name:", 1)[0]
+        self.assertIn("GITHUB_TOKEN: ${{ github.token }}", step)
+        self.assertIn("permissions:\n  contents: read", workflow)
+        self.assertNotIn("contents: write", rust)
+        self.assertNotIn("GITHUB_TOKEN", workflow.split("\njobs:", 1)[0])
+
     def test_routing_portability_is_checked_separately_from_default_features(self) -> None:
         workflow = (SCRIPT.parents[2] / ".github/workflows/ci.yml").read_text()
         rust_job = workflow.split("  rust-test:\n", 1)[1].split("\n  web:\n", 1)[0]

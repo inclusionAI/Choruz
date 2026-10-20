@@ -27,6 +27,8 @@ bash .agents/skills/choruz-pr/pr-plan.sh <base-ref>  # for a stacked branch
 
 ## Select relevant evidence
 
+For any non-documentation diff, stage new source files and run `python3 scripts/check_architecture.py` plus `python3 -m unittest discover scripts/tests -p test_check_architecture.py`. The [boundary contract](../../../docs/testing/architecture-boundaries.md) owns coverage and limitations; these checks complement rather than replace the independent ownership audit.
+
 Every behaviour change needs the narrowest available test that would fail for its regression; add broader checks only for surfaces the diff reaches. When the change adds or changes a resource-owning, parallel, or asynchronous test, apply [choruz-ci-test-reliability](../choruz-ci-test-reliability/SKILL.md) first.
 
 First map the outgoing scope to the policy's [behaviour acceptance evidence](../../../docs/testing/pr-test-policy.md#behaviour-acceptance-evidence). Inspect the selected assertions against that contract. `pr-plan.sh` and `vitest related` discover candidate checks, not proof of coverage: configuration, dynamic loading, subprocesses, cross-device dispatch and built artifacts can cross boundaries the import graph does not express. Explicitly select their owning scenarios and add missing tests; an empty selection is not passing evidence. Do not widen every change to the full suite or add `--passWithNoTests` to hide a missing owner.

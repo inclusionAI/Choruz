@@ -44,6 +44,7 @@ CI runs what the changed paths need, and a pull request merges only on a green `
 
 ## Conventions
 
+- **One business owner per contract.** Extend the existing owner; adapters differ in transport or device environment, not copied business policy. Record ownership and removed paths, and run the [architecture boundary gate](docs/testing/architecture-boundaries.md).
 - **Every non-trivial change includes an Agent Note in the same pull request**; only mechanical or local edits are exempt ([scope](.agents/notes/README.md#when-to-write-one)). Archived notes are frozen: never edit them or treat them as current authority ([archive policy](.agents/notes/README.md#archiving-and-deletion)).
 - **Pick the change type first.** [docs/testing/pr-test-policy.md](docs/testing/pr-test-policy.md) maps each type to the tests it must add; the stricter row wins when a diff spans two. A `feature`, `api`, `database`, `security` or `auth` change walks [docs/adding-a-feature.md](docs/adding-a-feature.md) and records the seams it touched in the pull request. The pull request template asks for the type, the tests, what ran locally and the risk; fill it honestly and add the `database` or `security` label when the type calls for it.
 - **Tests describe behaviour, not correctness.** Change obsolete behaviour together with its tests and say why in the pull request. A test that passes only when it runs alone is a defect in the test: own every resource it acquires (see [e2e conventions](docs/testing/pr-test-policy.md)).
