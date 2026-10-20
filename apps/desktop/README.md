@@ -15,7 +15,7 @@ pnpm desktop:package
 
 The DMG and application are under `apps/desktop/dist/`. The runtime smoke check uses an isolated temporary data directory, authenticates through the real API, loads the workbench twice and verifies owned-service shutdown. Failed smoke checks retain their data and logs for diagnosis.
 
-The package targets macOS arm64. Without a valid Developer ID configuration it is unsigned and not notarized; a local build is not a notarized public release. First launch needs network access to download the embedded PostgreSQL distribution.
+The package targets macOS arm64. Without a valid Developer ID configuration it is unsigned and not notarized; a local build is not a notarized public release. First launch needs network access to download the exact PostgreSQL 16.15.0 distribution. Existing data from another major version is rejected without modification; preserve it and use the matching PostgreSQL server to make a backup before planning a compatible restore. Deleting data is not an installation-retry procedure.
 
 ## Application lifecycle
 

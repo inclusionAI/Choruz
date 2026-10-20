@@ -111,7 +111,9 @@ export function TerminalView({ bindingId, sessionToken, gatewayBaseUrl, socketEn
           term.write(`\r\n\x1b[32mTerminal reconnected, restoring session...\x1b[0m\r\n`);
         }
         retriesRef.current = 0;
-        term.clear();
+        // Queue a full reset after prior writes and before the new snapshot;
+        // clearing visible lines alone retains incomplete ANSI attributes.
+        term.write("\u001bc");
         term.focus();
         firstOutputSpan = trace.start("terminal_first_output", { bindingId });
       };

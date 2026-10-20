@@ -41,8 +41,10 @@ stored configuration and are excluded from that comparison.
 
 Host changes use the terminal launch guard. They stop the old device's process
 before clearing direct anchors and advancing the generation. A disconnected
-device must reconnect before its bindings move or are revoked: missing presence
-does not prove that its terminal children have stopped.
+device must reconnect before its live bindings move: missing presence does not
+prove that its terminal children have stopped. Device revocation instead uses
+the [durable execution fence](../bug-fix/2026-10-19-device-revocation-and-terminal-recovery.md),
+disables bindings without moving them, and remains available while offline.
 Assignment and revocation lock the target device row before binding launch
 guards, preventing a late assignment from attaching to a revoked device.
 

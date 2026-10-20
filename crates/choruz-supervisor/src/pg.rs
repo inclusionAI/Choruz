@@ -1,27 +1,30 @@
-//! Embedded Postgres — runs a real PostgreSQL 16 server out of the user's
-//! data dir, so `choruz-server` starts on a host without an installed
-//! PostgreSQL.
-//!
-//! - First launch: downloads the PG binary (~60 MB) from
-//!   https://github.com/theseus-rs/postgresql-binaries into `~/.theseus/`
-//!   (cached across reinstalls), runs `initdb` into our app's data dir,
-//!   creates the `choruz` database, applies every migration in
-//!   `migrations/*.sql`.
-//! - Subsequent launches: just `pg_ctl start`, then run any *new*
-//!   migrations (same tracking table shape as `infra/host/migrate.sh`).
-//! - On drop / host shutdown: `pg_ctl stop` via the inner handle.
-//!
-//! Port: bound to 5433 (not 5432) so it can coexist with a system
-//! Postgres if the user happens to have one. The actual URL given to
-//! gateway/pipeline comes from `settings().url("choruz")` so if we ever
-//! switch port selection strategy, downstream code doesn't care.
+//! An exact PostgreSQL distribution with private data and migration ownership.
+//! Installation and data live under `CHORUZ_DATA_DIR` (the OS data directory's
+//! `choruz` folder by default). First launch downloads the selected distribution;
+//! incompatible data is rejected before setup. Startup applies unapplied migrations,
+//! and the handle owns shutdown. The returned URL reflects the configured port.
 
-use postgresql_embedded::{PostgreSQL, SettingsBuilder};
+use postgresql_embedded::{PostgreSQL, Settings, SettingsBuilder, VersionReq};
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
 
 const DEFAULT_POSTGRES_COMMAND_TIMEOUT_SECS: u64 = 60;
+
+fn embedded_settings(
+    install_dir: PathBuf,
+    data_dir: PathBuf,
+    password_file: PathBuf,
+) -> Result<SettingsBuilder, String> {
+    Ok(SettingsBuilder::new()
+        .version(
+            VersionReq::parse("=16.15.0")
+                .map_err(|e| format!("embedded PostgreSQL version: {e}"))?,
+        )
+        .installation_dir(install_dir)
+        .data_dir(data_dir)
+        .password_file(password_file))
+}
 
 fn postgres_command_timeout(value: Option<&str>) -> Duration {
     let seconds = value
@@ -60,10 +63,7 @@ impl EmbeddedPg {
 
         tracing::info!(data_dir = %data_dir.display(), "embedded postgres booting");
 
-        let settings = SettingsBuilder::new()
-            .installation_dir(install_dir)
-            .data_dir(data_dir)
-            .password_file(password_file)
+        let settings = embedded_settings(install_dir, data_dir, password_file)?
             .port(
                 std::env::var("CHORUZ_POSTGRES_PORT")
                     .ok()
@@ -85,6 +85,11 @@ impl EmbeddedPg {
             )))
             .build();
 
+        Self::start(settings, migrations_dir).await
+    }
+
+    async fn start(settings: Settings, migrations_dir: &Path) -> Result<Self, String> {
+        validate_data_major(&settings.data_dir).await?;
         let mut pg = PostgreSQL::new(settings);
         pg.setup().await.map_err(|e| format!("pg setup: {e}"))?;
         pg.start().await.map_err(|e| format!("pg start: {e}"))?;
@@ -120,6 +125,23 @@ impl EmbeddedPg {
             Ok(()) => tracing::info!("embedded postgres stopped"),
             Err(e) => tracing::warn!(error = %e, "pg stop failed (probably already exited)"),
         }
+    }
+}
+
+async fn validate_data_major(data_dir: &Path) -> Result<(), String> {
+    let path = data_dir.join("PG_VERSION");
+    match tokio::fs::read_to_string(&path).await {
+        Ok(version) if version.trim() == "16" => Ok(()),
+        Ok(version) => Err(format!(
+            "{} contains PostgreSQL {}; Choruz requires PostgreSQL 16. The data was not changed. Use the matching PostgreSQL server to make a backup, then restore it into a separate PostgreSQL 16 database after checking compatibility. Do not delete this data directory to retry.",
+            data_dir.display(),
+            version.trim()
+        )),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!(
+            "read {} before PostgreSQL startup: {error}",
+            path.display()
+        )),
     }
 }
 
@@ -449,6 +471,137 @@ mod tests {
         DEFAULT_POSTGRES_COMMAND_TIMEOUT_SECS, contains_concurrently, postgres_command_timeout,
         sql_statements,
     };
+
+    #[test]
+    fn embedded_distribution_is_exact_not_an_upstream_latest_selection() {
+        let settings = super::embedded_settings("install".into(), "data".into(), "pass".into())
+            .unwrap()
+            .build();
+        assert_eq!(settings.version.to_string(), "=16.15.0");
+        assert!(
+            !settings
+                .version
+                .matches(&postgresql_embedded::Version::new(18, 6, 0))
+        );
+        assert!(
+            !settings
+                .version
+                .matches(&postgresql_embedded::Version::new(16, 16, 0))
+        );
+    }
+
+    #[tokio::test]
+    async fn incompatible_data_is_rejected_without_modifying_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().join("data");
+        std::fs::create_dir(&data).unwrap();
+        let version = data.join("PG_VERSION");
+        tokio::fs::write(&version, "18\n").await.unwrap();
+        let install = dir.path().join("install");
+        let settings = super::embedded_settings(install.clone(), data, dir.path().join("pass"))
+            .unwrap()
+            .port(0)
+            .build();
+        let error = match super::EmbeddedPg::start(settings, dir.path()).await {
+            Ok(pg) => {
+                pg.stop().await;
+                panic!("incompatible database was started");
+            }
+            Err(error) => error,
+        };
+        assert!(error.contains("PostgreSQL 18"), "{error}");
+        assert!(error.contains("backup"), "{error}");
+        assert_eq!(tokio::fs::read_to_string(&version).await.unwrap(), "18\n");
+        assert!(
+            !install.exists(),
+            "incompatible data must be rejected before installation"
+        );
+    }
+
+    #[tokio::test]
+    async fn compatible_and_uninitialized_data_are_accepted_but_unreadable_metadata_is_not() {
+        let dir = tempfile::tempdir().unwrap();
+        super::validate_data_major(dir.path()).await.unwrap();
+        let version = dir.path().join("PG_VERSION");
+        tokio::fs::write(&version, "16\n").await.unwrap();
+        super::validate_data_major(dir.path()).await.unwrap();
+        std::fs::remove_file(&version).unwrap();
+        std::fs::create_dir(&version).unwrap();
+        assert!(
+            super::validate_data_major(dir.path())
+                .await
+                .unwrap_err()
+                .contains("read")
+        );
+    }
+
+    #[tokio::test]
+    async fn embedded_first_install_and_restart_preserve_the_database() {
+        let dir = tempfile::tempdir().unwrap();
+        let migrations = dir.path().join("migrations");
+        std::fs::create_dir(&migrations).unwrap();
+        std::fs::write(
+            migrations.join("001_probe.sql"),
+            "CREATE TABLE install_probe (value TEXT);",
+        )
+        .unwrap();
+        for launch in 0..2 {
+            let settings = super::embedded_settings(
+                dir.path().join("install"),
+                dir.path().join("data"),
+                dir.path().join("pgpass"),
+            )
+            .unwrap()
+            .username("postgres")
+            .password("isolated-install-probe")
+            .port(0)
+            .temporary(false)
+            .timeout(Some(std::time::Duration::from_secs(60)))
+            .build();
+            let pg = super::EmbeddedPg::start(settings, &migrations)
+                .await
+                .unwrap();
+            let database_url = pg.database_url.clone();
+            let verification = tokio::spawn(async move {
+                let (client, connection) =
+                    tokio_postgres::connect(&database_url, tokio_postgres::NoTls)
+                        .await
+                        .unwrap();
+                let connection = tokio::spawn(connection);
+                let version: String = client
+                    .query_one("SHOW server_version", &[])
+                    .await
+                    .unwrap()
+                    .get(0);
+                assert!(version.starts_with("16.15"), "{version}");
+                if launch == 0 {
+                    client
+                        .execute("INSERT INTO install_probe VALUES ('retained')", &[])
+                        .await
+                        .unwrap();
+                } else {
+                    let retained: String = client
+                        .query_one("SELECT value FROM install_probe", &[])
+                        .await
+                        .unwrap()
+                        .get(0);
+                    assert_eq!(retained, "retained");
+                }
+                drop(client);
+                connection.await.unwrap().unwrap();
+            });
+            // Stop the owned server even when an assertion fails.
+            let result = verification.await;
+            pg.stop().await;
+            result.unwrap();
+        }
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("data/PG_VERSION"))
+                .unwrap()
+                .trim(),
+            "16"
+        );
+    }
 
     #[test]
     fn postgres_commands_allow_slow_first_start_and_an_explicit_override() {

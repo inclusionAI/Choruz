@@ -10,6 +10,12 @@ Smoke runners reset a database and, for restore checks, replace attachment data.
 
 The four destructive host smoke entry points delegate to `infra/host/isolated-smoke.mjs`. It allocates a private configuration and runtime tree, selects available loopback ports, and propagates that configuration to child host scripts. Development configuration and inherited database URLs are not inputs. PostgreSQL must stop before cleanup removes the owned data; logs survive for failure inspection.
 
+Remote Web E2E starts the gateway wrapper before controller-port allocation.
+Wrangler's active listeners are therefore excluded from the selected ports;
+starting it after releasing those reservations lets this same test invocation
+claim its own controller port. The allocator regression executes the real entry
+guards with a live wrapper listener and then binds the selected controller port.
+
 The existing [acceptance policy decision](../process/2026-09-04-behaviour-acceptance-evidence.md) remains active: it owns assertion quality and execution evidence, not the allocation mechanism. No active note is superseded.
 
 ## Alternatives considered

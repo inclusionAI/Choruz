@@ -5,7 +5,10 @@
 
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex as StdMutex},
+    sync::{
+        Arc, Mutex as StdMutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 
@@ -20,7 +23,7 @@ use choruz_common::AppError;
 use choruz_host_runtime::link::{ControllerFrame, DeviceFrame, LINK_PROTOCOL, LinkRequest};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{Notify, mpsc, oneshot};
 
 use crate::{ApiState, handlers_runtime_hosts};
 
@@ -48,6 +51,7 @@ impl HostLinkHub {
             outbound,
             pending: StdMutex::new(HashMap::new()),
             terminals: StdMutex::new(HashMap::new()),
+            closed: Notify::new(),
         });
         self.register(link.clone());
         (link, received)
@@ -58,6 +62,12 @@ impl HostLinkHub {
             .expect("host links lock")
             .get(host_id)
             .cloned()
+    }
+
+    pub(crate) fn revoke(&self, host_id: &str) {
+        if let Some(link) = self.links.lock().expect("host links lock").remove(host_id) {
+            link.close();
+        }
     }
 
     fn register(&self, link: Arc<HostLink>) -> Option<Arc<HostLink>> {
@@ -84,7 +94,14 @@ pub(crate) struct HostLink {
     pub(crate) host_name: String,
     outbound: mpsc::Sender<String>,
     pending: StdMutex<HashMap<String, oneshot::Sender<Result<Value, AppError>>>>,
-    terminals: StdMutex<HashMap<String, mpsc::Sender<Vec<u8>>>>,
+    terminals: StdMutex<HashMap<String, TerminalSubscriber>>,
+    closed: Notify,
+}
+
+#[derive(Clone)]
+struct TerminalSubscriber {
+    sender: mpsc::Sender<Vec<u8>>,
+    resync: Arc<AtomicBool>,
 }
 
 impl HostLink {
@@ -133,13 +150,23 @@ impl HostLink {
     /// Route the device's terminal output for `terminal_id` into a channel
     /// that closes when the device reports the terminal's exit or the link
     /// drops.
-    pub(crate) fn subscribe_terminal(&self, terminal_id: &str) -> mpsc::Receiver<Vec<u8>> {
+    pub(crate) fn subscribe_terminal(
+        &self,
+        terminal_id: &str,
+    ) -> (mpsc::Receiver<Vec<u8>>, Arc<AtomicBool>) {
         let (tx, rx) = mpsc::channel(TERMINAL_OUTPUT_CAPACITY);
+        let resync = Arc::new(AtomicBool::new(false));
         self.terminals
             .lock()
             .expect("terminal outputs lock")
-            .insert(terminal_id.to_owned(), tx);
-        rx
+            .insert(
+                terminal_id.to_owned(),
+                TerminalSubscriber {
+                    sender: tx,
+                    resync: resync.clone(),
+                },
+            );
+        (rx, resync)
     }
 
     pub(crate) fn unsubscribe_terminal(&self, terminal_id: &str) {
@@ -156,6 +183,7 @@ impl HostLink {
     }
 
     fn close(&self) {
+        self.closed.notify_one();
         let pending = std::mem::take(&mut *self.pending.lock().expect("pending calls lock"));
         for (_, reply) in pending {
             let _ = reply.send(Err(offline(&self.host_name)));
@@ -234,10 +262,28 @@ async fn serve_link(mut socket: WebSocket, state: ApiState) {
         outbound: outbound_tx,
         pending: StdMutex::new(HashMap::new()),
         terminals: StdMutex::new(HashMap::new()),
+        closed: Notify::new(),
     });
     if let Some(previous) = state.host_links.register(Arc::clone(&link)) {
         tracing::info!(host_id = %host.id, "replacing an existing host link");
         previous.close();
+    }
+    // Registration and revocation race independently of the initial hello.
+    // Publish before rechecking so revocation either removes this link or the
+    // second authorization check rejects a token fenced before publication.
+    if handlers_runtime_hosts::authenticate_host_token(&state, &host_id, &host_token)
+        .await
+        .is_err()
+    {
+        state.host_links.unregister(&link);
+        link.close();
+        let _ = socket
+            .send(WsMessage::Close(Some(axum::extract::ws::CloseFrame {
+                code: 4401,
+                reason: "runtime host authorization was revoked".into(),
+            })))
+            .await;
+        return;
     }
     let welcome = serde_json::to_string(&ControllerFrame::Welcome {
         host_name: host.name.clone(),
@@ -255,6 +301,10 @@ async fn serve_link(mut socket: WebSocket, state: ApiState) {
     let (mut sink, mut source) = socket.split();
     loop {
         tokio::select! {
+            _ = link.closed.notified() => {
+                let _ = sink.send(WsMessage::Close(None)).await;
+                break;
+            }
             frame = source.next() => {
                 match frame {
                     Some(Ok(WsMessage::Text(text))) => handle_device_frame(&link, &text),
@@ -307,10 +357,10 @@ fn handle_device_frame(link: &Arc<HostLink>, text: &str) {
             let Some(sender) = sender else { return };
             match choruz_host_runtime::link::decode_bytes(&data) {
                 Ok(bytes) => {
-                    // A consumer that cannot keep up drops frames, as a lagging
-                    // local subscriber does; the terminal repaints on demand.
-                    if let Err(mpsc::error::TrySendError::Full(_)) = sender.try_send(bytes) {
-                        tracing::warn!(host_id = %link.host_id, terminal_id, "terminal output consumer lagged, skipping frame");
+                    if let Err(mpsc::error::TrySendError::Full(_)) = sender.sender.try_send(bytes) {
+                        tracing::warn!(host_id = %link.host_id, terminal_id, "terminal output lost synchronization; reconnecting for a snapshot");
+                        sender.resync.store(true, Ordering::Release);
+                        link.unsubscribe_terminal(&terminal_id);
                     }
                 }
                 Err(error) => {
@@ -319,11 +369,126 @@ fn handle_device_frame(link: &Arc<HostLink>, text: &str) {
             }
         }
         DeviceFrame::TerminalExit { terminal_id } => link.unsubscribe_terminal(&terminal_id),
+        DeviceFrame::TerminalResync { terminal_id } => {
+            if let Some(subscriber) = link
+                .terminals
+                .lock()
+                .expect("terminal outputs lock")
+                .remove(&terminal_id)
+            {
+                subscriber.resync.store(true, Ordering::Release);
+            }
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn lagging_terminal_attachment_recovers_the_same_device_screen() {
+        use super::*;
+        use crate::host_runtime::RuntimeHost;
+        use choruz_host_runtime::link::{DeviceIdentity, encode_bytes, run_device_link};
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let cli = directory.path().join("cli");
+        std::fs::write(&cli, "#!/bin/sh\nprintf '\\033[2J\\033[HDEVICE READY\\r\\n'\nwhile IFS= read -r line; do printf '%s\\r\\n' \"$line\"; done\n").unwrap();
+        std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let pool = choruz_host_runtime::new_terminal_pool();
+        let hub = HostLinkHub::default();
+        let (link, mut calls) = hub.decision_fixture("screen-device");
+        let (to_device, incoming) = mpsc::channel(64);
+        let (outgoing, mut from_device) = mpsc::channel(64);
+        let device = tokio::spawn(run_device_link(
+            outgoing,
+            incoming,
+            DeviceIdentity {
+                host_id: "screen-device".into(),
+                host_token: "fixture".into(),
+            },
+            pool.clone(),
+        ));
+        let hello: DeviceFrame = serde_json::from_str(&from_device.recv().await.unwrap()).unwrap();
+        assert!(matches!(hello, DeviceFrame::Hello { .. }));
+        to_device
+            .send(
+                serde_json::to_string(&ControllerFrame::Welcome {
+                    host_name: "Device B".into(),
+                })
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let routing_link = link.clone();
+        let router = tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    Some(call)=calls.recv()=>{ if to_device.send(call).await.is_err(){break;} }
+                    Some(frame)=from_device.recv()=>handle_device_frame(&routing_link,&frame),
+                    else=>break,
+                }
+            }
+        });
+        let host = RuntimeHost::Linked(link.clone());
+        host.ensure_terminal(choruz_host_runtime::TerminalSpec {
+            authentication: false,
+            terminal_id: "screen".into(),
+            driver_type: "claude_terminal".into(),
+            binary_path: Some(cli.to_string_lossy().into_owned()),
+            workspace_path: directory.path().to_string_lossy().into_owned(),
+            cols: 80,
+            rows: 24,
+            resume_session_id: None,
+            codex_home: None,
+            model: None,
+            harness_account: serde_json::json!({}),
+        })
+        .await
+        .unwrap();
+        let original = pool.lock().unwrap().get("screen").unwrap().clone();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if original
+                    .subscribe_with_replay()
+                    .0
+                    .concat()
+                    .windows(12)
+                    .any(|part| part == b"DEVICE READY")
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("real device child produces its screen");
+        let mut attachment = host.attach_terminal("screen").await.unwrap();
+        // Saturate only this controller consumer. The actual device process,
+        // link dispatcher and snapshot remain real; no successful reply is mocked.
+        for _ in 0..=TERMINAL_OUTPUT_CAPACITY {
+            let frame = DeviceFrame::TerminalOutput {
+                terminal_id: "screen".into(),
+                data: encode_bytes(b"incremental\r\n"),
+            };
+            handle_device_frame(&link, &serde_json::to_string(&frame).unwrap());
+        }
+        assert!(attachment.resync.load(Ordering::Acquire));
+        while attachment.output.recv().await.is_some() {}
+        let restored = host.attach_terminal("screen").await.unwrap();
+        assert!(!restored.resync.load(Ordering::Acquire));
+        assert!(String::from_utf8_lossy(&restored.replay.concat()).contains("DEVICE READY"));
+        assert!(
+            Arc::ptr_eq(&original, pool.lock().unwrap().get("screen").unwrap()),
+            "recovery must not restart or duplicate native work"
+        );
+        assert!(original.is_child_alive());
+        let _ = host.close_terminal("screen").await;
+        router.abort();
+        let _ = router.await;
+        device.await.unwrap().unwrap();
+    }
+
     #[tokio::test(start_paused = true)]
     async fn browser_call_waits_for_the_device_budget_and_cleanup() {
         use super::*;

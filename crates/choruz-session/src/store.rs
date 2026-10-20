@@ -1946,17 +1946,27 @@ pub async fn runtime_host_metadata(
     if disabled {
         return Err(SessionError::Conflict("agent is disabled".into()));
     }
-    let runtime_host_id = tx
+    let binding = tx
         .query_opt(
-            "SELECT config_json->>'runtime_host_id' AS runtime_host_id
-             FROM agent_runtime_bindings
-             WHERE agent_principal_id = $1 AND state != 'disabled'
+            "SELECT config_json->>'runtime_host_id' AS runtime_host_id, state,
+                    EXISTS (SELECT 1 FROM runtime_host h
+                            WHERE h.id = b.config_json->>'runtime_host_id' AND h.revoked_at IS NOT NULL) AS host_revoked
+             FROM agent_runtime_bindings b
+             WHERE agent_principal_id = $1
              ORDER BY updated_at DESC
              LIMIT 1",
             &[&agent_id],
         )
-        .await?
-        .and_then(|row| row.get::<_, Option<String>>("runtime_host_id"));
+        .await?;
+    if binding.as_ref().is_some_and(|row| {
+        row.get::<_, String>("state") == "disabled" || row.get::<_, bool>("host_revoked")
+    }) {
+        return Err(SessionError::Conflict(
+            "agent execution is disabled; select an available device before starting new work"
+                .into(),
+        ));
+    }
+    let runtime_host_id = binding.and_then(|row| row.get::<_, Option<String>>("runtime_host_id"));
     let mut metadata = metadata.as_object().cloned().ok_or_else(|| {
         SessionError::Internal("agent command metadata must be a JSON object".into())
     })?;

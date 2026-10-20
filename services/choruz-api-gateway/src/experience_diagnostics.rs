@@ -11,6 +11,7 @@ pub(crate) struct LearningCheck<'a> {
     pub state: &'a ApiState,
     pub claim: &'a ExperienceClaim,
     pub id: String,
+    scope: std::sync::OnceLock<String>,
 }
 
 impl<'a> LearningCheck<'a> {
@@ -19,7 +20,15 @@ impl<'a> LearningCheck<'a> {
             state,
             claim,
             id: choruz_common::new_id(),
+            scope: std::sync::OnceLock::new(),
         }
+    }
+
+    pub fn scope_window(&self, window: &Value) -> Result<(), AppError> {
+        let bytes = serde_json::to_vec(window).map_err(|e| AppError::Internal(e.to_string()))?;
+        self.scope
+            .set(digest(&bytes))
+            .map_err(|_| AppError::Internal("Learning window scope was set twice".into()))
     }
 
     pub async fn record(&self, stage: &str, data: Value) -> Result<(), AppError> {
@@ -54,6 +63,53 @@ impl<'a> LearningCheck<'a> {
         stage: &str,
         request: HostRequest,
     ) -> Result<T, AppError> {
+        let checkpointed = matches!(
+            &request,
+            HostRequest::AnalyzeExperience { .. }
+                | HostRequest::ReviewExperience { .. }
+                | HostRequest::ResearchExperience { .. }
+                | HostRequest::ReviewTasks { .. }
+                | HostRequest::EvaluateExperience { .. }
+        );
+        let checkpoint = if checkpointed {
+            // Hash the complete private execution context without storing it.
+            // Procedure changes cannot reuse an old model answer.
+            let mut request_key =
+                serde_json::to_value(&request).map_err(|e| AppError::Internal(e.to_string()))?;
+            if let Some(spec) = request_key.get_mut("spec") {
+                spec["harness_account"] = execution_context(match &request {
+                    HostRequest::AnalyzeExperience { spec, .. }
+                    | HostRequest::ReviewExperience { spec, .. }
+                    | HostRequest::ResearchExperience { spec, .. }
+                    | HostRequest::ReviewTasks { spec, .. }
+                    | HostRequest::EvaluateExperience { spec, .. } => spec,
+                    _ => unreachable!(),
+                });
+            }
+            let encoded = serde_json::to_vec(&(
+                request_key,
+                self.scope.get(),
+                choruz_learning::ANALYSIS_SKILL,
+                choruz_learning::REVIEW_SKILL,
+                choruz_learning::TASK_REVIEW_SKILL,
+            ))
+            .map_err(|e| AppError::Internal(format!("encode learning stage key: {e}")))?;
+            let key = digest(&encoded);
+            if let Some(value) = self
+                .state
+                .db
+                .begin_experience_stage(self.claim, stage, &key)
+                .await?
+            {
+                self.record(stage, json!({"outcome":"checkpoint_reused"}))
+                    .await?;
+                return serde_json::from_value(value)
+                    .map_err(|e| AppError::Internal(format!("decode learning checkpoint: {e}")));
+            }
+            Some(key)
+        } else {
+            None
+        };
         // Never serialize TerminalSpec: it contains device-local account configuration.
         let input = match &request {
             HostRequest::AnalyzeExperience { prompt, .. }
@@ -96,6 +152,33 @@ impl<'a> LearningCheck<'a> {
         } else {
             host.call(request).await
         };
+        let result: Result<T, AppError> = result.and_then(|value| {
+            serde_json::to_value(value)
+                .map(choruz_activity::sanitize_value)
+                .and_then(serde_json::from_value)
+                .map_err(|e| AppError::Internal(format!("redact learning stage response: {e}")))
+        });
+        if let Some(key) = checkpoint {
+            let encoded = result
+                .as_ref()
+                .ok()
+                .map(serde_json::to_value)
+                .transpose()
+                .map_err(|e| AppError::Internal(format!("encode learning checkpoint: {e}")))?;
+            // A validation/auth failure is an observed response. Transport and
+            // interruption errors may have incurred a charge and need consent.
+            let retryable = matches!(
+                &result,
+                Err(AppError::Validation(_)
+                    | AppError::Unauthorized(_)
+                    | AppError::Forbidden(_)
+                    | AppError::NotFound(_))
+            );
+            self.state
+                .db
+                .finish_experience_stage(self.claim, stage, &key, encoded.as_ref(), retryable)
+                .await?;
+        }
         let details = match &result {
             Ok(value) => {
                 let encoded = serde_json::to_vec(value)
@@ -111,6 +194,12 @@ impl<'a> LearningCheck<'a> {
         .await?;
         result
     }
+}
+
+pub(crate) fn execution_context(spec: &choruz_host_runtime::TerminalSpec) -> Value {
+    json!({"driver":spec.driver_type,"binary":spec.binary_path,"workspace":spec.workspace_path,"model":spec.model,
+        "host":spec.harness_account["runtime_host_id"],"account":spec.harness_account["harness_account_id"],
+        "profile":spec.harness_account["harness_account_profile_kind"],"directory":spec.harness_account["harness_account_profile_directory"]})
 }
 
 fn digest(bytes: &[u8]) -> String {

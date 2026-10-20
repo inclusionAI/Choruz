@@ -109,6 +109,16 @@ pub(crate) async fn build(
     {
         ProgramTrialAdmission::Reserved(key) => key,
         ProgramTrialAdmission::Existing(status) => {
+            if status == "completed"
+                && let Some(mut report) = state
+                    .db
+                    .completed_decision_program_trial(claim, &corpus, &context)
+                    .await?
+            {
+                report["trial_state"] = json!(status);
+                report["context"] = context;
+                return Ok(report);
+            }
             return Ok(
                 json!({"corpus":corpus,"status":"configuration_reserved_or_completed","trial_state":status}),
             );

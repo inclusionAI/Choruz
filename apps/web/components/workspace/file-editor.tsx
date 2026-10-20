@@ -1,9 +1,10 @@
 "use client";
 import { lazy, Suspense, useState, useEffect, useCallback, useRef } from "react";
+import { useTheme } from "next-themes";
 import { trace } from "../../lib/api/choruz-trace";
 import { Spinner } from "../ui/spinner";
 import { EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter, drawSelection } from "@codemirror/view";
-import { EditorState } from "@codemirror/state";
+import { Compartment, EditorState } from "@codemirror/state";
 import { defaultKeymap, indentWithTab, history, historyKeymap } from "@codemirror/commands";
 import { syntaxHighlighting, HighlightStyle, bracketMatching, foldGutter } from "@codemirror/language";
 import { searchKeymap, highlightSelectionMatches } from "@codemirror/search";
@@ -20,52 +21,63 @@ remarkGfmModule.then((mod) => { _remarkGfm = mod; });
 
 const MARKDOWN_EXTS = new Set(["md", "mdx", "markdown"]);
 
-// Custom dark theme matching Choruz's #0a0a0a background
-const choruzTheme = EditorView.theme({
-  "&": {
-    backgroundColor: "var(--bg, #0a0a0a)",
-    color: "var(--text, #e4e4e7)",
-  },
-  ".cm-content": { caretColor: "var(--accent, #06a590)" },
-  ".cm-cursor": { borderLeftColor: "var(--accent, #06a590)" },
-  ".cm-activeLine": { backgroundColor: "rgba(255,255,255,0.03)" },
-  ".cm-activeLineGutter": { backgroundColor: "rgba(255,255,255,0.03)" },
-  ".cm-gutters": {
-    backgroundColor: "var(--bg, #0a0a0a)",
-    color: "rgba(255,255,255,0.2)",
-    borderRight: "1px solid var(--border, #222)",
-  },
-  ".cm-lineNumbers .cm-gutterElement": { color: "rgba(255,255,255,0.2)" },
-  ".cm-foldGutter .cm-gutterElement": { color: "rgba(255,255,255,0.15)" },
-  ".cm-selectionBackground, &.cm-focused .cm-selectionBackground": {
-    backgroundColor: "rgba(16,185,129,0.15) !important",
-  },
-  ".cm-matchingBracket": { backgroundColor: "rgba(16,185,129,0.2)", color: "inherit !important" },
-  ".cm-searchMatch": { backgroundColor: "rgba(234,179,8,0.25)" },
-  ".cm-searchMatch.cm-searchMatch-selected": { backgroundColor: "rgba(234,179,8,0.4)" },
-  ".cm-selectionMatch": { backgroundColor: "rgba(16,185,129,0.1)" },
-}, { dark: true });
+function editorAppearance(dark: boolean) {
+  const colors = dark
+    ? {
+      keyword: "#c792ea", operator: "#89ddff", string: "#c3e88d", number: "#f78c6c", bool: "#ff5874",
+      comment: "#98a7ae", function: "#82aaff", type: "#ffcb6b", property: "#f07178", variable: "#e4e4e7", gutter: "#969696",
+    }
+    : {
+      keyword: "#733c97", operator: "#285d70", string: "#3d6417", number: "#96421b", bool: "#a92140",
+      comment: "#54636a", function: "#315fa3", type: "#785319", property: "#a13048", variable: "#141413", gutter: "#696359",
+    };
+  const theme = EditorView.theme({
+    "&": {
+      backgroundColor: "var(--bg, #0a0a0a)",
+      color: "var(--text, #e4e4e7)",
+    },
+    ".cm-content": { caretColor: "var(--accent, #06a590)" },
+    ".cm-cursor": { borderLeftColor: "var(--accent, #06a590)" },
+    ".cm-activeLine": { backgroundColor: dark ? "rgba(255,255,255,0.03)" : "rgba(20,20,19,0.04)" },
+    ".cm-activeLineGutter": { backgroundColor: dark ? "rgba(255,255,255,0.03)" : "rgba(20,20,19,0.04)" },
+    ".cm-gutters": {
+      backgroundColor: "var(--bg, #0a0a0a)",
+      color: colors.gutter,
+      borderRight: "1px solid var(--border, #222)",
+    },
+    ".cm-lineNumbers .cm-gutterElement": { color: colors.gutter },
+    ".cm-foldGutter .cm-gutterElement": { color: colors.gutter },
+    ".cm-selectionBackground, &.cm-focused .cm-selectionBackground": {
+      backgroundColor: "rgba(16,185,129,0.15) !important",
+    },
+    ".cm-matchingBracket": { backgroundColor: "rgba(16,185,129,0.2)", color: "inherit !important" },
+    ".cm-searchMatch": { backgroundColor: "rgba(234,179,8,0.25)" },
+    ".cm-searchMatch.cm-searchMatch-selected": { backgroundColor: "rgba(234,179,8,0.4)" },
+    ".cm-selectionMatch": { backgroundColor: "rgba(16,185,129,0.1)" },
+  }, { dark });
 
-const choruzHighlight = HighlightStyle.define([
-  { tag: tags.keyword, color: "#c792ea" },
-  { tag: tags.operator, color: "#89ddff" },
-  { tag: tags.string, color: "#c3e88d" },
-  { tag: tags.number, color: "#f78c6c" },
-  { tag: tags.bool, color: "#ff5874" },
-  { tag: tags.comment, color: "#546e7a", fontStyle: "italic" },
-  { tag: tags.function(tags.variableName), color: "#82aaff" },
-  { tag: tags.typeName, color: "#ffcb6b" },
-  { tag: tags.className, color: "#ffcb6b" },
-  { tag: tags.propertyName, color: "#f07178" },
-  { tag: tags.definition(tags.variableName), color: "#82aaff" },
-  { tag: tags.variableName, color: "#e4e4e7" },
-  { tag: tags.heading, color: "#c792ea", fontWeight: "bold" },
-  { tag: tags.link, color: "#06a590", textDecoration: "underline" },
-  { tag: tags.meta, color: "#546e7a" },
-  { tag: tags.tagName, color: "#f07178" },
-  { tag: tags.attributeName, color: "#ffcb6b" },
-  { tag: tags.attributeValue, color: "#c3e88d" },
-]);
+  const highlight = HighlightStyle.define([
+    { tag: tags.keyword, color: colors.keyword },
+    { tag: tags.operator, color: colors.operator },
+    { tag: tags.string, color: colors.string },
+    { tag: tags.number, color: colors.number },
+    { tag: tags.bool, color: colors.bool },
+    { tag: tags.comment, color: colors.comment, fontStyle: "italic" },
+    { tag: tags.function(tags.variableName), color: colors.function },
+    { tag: tags.typeName, color: colors.type },
+    { tag: tags.className, color: colors.type },
+    { tag: tags.propertyName, color: colors.property },
+    { tag: tags.definition(tags.variableName), color: colors.function },
+    { tag: tags.variableName, color: colors.variable },
+    { tag: tags.heading, color: colors.keyword, fontWeight: "bold" },
+    { tag: tags.link, color: colors.operator, textDecoration: "underline" },
+    { tag: tags.meta, color: colors.comment },
+    { tag: tags.tagName, color: colors.property },
+    { tag: tags.attributeName, color: colors.type },
+    { tag: tags.attributeValue, color: colors.string },
+  ]);
+  return [theme, syntaxHighlighting(highlight, { fallback: true })];
+}
 
 // Language imports (lazy)
 const LANG_LOADERS: Record<string, () => Promise<{ default: any } | any>> = {
@@ -94,6 +106,10 @@ type FileEditorProps = {
 };
 
 export function FileEditor({ principalId, filePath, workspaceId, sessionToken, onClose, onDirty }: FileEditorProps) {
+  const { resolvedTheme } = useTheme();
+  const appearance = useRef(new Compartment());
+  const darkTheme = useRef(resolvedTheme === "dark");
+  darkTheme.current = resolvedTheme === "dark";
   const [content, setContent] = useState<string | null>(null);
   const [originalContent, setOriginalContent] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -103,6 +119,10 @@ export function FileEditor({ principalId, filePath, workspaceId, sessionToken, o
   const editorRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   const contentRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    viewRef.current?.dispatch({ effects: appearance.current.reconfigure(editorAppearance(resolvedTheme === "dark")) });
+  }, [resolvedTheme]);
 
   const ext = filePath.split('.').pop()?.toLowerCase() || '';
   const isMarkdown = MARKDOWN_EXTS.has(ext);
@@ -231,8 +251,6 @@ export function FileEditor({ principalId, filePath, workspaceId, sessionToken, o
       foldGutter(),
       history(),
       highlightSelectionMatches(),
-      choruzTheme,
-      syntaxHighlighting(choruzHighlight, { fallback: true }),
       keymap.of([
         ...defaultKeymap,
         ...historyKeymap,
@@ -261,7 +279,7 @@ export function FileEditor({ principalId, filePath, workspaceId, sessionToken, o
       if (cancelled || !editorRef.current) return;
       const state = EditorState.create({
         doc: content,
-        extensions: langExt ? [...extensions, langExt] : extensions,
+        extensions: [...extensions, appearance.current.of(editorAppearance(darkTheme.current)), ...(langExt ? [langExt] : [])],
       });
       viewRef.current = new EditorView({
         state,

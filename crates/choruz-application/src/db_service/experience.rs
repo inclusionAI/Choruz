@@ -68,6 +68,126 @@ pub struct ExperienceTurn {
 }
 
 impl DbService {
+    /// One private, projected source window per opted-in binding. Saving settings
+    /// cancels it through the policy-generation trigger, including stored results.
+    pub async fn experience_window(
+        &self,
+        claim: &ExperienceClaim,
+        proposed: Option<&Value>,
+    ) -> Result<Option<Value>, AppError> {
+        let mut client = self.store.connect().await?;
+        let tx = client
+            .transaction()
+            .await
+            .map_err(|e| AppError::Internal(e.to_string()))?;
+        if tx.query_opt("SELECT binding_id FROM experience_policy WHERE workspace_id=$1 AND binding_id=$2 AND generation=$3 AND lease_token=$4 AND enabled AND lease_until>NOW() FOR UPDATE", &[&claim.workspace_id,&claim.binding_id,&claim.generation,&claim.token]).await.map_err(|e|AppError::Internal(e.to_string()))?.is_none() {
+            return Err(AppError::Conflict("Learning settings changed before restoring its window".into()));
+        }
+        if let Some(payload) = proposed {
+            if payload.to_string().len() > 1024 * 1024 {
+                return Err(AppError::Validation(
+                    "Learning continuation exceeds its private storage bound".into(),
+                ));
+            }
+            tx.execute("INSERT INTO experience_window_checkpoint(workspace_id,binding_id,policy_generation,payload) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING", &[&claim.workspace_id,&claim.binding_id,&claim.generation,&payload]).await.map_err(|e|AppError::Internal(e.to_string()))?;
+        }
+        let row = tx.query_opt("SELECT payload FROM experience_window_checkpoint WHERE workspace_id=$1 AND binding_id=$2 AND policy_generation=$3", &[&claim.workspace_id,&claim.binding_id,&claim.generation]).await.map_err(|e|AppError::Internal(e.to_string()))?;
+        tx.commit()
+            .await
+            .map_err(|e| AppError::Internal(e.to_string()))?;
+        Ok(row.map(|row| row.get(0)))
+    }
+
+    pub async fn finish_experience_window(&self, claim: &ExperienceClaim) -> Result<(), AppError> {
+        let mut client = self.store.connect().await?;
+        let tx = client
+            .transaction()
+            .await
+            .map_err(|e| AppError::Internal(e.to_string()))?;
+        if tx.query_opt("SELECT binding_id FROM experience_policy WHERE workspace_id=$1 AND binding_id=$2 AND generation=$3 AND lease_token=$4 AND enabled AND lease_until>NOW() FOR UPDATE", &[&claim.workspace_id,&claim.binding_id,&claim.generation,&claim.token]).await.map_err(|e|AppError::Internal(e.to_string()))?.is_none() {
+            return Err(AppError::Conflict("Learning settings changed before completing its window".into()));
+        }
+        tx.execute("DELETE FROM experience_window_checkpoint WHERE workspace_id=$1 AND binding_id=$2 AND policy_generation=$3", &[&claim.workspace_id,&claim.binding_id,&claim.generation]).await.map_err(|e|AppError::Internal(e.to_string()))?;
+        tx.execute("DELETE FROM experience_stage_checkpoint WHERE workspace_id=$1 AND binding_id=$2 AND policy_generation=$3", &[&claim.workspace_id,&claim.binding_id,&claim.generation]).await.map_err(|e|AppError::Internal(e.to_string()))?;
+        tx.commit()
+            .await
+            .map_err(|e| AppError::Internal(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Renew only the live reservation; saving settings or disabling consent fences it.
+    pub async fn renew_experience(&self, claim: &ExperienceClaim) -> Result<bool, AppError> {
+        Ok(self.store.connect().await?.execute(
+            "UPDATE experience_policy SET lease_until=NOW()+INTERVAL '15 minutes' WHERE workspace_id=$1 AND binding_id=$2 AND generation=$3 AND lease_token=$4 AND enabled AND lease_until>NOW()",
+            &[&claim.workspace_id,&claim.binding_id,&claim.generation,&claim.token],
+        ).await.map_err(|e|AppError::Internal(format!("renew learning claim: {e}")))? == 1)
+    }
+
+    /// Successful pure model stages survive retries. An interrupted dispatch is
+    /// not silently charged again; saving learning settings starts a new generation.
+    pub async fn begin_experience_stage(
+        &self,
+        claim: &ExperienceClaim,
+        stage: &str,
+        digest: &str,
+    ) -> Result<Option<Value>, AppError> {
+        let mut client = self.store.connect().await?;
+        let tx = client
+            .transaction()
+            .await
+            .map_err(|e| AppError::Internal(e.to_string()))?;
+        if tx.query_opt("SELECT binding_id FROM experience_policy WHERE workspace_id=$1 AND binding_id=$2 AND generation=$3 AND lease_token=$4 AND enabled AND lease_until>NOW() FOR UPDATE", &[&claim.workspace_id,&claim.binding_id,&claim.generation,&claim.token]).await.map_err(|e|AppError::Internal(e.to_string()))?.is_none() {
+            return Err(AppError::Conflict("Learning settings changed or its reservation expired".into()));
+        }
+        let prior = tx.query_opt("SELECT state,result,attempts FROM experience_stage_checkpoint WHERE workspace_id=$1 AND binding_id=$2 AND policy_generation=$3 AND stage=$4 AND request_digest=$5", &[&claim.workspace_id,&claim.binding_id,&claim.generation,&stage,&digest]).await.map_err(|e|AppError::Internal(e.to_string()))?;
+        if let Some(row) = prior {
+            match row.get::<_, String>("state").as_str() {
+                "completed" => return Ok(Some(row.get("result"))),
+                "retryable" => {
+                    if row.get::<_, i32>("attempts") >= 3 {
+                        return Err(AppError::Validation("Learning stage exhausted three observed attempts. Check the dependency and save learning settings to authorize another attempt.".into()));
+                    }
+                }
+                _ => {
+                    tx.execute("UPDATE experience_stage_checkpoint SET state='uncertain',updated_at=NOW() WHERE workspace_id=$1 AND binding_id=$2 AND policy_generation=$3 AND stage=$4 AND request_digest=$5 AND state='running'", &[&claim.workspace_id,&claim.binding_id,&claim.generation,&stage,&digest]).await.map_err(|e|AppError::Internal(e.to_string()))?;
+                    tx.commit()
+                        .await
+                        .map_err(|e| AppError::Internal(e.to_string()))?;
+                    return Err(AppError::Conflict("A prior learning model call has an unknown outcome. Save learning settings to cancel this continuation and authorize a fresh attempt.".into()));
+                }
+            }
+        }
+        tx.execute("INSERT INTO experience_stage_checkpoint(workspace_id,binding_id,policy_generation,stage,request_digest,claim_token,state) VALUES($1,$2,$3,$4,$5,$6,'running') ON CONFLICT(workspace_id,binding_id,policy_generation,stage,request_digest) DO UPDATE SET state='running',claim_token=EXCLUDED.claim_token,result=NULL,attempts=experience_stage_checkpoint.attempts+1,updated_at=NOW()", &[&claim.workspace_id,&claim.binding_id,&claim.generation,&stage,&digest,&claim.token]).await.map_err(|e|AppError::Internal(e.to_string()))?;
+        tx.commit()
+            .await
+            .map_err(|e| AppError::Internal(e.to_string()))?;
+        Ok(None)
+    }
+
+    pub async fn finish_experience_stage(
+        &self,
+        claim: &ExperienceClaim,
+        stage: &str,
+        digest: &str,
+        result: Option<&Value>,
+        retryable: bool,
+    ) -> Result<(), AppError> {
+        let status = if result.is_some() {
+            "completed"
+        } else if retryable {
+            "retryable"
+        } else {
+            "uncertain"
+        };
+        let changed = self.store.connect().await?.execute("UPDATE experience_stage_checkpoint s SET state=$7,result=$8,updated_at=NOW() FROM experience_policy p WHERE s.workspace_id=$1 AND s.binding_id=$2 AND s.policy_generation=$3 AND s.stage=$4 AND s.request_digest=$5 AND s.claim_token=$6 AND s.state='running' AND p.workspace_id=s.workspace_id AND p.binding_id=s.binding_id AND p.generation=s.policy_generation AND p.lease_token=$6 AND p.enabled AND p.lease_until>NOW()", &[&claim.workspace_id,&claim.binding_id,&claim.generation,&stage,&digest,&claim.token,&status,&result]).await.map_err(|e|AppError::Internal(e.to_string()))?;
+        if changed != 1 {
+            return Err(AppError::Conflict(
+                "Learning settings changed before stage checkpoint".into(),
+            ));
+        }
+        Ok(())
+    }
+
     pub async fn configure_decisions(
         &self,
         workspace: &str,
@@ -216,6 +336,33 @@ impl DbService {
         claim: &ExperienceClaim,
         references: &[String],
     ) -> Result<Vec<String>, AppError> {
+        self.experience_feedback_references_inner(claim, references, true)
+            .await
+    }
+
+    /// Pending windows have not consumed their cursor, but every referenced
+    /// feedback message must still belong to a currently shared conversation.
+    pub async fn experience_window_feedback_current(
+        &self,
+        claim: &ExperienceClaim,
+        references: &[String],
+    ) -> Result<bool, AppError> {
+        let mut references = references.to_vec();
+        references.sort();
+        references.dedup();
+        Ok(self
+            .experience_feedback_references_inner(claim, &references, false)
+            .await?
+            .len()
+            == references.len())
+    }
+
+    async fn experience_feedback_references_inner(
+        &self,
+        claim: &ExperienceClaim,
+        references: &[String],
+        committed: bool,
+    ) -> Result<Vec<String>, AppError> {
         let ids: Vec<_> = references
             .iter()
             .filter_map(|r| r.strip_prefix("message:"))
@@ -236,11 +383,14 @@ impl DbService {
         Ok(rows
             .into_iter()
             .filter_map(|row| {
+                let reference = format!("message:{}", row.get::<_, String>("event_id"));
+                if !committed {
+                    return Some(reference);
+                }
                 let conversation: String = row.get("conversation_id");
                 let seq: i64 = row.get("seq");
                 let after = claim.source_cursor["feedback"][&conversation].as_u64()?;
-                (u64::try_from(seq).ok()? <= after)
-                    .then(|| format!("message:{}", row.get::<_, String>("event_id")))
+                (u64::try_from(seq).ok()? <= after).then_some(reference)
             })
             .collect())
     }

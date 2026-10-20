@@ -7,6 +7,9 @@ import { transportFetch } from "../../lib/api/transport";
 import { trace } from "../../lib/api/choruz-trace";
 import { readDraft, writeDraft, writeSessionDraft } from "../../lib/chat-drafts";
 import type { ProvisionResponse } from "../../lib/agents/agent-provisioning";
+import { creatableAgentDriverIds, isTerminalDriver } from "../../lib/drivers/driver-registry";
+
+const taskDriverIds = new Set(creatableAgentDriverIds(new Set()).filter(isTerminalDriver));
 
 type Props = {
   principalId: string;
@@ -32,7 +35,7 @@ export function TaskStart({ principalId, companyId, projectName, workspacePath, 
   const inFlight = useRef(false);
   const { availability, loaded, error: availabilityError } = useDriverAvailability();
   const drivers = availability.filter((item) =>
-    (item.driverId === "codex_terminal" || item.driverId === "claude_terminal") && item.status === "available",
+    taskDriverIds.has(item.driverId) && item.status === "available",
   );
   const selected = drivers.find((item) => item.driverId === driver) ?? drivers[0];
 
@@ -98,7 +101,10 @@ export function TaskStart({ principalId, companyId, projectName, workspacePath, 
             }
           }} />
         <div className="task-start-controls">
-          <select aria-label="Task harness" disabled={busy || !loaded} value={selected?.driverId ?? ""} onChange={(event) => setDriver(event.target.value)}>
+          <select aria-label="Task harness" disabled={busy || !loaded} value={selected?.driverId ?? ""} onChange={(event) => {
+            setDriver(event.target.value);
+            setModel("");
+          }}>
             {!drivers.length && <option value="">{loaded ? "No supported CLI installed" : "Checking available agents…"}</option>}
             {drivers.map((item) => <option key={item.driverId} value={item.driverId}>{item.label}</option>)}
           </select>

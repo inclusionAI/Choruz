@@ -26,6 +26,7 @@ use crate::{ApiState, host_link::HostLink};
 pub(crate) struct TerminalAttachment {
     pub(crate) replay: Vec<Vec<u8>>,
     pub(crate) output: mpsc::Receiver<Vec<u8>>,
+    pub(crate) resync: Arc<std::sync::atomic::AtomicBool>,
 }
 
 #[derive(Clone)]
@@ -162,6 +163,8 @@ impl RuntimeHost {
                 let (replay, mut broadcast) = session.subscribe_with_replay();
                 let (tx, rx) = mpsc::channel(256);
                 let liveness = Arc::clone(&session);
+                let resync = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let lost = resync.clone();
                 tokio::spawn(async move {
                     loop {
                         tokio::select! {
@@ -172,7 +175,9 @@ impl RuntimeHost {
                                     }
                                 }
                                 Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                                    tracing::warn!(skipped, "PTY output consumer lagged, skipping frames");
+                                    tracing::warn!(skipped, "PTY output lost synchronization; reconnecting for a snapshot");
+                                    lost.store(true, std::sync::atomic::Ordering::Release);
+                                    break;
                                 }
                                 Err(_) => break,
                             },
@@ -187,10 +192,14 @@ impl RuntimeHost {
                         }
                     }
                 });
-                Ok(TerminalAttachment { replay, output: rx })
+                Ok(TerminalAttachment {
+                    replay,
+                    output: rx,
+                    resync,
+                })
             }
             Self::Linked(link) => {
-                let output = link.subscribe_terminal(terminal_id);
+                let (output, resync) = link.subscribe_terminal(terminal_id);
                 let reply = match link
                     .call(LinkRequest::TerminalAttach {
                         terminal_id: terminal_id.to_owned(),
@@ -213,7 +222,11 @@ impl RuntimeHost {
                             .collect()
                     })
                     .unwrap_or_default();
-                Ok(TerminalAttachment { replay, output })
+                Ok(TerminalAttachment {
+                    replay,
+                    output,
+                    resync,
+                })
             }
         }
     }

@@ -1253,6 +1253,7 @@ paths:
     get:
       operationId: openRuntimeHostLink
       summary: A paired device's persistent host link (WebSocket; the first frame is a hello carrying the host token)
+      description: Terminal bytes use terminal_output frames. terminal_resync ends a lagging attachment without terminating its process; reattach for a current screen snapshot. terminal_exit denotes a stopped terminal. Revoked host tokens cannot reconnect.
       responses:
         "101":
           description: Switching Protocols
@@ -1882,9 +1883,10 @@ paths:
           description: Runtime host
     delete:
       operationId: revokeRuntimeHost
+      description: Revokes device authorization even when offline. Bound Agents remain on that device but disabled; unfinished commands are fenced and never retried on the controller. Moving an Agent requires a separate explicit assignment.
       responses:
-        "200":
-          description: Runtime host
+        "204":
+          description: Device revoked and execution disabled; history retained
   /v1/runtime-hosts/{hostId}/commands/claim:
     parameters:
       - name: hostId
@@ -2177,8 +2179,9 @@ paths:
           type: string
     put:
       operationId: assignBindingHost
+      description: Explicitly changes the execution device; it does not replay commands cancelled by revocation. A selected Harness account must belong to the destination device. Use Create Agent with that device's workspace and account when moving an account-bound Agent; existing conversation history remains available.
       responses:
-        "200":
+        "204":
           description: Binding host assigned
   /v1/runtime/bindings/{bindingId}/experience/community/{eventId}/retry:
     parameters:

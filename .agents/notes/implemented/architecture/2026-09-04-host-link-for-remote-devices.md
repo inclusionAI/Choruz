@@ -11,6 +11,9 @@ A paired device could only reach the controller, never the other way round: the 
 For Claude and Codex, the [structured direct conversation decision](../feature/2026-09-06-structured-agent-dm.md)
 extends this link with session requests and supersedes the xterm-only presentation
 described below. Transport and device ownership remain shared with local execution.
+The [device lifecycle and recovery decision](../bug-fix/2026-10-19-device-revocation-and-terminal-recovery.md)
+adds terminal_resync for lagging attachments. These reconnect to a screen snapshot
+without closing the process; ordinary browser disconnect retains its cleanup rule.
 
 A connected device holds one WebSocket to the controller, `GET /v1/ws/runtime-hosts/link`, dialled by the connector as a direct socket when the API is reachable or as a relay stream (`RelayHttpClient::open_stream`, the same `stream.*` frames a paired browser uses) when it is not. The first frame is a `hello` carrying the host token, because a relayed socket arrives with the paired browser's identity rather than the device's. From then on the controller sends `call` frames (`LinkRequest`: any `HostRequest`, or a terminal operation) and the device answers with `result` frames; terminal output streams back as `terminal_output` frames until `terminal_exit`. The vocabulary lives in `crates/choruz-host-runtime/src/link.rs`, the device side is `run_device_link` over a pair of channels so the transport is the caller's choice, and the controller side is `services/choruz-api-gateway/src/host_link.rs` (`HostLinkHub`, `HostLink::call`).
 

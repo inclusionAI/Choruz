@@ -5,11 +5,12 @@ import { join } from "node:path";
 import { login, gotoDashboard, API_BASE } from "../fixtures/auth";
 import { deleteCompany } from "../fixtures/api";
 
-for (const scenario of ["save after undo", "retry a failed save", "ignore a previous file read", "resolve external changes"] as const) {
-  test(`File editor can ${scenario}`, async ({ page }) => {
+for (const scenario of ["save after undo", "retry a failed save", "ignore a previous file read", "resolve external changes", "read code across theme changes"] as const) {
+  test(`File editor can ${scenario}`, async ({ page }, testInfo) => {
     const { token, principal } = await login(page);
     const root = await mkdtemp(join(homedir(), "choruz-editor-test-"));
-    const path = join(root, "owned.txt");
+    const filename = scenario === "read code across theme changes" ? "owned.tsx" : "owned.txt";
+    const path = join(root, filename);
     let companyId: string | undefined;
     let releaseRead = () => {};
     try {
@@ -43,12 +44,43 @@ for (const scenario of ["save after undo", "retry a failed save", "ignore a prev
         await page.getByRole("treeitem").filter({ hasText: "old.txt" }).click();
         await started;
       }
-      await page.getByRole("treeitem").filter({ hasText: "owned.txt" }).click();
+      await page.getByRole("treeitem").filter({ hasText: filename }).click();
       const editor = page.locator(".cm-content");
       await expect(editor).toHaveText("original");
-      await editor.fill("edited");
+      await editor.fill(scenario === "read code across theme changes" ? 'const answer = "ready";\n// useful note\nanswer;' : "edited");
       await expect(page.locator(".file-editor-dirty")).toHaveText("Modified");
-      if (scenario === "save after undo") {
+      if (scenario === "read code across theme changes") {
+        for (const theme of ["light", "dark", "light"] as const) {
+          if (await page.locator("html").getAttribute("data-theme") !== theme) {
+            await page.getByRole("button", { name: "User menu", exact: true }).click();
+            await page.getByRole("button", { name: `Switch to ${theme} mode`, exact: true }).click();
+          }
+          const code = page.locator(".cm-editor");
+          await expect.poll(() => code.locator(".cm-line span").filter({ hasText: /^const$/ }).evaluate((element) => getComputedStyle(element).color))
+            .toBe(theme === "light" ? "rgb(115, 60, 151)" : "rgb(199, 146, 234)");
+          await expect(editor).toHaveText('const answer = "ready";// useful noteanswer;');
+          const contrast = await code.evaluate((element) => {
+            const rgb = (text: string) => text.match(/[\d.]+/g)!.slice(0, 3).map(Number);
+            const luminance = (channels: number[]) => channels.map((channel) => {
+              const value = channel / 255;
+              return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+            }).reduce((sum, value, index) => sum + value * [0.2126, 0.7152, 0.0722][index], 0);
+            const background = luminance(rgb(getComputedStyle(element).backgroundColor));
+            return Array.from(element.querySelectorAll(".cm-line span, .cm-lineNumbers .cm-gutterElement"))
+              .filter((node) => node.textContent?.trim())
+              .map((node) => {
+                const foreground = luminance(rgb(getComputedStyle(node).color));
+                return (Math.max(background, foreground) + 0.05) / (Math.min(background, foreground) + 0.05);
+              });
+          });
+          expect(contrast.length).toBeGreaterThan(4);
+          expect(Math.min(...contrast)).toBeGreaterThanOrEqual(4.5);
+          await page.screenshot({ path: testInfo.outputPath(`editor-${theme}.png`) });
+        }
+        await editor.press("ControlOrMeta+z");
+        await expect(editor).toHaveText("original");
+        expect(await readFile(path, "utf8")).toBe("original");
+      } else if (scenario === "save after undo") {
         await editor.press("ControlOrMeta+s");
         await expect.poll(() => readFile(path, "utf8")).toBe("edited");
         await expect(page.locator(".file-editor-dirty")).toHaveCount(0);
