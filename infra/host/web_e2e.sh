@@ -2,11 +2,12 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [[ "${CHORUZ_SMOKE_ENTRY:-}" != "${SCRIPT_DIR}/web_e2e.sh" ]]; then
-  exec node "${SCRIPT_DIR}/isolated-smoke.mjs" "${SCRIPT_DIR}/web_e2e.sh" "$@"
-fi
+# Start Wrangler's listeners before selecting controller ports, not after releasing their reservations.
 if [[ "${CHORUZ_REMOTE_E2E_RUNNING:-0}" != "1" && ( "${CHORUZ_WEB_E2E_FULL:-0}" == "1" || "$*" == *remote-file-transport.spec.ts* || "$*" == *online.spec.ts* ) ]]; then
   exec node "${SCRIPT_DIR}/remote_web_e2e.mjs" "$@"
+fi
+if [[ "${CHORUZ_SMOKE_ENTRY:-}" != "${SCRIPT_DIR}/web_e2e.sh" ]]; then
+  exec node "${SCRIPT_DIR}/isolated-smoke.mjs" "${SCRIPT_DIR}/web_e2e.sh" "$@"
 fi
 # shellcheck disable=SC1091
 source "${SCRIPT_DIR}/common.sh"

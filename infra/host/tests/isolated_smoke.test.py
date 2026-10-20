@@ -12,6 +12,44 @@ SOURCE = Path(__file__).resolve().parents[1]
 
 
 class IsolatedSmokeTests(unittest.TestCase):
+    def test_remote_listener_starts_before_controller_ports_are_allocated(self):
+        # Exercise the real entry guards and allocator with a live wrapper listener.
+        with tempfile.TemporaryDirectory() as temporary:
+            host = Path(temporary) / "infra/host"
+            host.mkdir(parents=True)
+            for name in ("isolated-smoke.mjs", "env.example"):
+                shutil.copyfile(SOURCE / name, host / name)
+            guards = (SOURCE / "web_e2e.sh").read_text().split("# shellcheck disable=SC1091", 1)[0]
+            entry = host / "web_e2e.sh"
+            entry.write_text(guards + '''
+node --input-type=module -e '
+import {createServer} from "node:net";
+const server = createServer();
+server.on("error", error => { console.error(error.code); process.exit(1); });
+server.listen(Number(process.env.CHORUZ_API_PORT), "127.0.0.1", () => server.close());
+'
+''')
+            (host / "remote_web_e2e.mjs").write_text('''
+import {createServer} from "node:net";
+import {spawn} from "node:child_process";
+import {fileURLToPath} from "node:url";
+const listener = createServer();
+await new Promise((resolve, reject) => {
+  listener.once("error", reject);
+  listener.listen(Number(process.env.CHORUZ_API_PORT || 0), "127.0.0.1", resolve);
+});
+const child = spawn("bash", [fileURLToPath(new URL("web_e2e.sh", import.meta.url)), ...process.argv.slice(2)], {
+  stdio: "inherit", env: {...process.env, CHORUZ_REMOTE_E2E_RUNNING: "1"}
+});
+child.once("exit", code => { listener.close(); process.exitCode = code ?? 1; });
+''')
+            env = dict(os.environ, CHORUZ_WEB_E2E_FULL="1")
+            for key in ("CHORUZ_SMOKE_ENTRY", "CHORUZ_REMOTE_E2E_RUNNING", "CHORUZ_API_PORT"):
+                env.pop(key, None)
+            result = subprocess.run(["bash", str(entry)], env=env, text=True,
+                                    capture_output=True, timeout=20)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_concurrent_runs_ignore_development_state_and_clean_failed_run(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
