@@ -6,7 +6,7 @@ import type {
   GroupProvisioningStepResult,
 } from "../../lib/groups/group-provisioning-contract";
 import { getGroupTemplate } from "../../lib/groups/team-templates";
-import { API_BASE, WEB_BASE, login } from "../fixtures/auth";
+import { API_BASE, WEB_BASE, login, signup } from "../fixtures/auth";
 import {
   addGroupMember,
   createAgent,
@@ -1121,7 +1121,7 @@ test.describe("Channel tasks board", () => {
   test("visible group webhook agent command path handles multi-step task commands without chat noise", async ({ page }) => {
     test.setTimeout(150_000);
 
-    const { token, principal } = await login(page);
+    const { token, principal } = await signup(page, uniqueName("task-owner"), "Owned-password-123!");
     await ensureKanbanPluginEnabled(page, token);
 
     const reviewerAgent = await provisionAgent(page, token, uniqueName("ct-agent-reviewer"));

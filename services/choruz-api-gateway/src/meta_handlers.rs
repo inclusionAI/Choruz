@@ -49,35 +49,32 @@ static HTTP_RESPONSES: LazyLock<metrics::IntCounterVec> = LazyLock::new(|| {
 static PRINCIPALS_TOTAL: LazyLock<IntGauge> = LazyLock::new(|| {
     metrics::register_gauge(
         "choruz_principals_total",
-        "Principals in the application state.",
+        "Active principals in the database.",
     )
 });
 static CONVERSATIONS_TOTAL: LazyLock<IntGauge> = LazyLock::new(|| {
     metrics::register_gauge(
         "choruz_conversations_total",
-        "Conversations in the application state.",
+        "Conversations in the database.",
     )
 });
 static MESSAGES_TOTAL: LazyLock<IntGauge> = LazyLock::new(|| {
-    metrics::register_gauge(
-        "choruz_messages_total",
-        "Messages injected since the gateway started.",
-    )
+    metrics::register_gauge("choruz_messages_total", "Message events in the database.")
 });
 static AUDIT_LOGS_TOTAL: LazyLock<IntGauge> = LazyLock::new(|| {
     metrics::register_gauge(
         "choruz_audit_logs_total",
-        "Audit log entries in the application state.",
+        "Audit log entries in the database.",
     )
 });
 static EVENT_BACKLOG_TOTAL: LazyLock<IntGauge> = LazyLock::new(|| {
     metrics::register_gauge(
         "choruz_event_backlog_total",
-        "Events queued for delivery in the application state.",
+        "Unacknowledged database outbox events.",
     )
 });
 
-/// A scrape refreshes the gauges from its own `ChatApp` and encodes under this
+/// A scrape refreshes the gauges from its own database and encodes under this
 /// lock, so a response never carries another router's refresh: the registry is
 /// process-wide, and a test binary drives several routers at once.
 static SCRAPE: Mutex<()> = Mutex::new(());
@@ -168,8 +165,8 @@ pub(crate) async fn request_logging_middleware(
     response
 }
 
-pub(crate) async fn metrics(State(state): State<ApiState>) -> impl IntoResponse {
-    let snapshot = state.app.metrics_snapshot();
+pub(crate) async fn metrics(State(state): State<ApiState>) -> Result<impl IntoResponse, ApiError> {
+    let snapshot = state.db.metrics_snapshot().await?;
     let body = {
         let _scrape = SCRAPE
             .lock()
@@ -182,7 +179,7 @@ pub(crate) async fn metrics(State(state): State<ApiState>) -> impl IntoResponse 
         metrics::text()
     };
 
-    ([(CONTENT_TYPE, metrics::TEXT_CONTENT_TYPE)], body)
+    Ok(([(CONTENT_TYPE, metrics::TEXT_CONTENT_TYPE)], body))
 }
 
 pub(crate) async fn phase_status(

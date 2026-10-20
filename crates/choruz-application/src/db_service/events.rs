@@ -3,9 +3,74 @@ use choruz_domain::EventEnvelope;
 
 use super::DbService;
 use super::helpers::row_to_event_envelope;
-use crate::WebhookDelivery;
+use crate::{EventWebhookConfig, SetEventWebhookRequest, WebhookDelivery};
 
 impl DbService {
+    /// Configure the target's webhook after checking current database access.
+    /// The configuration and audit commit together; updating a receiver retains
+    /// its durable delivery cursor. No callback runs before that commit.
+    pub async fn set_event_webhook(
+        &self,
+        principal_id: &str,
+        request: SetEventWebhookRequest,
+    ) -> Result<EventWebhookConfig, AppError> {
+        self.check_rate_limit(&request.actor_id)?;
+        if request.url.trim().is_empty()
+            || !(request.url.starts_with("http://") || request.url.starts_with("https://"))
+        {
+            return Err(AppError::Validation(
+                "webhook url must use http or https".into(),
+            ));
+        }
+        let actor = self.get_principal(&request.actor_id).await?;
+        let target = self.get_principal(principal_id).await?;
+        let mut client = self.store.connect().await?;
+        let tx = client
+            .transaction()
+            .await
+            .map_err(|e| AppError::Internal(format!("webhook transaction: {e}")))?;
+        if actor.id != target.id
+            && (!matches!(actor.principal_type, choruz_domain::PrincipalType::Human)
+                || !matches!(target.principal_type, choruz_domain::PrincipalType::Agent)
+                || !super::companies::workspace_access(&tx, &actor, &target.workspace_id).await?)
+        {
+            return Err(AppError::Forbidden(
+                "webhook target is outside the actor's workspace access".into(),
+            ));
+        }
+        let secret = request
+            .secret
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+            .unwrap_or_else(crate::events::generate_webhook_secret);
+        let row = tx.query_one(
+            "INSERT INTO event_webhook (principal_id,url,event_types,cursor,webhook_secret,updated_at)
+             VALUES ($1,$2,$3,COALESCE((SELECT MAX(delivery_seq) FROM outbox_event WHERE principal_id=$1 AND acknowledged_at IS NOT NULL),0),$4,NOW())
+             ON CONFLICT (principal_id) DO UPDATE SET url=EXCLUDED.url,event_types=EXCLUDED.event_types,
+                 webhook_secret=EXCLUDED.webhook_secret,updated_at=NOW()
+             RETURNING cursor,updated_at",
+            &[&principal_id,&request.url,&request.event_types,&secret],
+        ).await.map_err(|e|AppError::Internal(format!("configure webhook: {e}")))?;
+        tx.execute("INSERT INTO audit_log (id,workspace_id,actor_id,action,target_type,target_id,metadata,created_at)
+                    VALUES ($1,$2,$3,'principal.webhook_configured','principal',$4,$5,NOW())",
+            &[&new_id(),&actor.workspace_id,&actor.id,&principal_id,
+              &serde_json::json!({"url":request.url,"event_types":request.event_types})],
+        ).await.map_err(|e|AppError::Internal(format!("audit webhook configuration: {e}")))?;
+        tx.commit()
+            .await
+            .map_err(|e| AppError::Internal(format!("commit webhook configuration: {e}")))?;
+        Ok(EventWebhookConfig {
+            principal_id: target.id,
+            url: request.url,
+            event_types: request.event_types,
+            cursor: row.get::<_, i64>("cursor") as u64,
+            updated_at: row.get("updated_at"),
+            webhook_secret: secret,
+        })
+    }
+
     // ── Events (Phase 4) ──────────────────────────────────────────────────
 
     /// Push an event to one or more principals (DB-backed).
@@ -122,7 +187,6 @@ impl DbService {
                     "SELECT id, principal_id, event_type, payload, created_at, delivery_seq
                      FROM outbox_event
                      WHERE principal_id = $1
-                       AND acknowledged_at IS NULL
                        AND delivery_seq > $2
                      ORDER BY delivery_seq ASC",
                     &[&principal_id, &cursor],

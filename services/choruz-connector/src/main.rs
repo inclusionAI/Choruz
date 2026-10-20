@@ -8,10 +8,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use choruz_agent_runtime::headless::{
-    HeadlessDriver, ParsedOutput, configure_command_workspace, parse_output,
-    prepare_harness_account_env, validate_model,
-};
+use choruz_agent_runtime::headless::{HeadlessDriver, ParsedOutput, parse_output, validate_model};
 use choruz_harness_login::{AccountProbe, LoginJob, LoginSink, run_login};
 use choruz_host_runtime::inbox::{
     IncomingAttachment, incoming_attachments, stage_incoming_attachments,
@@ -28,7 +25,7 @@ use futures_util::{SinkExt, StreamExt};
 use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
-use tokio::{process::Command, sync::Semaphore, task::JoinSet};
+use tokio::{sync::Semaphore, task::JoinSet};
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tracing::{error, info, warn};
 
@@ -925,71 +922,16 @@ async fn execute(
     for (path, error) in &bootstrap.io_errors {
         warn!(path = %path.display(), %error, "instruction bootstrap failed");
     }
-    let mut process_command = Command::new(driver.default_binary());
-    configure_command_workspace(&mut process_command, driver, &workspace);
-    let account_env = if let Some(account) = command.harness_account.as_ref()
-        && account.profile_kind == "isolated"
-    {
-        let account_config = serde_json::json!({
-            "harness_account_id": account.id,
-            "harness_account_profile_kind": account.profile_kind,
-        });
-        match prepare_harness_account_env(driver, &account_config) {
-            Ok(Some((key, value))) => {
-                if let Err(error) = fs::create_dir_all(&value) {
-                    let message = format!("create isolated Harness profile: {error}");
-                    return complete(
-                        &client,
-                        &config,
-                        &command,
-                        &CompleteCommand {
-                            attempt_id: &command.attempt_id,
-                            succeeded: false,
-                            contents: &[],
-                            error: Some(&message),
-                            tool_calls_count: 0,
-                            execution_duration_ms: started
-                                .elapsed()
-                                .as_millis()
-                                .min(i64::MAX as u128)
-                                as i64,
-                            external_session_id: None,
-                            clear_external_session: false,
-                            execution_metadata: None,
-                        },
-                    )
-                    .await;
-                }
-                Some((key, value))
-            }
-            Ok(None) => None,
-            Err(error) => {
-                return complete(
-                    &client,
-                    &config,
-                    &command,
-                    &CompleteCommand {
-                        attempt_id: &command.attempt_id,
-                        succeeded: false,
-                        contents: &[],
-                        error: Some(&error),
-                        tool_calls_count: 0,
-                        execution_duration_ms: started.elapsed().as_millis().min(i64::MAX as u128)
-                            as i64,
-                        external_session_id: None,
-                        clear_external_session: false,
-                        execution_metadata: None,
-                    },
-                )
-                .await;
-            }
-        }
-    } else {
-        None
-    };
-    if let Some((key, value)) = account_env {
-        process_command.env(key, value);
-    }
+    let account_config = command
+        .harness_account
+        .as_ref()
+        .map(|account| {
+            serde_json::json!({
+                "harness_account_id": account.id,
+                "harness_account_profile_kind": account.profile_kind,
+            })
+        })
+        .unwrap_or_else(|| serde_json::json!({}));
     let heartbeat_client = client.clone();
     let heartbeat_config = Arc::clone(&config);
     let heartbeat_command = command.clone();
@@ -1010,6 +952,7 @@ async fn execute(
             }
         }
     });
+    let deadline = tokio::time::Instant::now() + DEFAULT_TIMEOUT;
     let process = async {
         let account_job = choruz_agent_runtime::process_scope::Job::begin(
             command.harness_account.as_ref().map(|a| a.id.as_str()),
@@ -1032,80 +975,76 @@ async fn execute(
                     })
                 })
                 .unwrap_or_else(|| serde_json::json!({}));
-            let plan = choruz_host_runtime::harness::prepare_turn(
-                choruz_host_runtime::TerminalSpec {
-                    authentication: false,
-                    terminal_id: command.binding_id.clone(),
-                    driver_type: command.driver_type.clone(),
-                    binary_path: None,
-                    workspace_path: command.workspace_path.clone(),
-                    cols: 120,
-                    rows: 40,
-                    resume_session_id: None,
-                    codex_home: None,
-                    model: command.model.clone(),
-                    harness_account: account,
-                },
-                role,
-                &prompt,
+            let plan = tokio::time::timeout_at(
+                deadline,
+                choruz_host_runtime::harness::prepare_turn(
+                    choruz_host_runtime::TerminalSpec {
+                        authentication: false,
+                        terminal_id: command.binding_id.clone(),
+                        driver_type: command.driver_type.clone(),
+                        binary_path: None,
+                        workspace_path: command.workspace_path.clone(),
+                        cols: 120,
+                        rows: 40,
+                        resume_session_id: None,
+                        codex_home: None,
+                        model: command.model.clone(),
+                        harness_account: account,
+                    },
+                    role,
+                    &prompt,
+                ),
             )
             .await
+            .map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "Harness preparation exceeded the turn budget",
+                )
+            })?
             .map_err(|error| std::io::Error::other(error.to_string()))?;
             prompt.push_str("\n\n");
             prompt.push_str(&plan);
         }
-        let args = driver.args_with_session_fork(
-            command.external_session_id.as_deref(),
-            command.model.as_deref(),
-            &prompt,
-            command.fork_session,
-        );
+        let mut process_command =
+            choruz_host_runtime::headless::command(choruz_host_runtime::headless::TurnSpec {
+                driver_type: &command.driver_type,
+                binary_path: None,
+                workspace: &workspace,
+                account: &account_config,
+                resume_session_id: command.external_session_id.as_deref(),
+                model: command.model.as_deref(),
+                prompt: &prompt,
+                fork_session: command.fork_session,
+            })
+            .map_err(std::io::Error::other)?;
         process_command
-            .args(args)
-            .env("CHORUZ_WORKSPACE", &workspace)
             .env("CHORUZ_SEND", &connector_executable)
-            .env("CHORUZ_CONNECTOR_OUTBOX", &outbox_path)
-            .env("DISABLE_AUTOUPDATER", "1")
-            .env("PI_SKIP_VERSION_CHECK", "1")
-            .env("CLAUDE_CODE_ENABLE_TASKS", "1")
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .kill_on_drop(true);
-        #[cfg(unix)]
-        process_command.process_group(0);
+            .env("CHORUZ_CONNECTOR_OUTBOX", &outbox_path);
         if account_job.is_cancelled()
             || host_job.is_cancelled()
             || lease_cancelled.try_recv().is_ok()
         {
             return Err(std::io::Error::other("Harness account was removed"));
         }
-        let child = process_command.spawn()?;
-        let container = child.id().map(|pid| {
-            choruz_agent_runtime::process::ProcessContainer::new(format!("connector-{pid}"), pid)
-        });
-        let output = child.wait_with_output();
-        tokio::pin!(output);
-        tokio::select! {
-            result=&mut output=>result,
-            _=account_job.cancelled()=>{
-                if let Some(container)=&container{container.kill_all();}
-                let _=output.await?;
-                Err(std::io::Error::new(std::io::ErrorKind::Interrupted,"Harness account was removed"))
+        let remaining = deadline
+            .checked_duration_since(tokio::time::Instant::now())
+            .filter(|remaining| !remaining.is_zero())
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "Harness preparation exhausted the turn budget",
+                )
+            })?;
+        choruz_host_runtime::headless::run(process_command, remaining, async {
+            tokio::select! {
+                _=account_job.cancelled()=> "Harness account was removed".into(),
+                _=host_job.cancelled()=> "Runtime host authorization was revoked".into(),
+                reason=&mut lease_cancelled=> reason.unwrap_or_else(|_| "Command lease monitor stopped".into()),
             }
-            _=host_job.cancelled()=>{
-                if let Some(container)=&container{container.kill_all();}
-                let _=output.await?;
-                Err(std::io::Error::new(std::io::ErrorKind::Interrupted,"Runtime host authorization was revoked"))
-            }
-            reason=&mut lease_cancelled=>{
-                if let Some(container)=&container{container.kill_all();}
-                let _=output.await?;
-                Err(std::io::Error::new(std::io::ErrorKind::Interrupted,reason.unwrap_or_else(|_| "Command lease monitor stopped".into())))
-            }
-        }
+        }).await
     };
-    let outcome = tokio::time::timeout(DEFAULT_TIMEOUT, process).await;
+    let outcome = process.await;
     heartbeat_task.abort();
     let _ = heartbeat_task.await;
     let elapsed = started.elapsed().as_millis().min(i64::MAX as u128) as i64;
@@ -1131,7 +1070,22 @@ async fn execute(
     };
     let (succeeded, contents, error_message, tool_calls, session_id, clear_session) = match outcome
     {
-        Ok(Ok(output)) if output.status.success() => {
+        Ok(output)
+            if choruz_host_runtime::headless::resume_failed(
+                &output,
+                command.external_session_id.as_deref(),
+            ) =>
+        {
+            (
+                false,
+                Vec::new(),
+                Some("Harness resume failed".into()),
+                0,
+                None,
+                true,
+            )
+        }
+        Ok(output) if output.status.success() => {
             let parsed = parse_output(driver, &String::from_utf8_lossy(&output.stdout));
             let response = shipment.and_then(|()| {
                 if command.fork_session
@@ -1157,27 +1111,23 @@ async fn execute(
                 false,
             )
         }
-        Ok(Ok(output)) => {
-            let stderr = String::from_utf8_lossy(&output.stderr).to_lowercase();
-            let clear_session = command.external_session_id.is_some()
-                && [
-                    "no saved session found",
-                    "session not found",
-                    "unknown session",
-                    "could not find session",
-                ]
-                .iter()
-                .any(|phrase| stderr.contains(phrase));
-            (
-                false,
-                Vec::new(),
-                Some(format!("Harness exited with status {}", output.status)),
-                0,
-                None,
-                clear_session,
-            )
-        }
-        Ok(Err(error)) => (
+        Ok(output) => (
+            false,
+            Vec::new(),
+            Some(format!("Harness exited with status {}", output.status)),
+            0,
+            None,
+            false,
+        ),
+        Err(error) if error.kind() == std::io::ErrorKind::TimedOut => (
+            false,
+            Vec::new(),
+            Some("Harness exceeded the 30 minute timeout".into()),
+            0,
+            None,
+            false,
+        ),
+        Err(error) => (
             false,
             Vec::new(),
             Some(if error.kind() == std::io::ErrorKind::Interrupted {
@@ -1185,14 +1135,6 @@ async fn execute(
             } else {
                 format!("Harness could not start ({:?})", error.kind())
             }),
-            0,
-            None,
-            false,
-        ),
-        Err(_) => (
-            false,
-            Vec::new(),
-            Some("Harness exceeded the 30 minute timeout".into()),
             0,
             None,
             false,
@@ -1780,6 +1722,7 @@ async fn main() -> ExitCode {
 mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::process::Command;
 
     #[cfg(unix)]
     #[tokio::test]
@@ -1968,19 +1911,27 @@ mod tests {
                 !Path::new(&root).join("invocation").exists(),
                 "finite answer must skip native CLI"
             );
-            execute(Client::new(), Arc::new(config), claimed)
+            execute(Client::new(), Arc::new(config.clone()), claimed.clone())
+                .await
+                .unwrap();
+            let mut stale = claimed;
+            stale.external_session_id = Some("stale-session".into());
+            execute(Client::new(), Arc::new(config), stale)
                 .await
                 .unwrap();
             return;
         }
         let directory = tempfile::tempdir().unwrap();
-        let binary = directory.path().join("codex");
-        fs::write(&binary, "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$CHORUZ_DECISION_TEST_ROOT/invocation\"\nprintf '%s\\n' '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"Native finished\"}}' '{\"type\":\"turn.completed\"}'\n").unwrap();
+        let binary = directory.path().join("selected-codex");
+        let decoy = directory.path().join("codex");
+        fs::write(&decoy, "#!/bin/sh\nprintf '%s\\n' '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"Wrong executable\"}}'\n").unwrap();
+        fs::set_permissions(&decoy, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::write(&binary, "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$CHORUZ_DECISION_TEST_ROOT/invocation\"\ncase \"$*\" in *stale-session*) printf '%s\\n' '{\"type\":\"error\",\"message\":\"thread/resume failed: no rollout found\"}'; exit 0;; esac\nprintf '%s\\n' '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"Native finished\"}}' '{\"type\":\"turn.completed\"}'\n").unwrap();
         fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
-            for index in 0..2 {
+            for index in 0..3 {
                 let (mut stream, _) = listener.accept().await.unwrap();
                 let mut request = Vec::new();
                 loop {
@@ -2005,15 +1956,21 @@ mod tests {
                             let body: serde_json::Value =
                                 serde_json::from_slice(&request[end + 4..end + 4 + length])
                                     .unwrap();
-                            assert_eq!(body["succeeded"], true, "{body}");
-                            assert_eq!(
-                                body["contents"][0],
-                                if index == 0 {
-                                    "Inspect the manifest"
-                                } else {
-                                    "Native finished"
-                                }
-                            );
+                            assert_eq!(body["succeeded"], index != 2, "{body}");
+                            if index == 2 {
+                                assert_eq!(body["clear_external_session"], true);
+                                assert!(body["external_session_id"].is_null());
+                                assert_eq!(body["contents"], serde_json::json!([]));
+                            } else {
+                                assert_eq!(
+                                    body["contents"][0],
+                                    if index == 0 {
+                                        "Inspect the manifest"
+                                    } else {
+                                        "Native finished"
+                                    }
+                                );
+                            }
                             if index == 0 {
                                 assert_eq!(
                                     body["execution_metadata"]["request"], "Inspect workspace",
@@ -2046,6 +2003,8 @@ mod tests {
             ])
             .env("CHORUZ_DECISION_TEST_ROOT", directory.path())
             .env("CHORUZ_DECISION_TEST_API", format!("http://{address}"))
+            .env("CHORUZ_CODEX_BINARY", &binary)
+            .env_remove("CHORUZ_CODEX_CLI_PATH")
             .env(
                 "PATH",
                 format!(

@@ -22,7 +22,7 @@ The message pipeline is the single `choruz-pipeline` process that turns a persis
 | [`crates/choruz-store/src/cdc_poller.rs`](../../crates/choruz-store/src/cdc_poller.rs), [`event_outbox.rs`](../../crates/choruz-store/src/event_outbox.rs) | `CdcPoller`, `EventStore::claim_unpublished_entries`, `mark_published` (the store itself is owned by [store](store.md)) |
 | [`crates/choruz-router/`](../../crates/choruz-router/) | `route_event`, `run_router_loop`, `evaluate_trigger`, `build_prompt`, `MemberProvider`, `DecisionSink` |
 | [`crates/choruz-session/`](../../crates/choruz-session/) | `PgSessionStore`: `session_registry`, `agent_commands`, leases, epochs, retries, `dead_letters` |
-| [`crates/choruz-executor/`](../../crates/choruz-executor/) | `SandboxManager`, `AdapterWal`, `CliAdapter` |
+| [`crates/choruz-executor/`](../../crates/choruz-executor/) | `AdapterWal`: local turn records and incomplete-turn inspection |
 | [`crates/choruz-writer/`](../../crates/choruz-writer/) | `commit_result`, `run_writer_loop`, `ResultStore` |
 | [`crates/choruz-events/`](../../crates/choruz-events/) | `EventEnvelope`, `ConversationEventPayload`, `RouteDecisionPayload`, `AgentCommandPayload`, `AgentResultPayload` |
 
@@ -70,7 +70,7 @@ Process: `target/release/choruz-pipeline` (started by [`infra/host/dev.sh`](../.
 | `CHORUZ_PIPELINE_LEASE_CHECK_MS`, `CHORUZ_PIPELINE_LEASE_TIMEOUT_SECS` | 10000, 60 | Lease monitor cadence and heartbeat timeout (must be at least 45s, three heartbeats) |
 | `CHORUZ_PIPELINE_RETRY_CHECK_MS`, `CHORUZ_PIPELINE_RETRY_BATCH` | 5000, 20 | Retry scheduler cadence and batch |
 | `CHORUZ_PIPELINE_EXECUTOR_TIMEOUT_SECS` | 1800 | Hard kill timeout for one headless CLI turn |
-| `CHORUZ_PIPELINE_SANDBOX_DIR` | `/tmp/choruz-sandboxes` | `SandboxManager` base dir; WAL lives under `<dir>/_wal` |
+| `CHORUZ_PIPELINE_SANDBOX_DIR` | `/tmp/choruz-sandboxes` | WAL recovery root; records live under `<dir>/_wal`; execution uses the binding workspace |
 | `CHORUZ_CLAUDE_CLI_PATH`, `CHORUZ_CODEX_CLI_PATH`, `CHORUZ_PI_CLI_PATH`, `CHORUZ_GROK_CLI_PATH`, `CHORUZ_OPENCODE_CLI_PATH` | binary names | Headless CLI executables per `driver_type` |
 | `CHORUZ_PIPELINE_METRICS_HOST`, `CHORUZ_PIPELINE_METRICS_PORT` | `127.0.0.1`, 3020 | Bind address of the health, readiness and metrics HTTP server |
 | `CHORUZ_PIPELINE_NODE_ID` | `pipeline-local-1` | Executor node id written to claims and leases |
@@ -143,7 +143,7 @@ separate process-down alert. See the [WAL recovery runbook](../operations/runboo
 | Database unreachable at boot | `run_pipeline` logs and returns before spawning tasks | process exits; `/readyz` absent |
 | Database unreachable at runtime | `/readyz` returns 503 `not_ready`; loops log and continue | watchdog restarts on `/readyz` failure |
 | Any core task exits | `tokio::select!` in `run_pipeline` fires, `ExecutorContext::shutdown_all` runs, process exits | `... task exited` error log |
-| CLI hangs | `tokio::time::timeout(executor_timeout)` with `kill_on_drop(true)`; error `[kind=timeout]` is retriable | `cli_hard_timeout` log event |
+| CLI hangs | `choruz_host_runtime::headless::run` kills the process group after `executor_timeout` and waits for child exit; error `[kind=timeout]` is retriable | `cli_hard_timeout` log event |
 | CLI binary missing | `classify_cli_start_error` maps `NotFound` to `driver_unavailable`, which is not retriable, so the command dead-letters | `executor_command_failed` with `error_kind`; `dead_letters` row |
 | Executor node dies mid-turn | `run_lease_monitor` finds `session_registry` rows past `lease_timeout_secs`; `handle_lease_expiry` bumps the epoch and moves the command to `retry_scheduled` or `dead_letter` | `lease expired` warn log |
 | Command pending longer than 24h | `dead_letter_stale_pending_commands(86400, ...)` in the retry scheduler | `dead-lettered stale pending commands` warn |
@@ -161,7 +161,7 @@ Per-agent state is exposed to operators by `GET /v1/conversations/{conversation_
 - [`services/choruz-pipeline/src/pipeline_test.rs`](../../services/choruz-pipeline/src/pipeline_test.rs): in-memory route-then-write scenarios (`route_then_write_end_to_end`, `route_at_all_generates_multiple_commands`, selective-mention cases).
 - Unit tests inside [`dispatch.rs`](../../services/choruz-pipeline/src/dispatch.rs), [`executor.rs`](../../services/choruz-pipeline/src/executor.rs), [`outbox_handler.rs`](../../services/choruz-pipeline/src/outbox_handler.rs), [`outbox_watcher.rs`](../../services/choruz-pipeline/src/outbox_watcher.rs), [`cron_scheduler.rs`](../../services/choruz-pipeline/src/cron_scheduler.rs), [`instructions.rs`](../../crates/choruz-host-runtime/src/instructions.rs), [`config.rs`](../../services/choruz-pipeline/src/config.rs), [`meta.rs`](../../services/choruz-pipeline/src/meta.rs), [`pg_notify.rs`](../../services/choruz-pipeline/src/pg_notify.rs) and the `TestDatabase` cases in [`pg_member_provider.rs`](../../services/choruz-pipeline/src/pg_member_provider.rs); run with `cargo test -p choruz-pipeline`.
 - [`crates/choruz-session/tests/integration.rs`](../../crates/choruz-session/tests/integration.rs): leases, epochs, fair dispatch, retry and dead-letter lifecycle against PostgreSQL (`CHORUZ_TEST_DATABASE_URL`).
-- Crate-local tests in [`crates/choruz-router/src/router.rs`](../../crates/choruz-router/src/router.rs), [`policy.rs`](../../crates/choruz-router/src/policy.rs), [`workflow.rs`](../../crates/choruz-router/src/workflow.rs), [`crates/choruz-writer/src/writer.rs`](../../crates/choruz-writer/src/writer.rs), [`crates/choruz-executor/src/wal.rs`](../../crates/choruz-executor/src/wal.rs), [`sandbox.rs`](../../crates/choruz-executor/src/sandbox.rs), [`crates/choruz-events/src/topics.rs`](../../crates/choruz-events/src/topics.rs), [`crates/choruz-store/src/cdc_poller.rs`](../../crates/choruz-store/src/cdc_poller.rs), [`event_outbox.rs`](../../crates/choruz-store/src/event_outbox.rs).
+- Crate-local tests in [`crates/choruz-router/src/router.rs`](../../crates/choruz-router/src/router.rs), [`policy.rs`](../../crates/choruz-router/src/policy.rs), [`workflow.rs`](../../crates/choruz-router/src/workflow.rs), [`crates/choruz-writer/src/writer.rs`](../../crates/choruz-writer/src/writer.rs), [`crates/choruz-executor/src/wal.rs`](../../crates/choruz-executor/src/wal.rs), [`crates/choruz-events/src/topics.rs`](../../crates/choruz-events/src/topics.rs), [`crates/choruz-store/src/cdc_poller.rs`](../../crates/choruz-store/src/cdc_poller.rs), [`event_outbox.rs`](../../crates/choruz-store/src/event_outbox.rs).
 - Web end to end: [`apps/web/tests/e2e/outbox.spec.ts`](../../apps/web/tests/e2e/outbox.spec.ts) (`Outbox / agent message pipeline`), [`apps/web/tests/e2e/outbox-reply.spec.ts`](../../apps/web/tests/e2e/outbox-reply.spec.ts), [`apps/web/tests/e2e/team-collaboration.spec.ts`](../../apps/web/tests/e2e/team-collaboration.spec.ts).
 - Real-driver smoke: [`infra/host/smoke/real-harness-platform-smoke.ts`](../../infra/host/smoke/real-harness-platform-smoke.ts) with [`docs/testing/real-harness-platform-smoke.md`](../testing/real-harness-platform-smoke.md).
 

@@ -577,18 +577,10 @@ dependencies = [
 name = "choruz-executor"
 version = "0.2.3"
 dependencies = [
- "async-trait",
- "choruz-events",
- "choruz-ids",
- "chrono",
  "rusqlite",
- "serde",
- "serde_json",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
- "tracing",
- "uuid",
 ]
 
 [[package]]

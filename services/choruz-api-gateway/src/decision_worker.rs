@@ -12,12 +12,8 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 fn executor_context(spec: &choruz_host_runtime::TerminalSpec) -> Value {
-    json!({"binding":spec.terminal_id,"driver":spec.driver_type,"model":spec.model,
-        "binary":spec.binary_path,"workspace":spec.workspace_path,
-        "account":spec.harness_account["harness_account_id"],
-        "profile":spec.harness_account["harness_account_profile_kind"],
-        "profile_directory":spec.harness_account["harness_account_profile_directory"],
-        "host":spec.harness_account["runtime_host_id"]})
+    json!({"binding":spec.terminal_id,
+        "execution":choruz_host_runtime::execution_identity::ExecutionIdentity::from(spec)})
 }
 
 fn training_examples(

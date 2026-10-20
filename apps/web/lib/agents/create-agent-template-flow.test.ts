@@ -118,7 +118,7 @@ describe("create agent template flow", () => {
       },
       {
         driverId: "claude_terminal" as const,
-        label: "Claude",
+        label: driverDisplayName("claude_terminal"),
         status: "available",
         reason: "Claude CLI is available.",
         setupHint: "Install Claude.",

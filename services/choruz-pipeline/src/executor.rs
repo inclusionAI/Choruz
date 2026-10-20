@@ -7,11 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Instant, SystemTime};
 
-use choruz_agent_runtime::headless::{
-    HeadlessDriver as LocalCliDriver, configure_command_workspace, parse_output,
-    pi_message_is_failed, prepare_harness_account_env,
-};
-use choruz_executor::sandbox::{SandboxManager, WorkspaceConfig};
+use choruz_agent_runtime::headless::{HeadlessDriver as LocalCliDriver, parse_output};
 use choruz_session::{AgentCommand, PgSessionStore};
 use choruz_store::EventStore;
 use choruz_writer::{AgentResult, AgentResultStatus};
@@ -180,11 +176,7 @@ fn fxhash(s: &str) -> u64 {
 /// Each command spawns a one-shot coding CLI process that exits after producing
 /// a response. No persistent processes are maintained.
 pub struct ExecutorContext {
-    /// Sandbox manager for creating/reusing workspace directories.
-    pub sandbox_manager: SandboxManager,
-
-    /// Maximum time to wait for a single response (retained for config compatibility).
-    #[allow(dead_code)]
+    /// Maximum native execution time before process-tree cleanup.
     pub executor_timeout: std::time::Duration,
 
     /// Path to the `claude` CLI binary.
@@ -223,16 +215,9 @@ pub struct ExecutorContext {
 
 impl ExecutorContext {
     pub fn from_config(config: &PipelineConfig) -> Self {
-        let workspace_config = WorkspaceConfig {
-            base_dir: PathBuf::from(&config.sandbox_base_dir),
-            git_repo: None,
-            git_branch: None,
-        };
-
         let wal_base_dir = PathBuf::from(&config.sandbox_base_dir).join("_wal");
 
         Self {
-            sandbox_manager: SandboxManager::new(workspace_config),
             executor_timeout: config.executor_timeout(),
             claude_cli_path: config.claude_cli_path.clone(),
             codex_cli_path: config.codex_cli_path.clone(),
@@ -358,7 +343,6 @@ impl ExecutorContext {
         ),
         String,
     > {
-        let epoch = cmd.current_epoch.unwrap_or(0);
         let session_key = &cmd.session_key;
 
         // 0. Query agent_runtime_bindings for real workspace + session ID + driver_type
@@ -394,12 +378,6 @@ impl ExecutorContext {
                  (provision must mkdir before inserting the binding)"
             ));
         }
-        // Still create a sandbox for bookkeeping (session state, epoch tracking).
-        let _sandbox = self
-            .sandbox_manager
-            .get_or_create_sandbox(session_key, &cmd.agent_id, epoch)
-            .await
-            .map_err(|e| format!("sandbox creation failed: {e}"))?;
         tracing::info!(
             session_key,
             driver_type = %drv,
@@ -617,114 +595,70 @@ impl ExecutorContext {
                 .as_deref()
                 .is_none_or(str::is_empty)
                 || !session_provenance_matches(&binding, "headless"));
-        let spawn_args = cli_driver.args_with_session_fork(
-            resume_session_id.as_deref(),
-            selected_model.as_deref(),
-            &effective_prompt,
-            fork_session,
-        );
-
         // 6. Headless mode: spawn process with prompt, read stdout directly.
         //    The process exits after one response — no need for persistent session / adapter.
         //    Every supported local CLI uses this path.
         {
-            // Redact full prompt/args — they routinely contain user message
-            // content (PII), conversation history, and credentials baked into
-            // env. Log only counts + the shape of the invocation.
+            let external_outbox_recovery_started_at = SystemTime::now();
+            let mut command =
+                choruz_host_runtime::headless::command(choruz_host_runtime::headless::TurnSpec {
+                    driver_type: &driver_type,
+                    binary_path: Some(cli_path),
+                    workspace: &work_dir,
+                    account: &binding.config_json,
+                    resume_session_id: resume_session_id.as_deref(),
+                    model: selected_model.as_deref(),
+                    prompt: &effective_prompt,
+                    fork_session,
+                })?;
+            command
+                .env("CHORUZ_SEND", work_dir.join(".choruz").join("send"))
+                .env("CHORUZ_OUTBOX_DIR", work_dir.join(".choruz-outbox"));
+            // Log invocation shape, never prompt or argument contents.
             tracing::info!(
                 event = "cli_spawn",
                 session_key,
                 driver_type = %driver_type,
-                arg_count = spawn_args.len(),
+                arg_count = command.as_std().get_args().count(),
                 prompt_len = effective_prompt.len(),
                 "spawning CLI process"
             );
-            // Hard kill timeout. tokio::time::timeout drops the inner future
-            // on elapse; `kill_on_drop(true)` propagates SIGKILL to the
-            // spawned CLI on drop, so a hung process (e.g. claude --print
-            // stuck in its own internal 10x retry on Anthropic 429) can't
-            // pin a slot forever. Covers both the "spawn returned slowly"
-            // path AND the "spawn errored but didn't exit" path because the
-            // single tokio::time::timeout wraps the whole .output() future.
-            let external_outbox_recovery_started_at = SystemTime::now();
-            let mut command = tokio::process::Command::new(cli_path);
-            configure_command_workspace(&mut command, cli_driver, &work_dir);
-            if let Some((key, value)) =
-                prepare_harness_account_env(cli_driver, &binding.config_json)?
-            {
-                command.env(key, value);
-            }
-            command
-                .args(&spawn_args)
-                .env("CHORUZ_WORKSPACE", &work_dir)
-                .env("CHORUZ_SEND", work_dir.join(".choruz").join("send"))
-                .env("CHORUZ_OUTBOX_DIR", work_dir.join(".choruz-outbox"))
-                // Auto-update suppression — per-CLI mechanisms (the old
-                // CODEX_/CLAUDE_DISABLE_UPDATE_CHECK vars were recognized
-                // by none of the CLIs): Claude reads DISABLE_AUTOUPDATER;
-                // codex takes a --config flag (see codex_exec_args). Pi has a
-                // documented environment switch; Grok uses --no-auto-update.
-                .env("DISABLE_AUTOUPDATER", "1")
-                .env("PI_SKIP_VERSION_CHECK", "1")
-                .env("CLAUDE_CODE_ENABLE_TASKS", "1") // Enable file-backed TaskCreate in --print mode
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped())
-                .kill_on_drop(true);
-            #[cfg(unix)]
-            command.process_group(0);
             if account_job.is_cancelled() {
                 return Err("Harness account was removed [kind=account_removed]".into());
             }
-            let child = command.spawn().map_err(|e| {
-                format!(
-                    "headless CLI could not start [kind={}]",
-                    classify_cli_start_error(e.kind())
-                )
-            })?;
-            let container = child.id().map(|pid| {
-                choruz_agent_runtime::process::ProcessContainer::new(format!("headless-{pid}"), pid)
-            });
-            let cli_future = async {
-                let output = child.wait_with_output();
-                tokio::pin!(output);
-                tokio::select! {
-                    result=&mut output=>result,
-                    _=account_job.cancelled()=>{
-                        if let Some(container)=&container {container.kill_all();}
-                        let _=output.await?;
-                        Err(std::io::Error::new(std::io::ErrorKind::Interrupted,"account removed"))
+            let output =
+                match choruz_host_runtime::headless::run(command, self.executor_timeout, async {
+                    account_job.cancelled().await;
+                    "Harness account was removed".into()
+                })
+                .await
+                {
+                    Ok(output) => output,
+                    Err(e) if e.kind() != std::io::ErrorKind::TimedOut => {
+                        if account_job.is_cancelled() {
+                            return Err("Harness account was removed [kind=account_removed]".into());
+                        }
+                        // Do not retain the OS error text: it can disclose a local
+                        // path. A missing executable is deterministic and must not
+                        // enter the retry loop; other spawn failures can be brief
+                        // process/OS hiccups and are safe to retry.
+                        let kind = classify_cli_start_error(e.kind());
+                        return Err(format!("headless CLI could not start [kind={kind}]"));
                     }
-                }
-            };
-
-            let output = match tokio::time::timeout(self.executor_timeout, cli_future).await {
-                Ok(Ok(output)) => output,
-                Ok(Err(e)) => {
-                    if account_job.is_cancelled() {
-                        return Err("Harness account was removed [kind=account_removed]".into());
+                    Err(_) => {
+                        tracing::error!(
+                            event = "cli_hard_timeout",
+                            session_key,
+                            driver_type = %driver_type,
+                            timeout_secs = self.executor_timeout.as_secs(),
+                            "CLI process exceeded hard timeout; process group killed and reaped"
+                        );
+                        return Err(format!(
+                            "CLI process exceeded hard timeout of {}s [kind=timeout]",
+                            self.executor_timeout.as_secs()
+                        ));
                     }
-                    // Do not retain the OS error text: it can disclose a local
-                    // path. A missing executable is deterministic and must not
-                    // enter the retry loop; other spawn failures can be brief
-                    // process/OS hiccups and are safe to retry.
-                    let kind = classify_cli_start_error(e.kind());
-                    return Err(format!("headless CLI could not start [kind={kind}]"));
-                }
-                Err(_elapsed) => {
-                    tracing::error!(
-                        event = "cli_hard_timeout",
-                        session_key,
-                        driver_type = %driver_type,
-                        timeout_secs = self.executor_timeout.as_secs(),
-                        "CLI process exceeded hard timeout; SIGKILL via kill_on_drop"
-                    );
-                    return Err(format!(
-                        "CLI process exceeded hard timeout of {}s [kind=timeout]",
-                        self.executor_timeout.as_secs()
-                    ));
-                }
-            };
+                };
 
             let stdout = String::from_utf8_lossy(&output.stdout).to_string();
             let stderr = String::from_utf8_lossy(&output.stderr).to_string();
@@ -750,11 +684,8 @@ impl ExecutorContext {
             // We still require `resume_session_id` to have been set — other
             // failure modes (network, quota, binary missing) must NOT wipe
             // the session UUID.
-            let stderr_lower = stderr.to_lowercase();
             let looks_like_resume_failure =
-                resume_session_id.as_ref().is_some_and(|s| !s.is_empty())
-                    && (contains_resume_failure_phrase(&stderr_lower)
-                        || structured_stdout_indicates_resume_failure(&stdout));
+                choruz_host_runtime::headless::resume_failed(&output, resume_session_id.as_deref());
 
             if looks_like_resume_failure {
                 // Safe to unwrap: looks_like_resume_failure implies Some(non-empty).
@@ -888,67 +819,21 @@ impl ExecutorContext {
 
             // Extract result from JSONL stdout.
             // Supports the structured event formats emitted by every local CLI.
-            let mut response_text = String::new();
-            let mut new_session_id: Option<String> = None;
+            let parsed = parse_output(cli_driver, &stdout);
+            let response_text = parsed.response_text;
+            let new_session_id = parsed.session_id;
             // Outbox commands are processed by Maildir watcher after execution.
             let mut detected_tasks: Vec<DetectedTask> = Vec::new();
             let mut is_codex_full_plan = false; // Codex sends full plan — requires replace-all
             for line in stdout.lines() {
                 if let Ok(obj) = serde_json::from_str::<serde_json::Value>(line) {
                     let msg_type = obj.get("type").and_then(|t| t.as_str()).unwrap_or("");
-                    let discovered_session_id = match cli_driver {
-                        LocalCliDriver::Pi if msg_type == "session" => {
-                            obj.get("id").and_then(|value| value.as_str())
-                        }
-                        LocalCliDriver::Grok if msg_type == "end" => {
-                            obj.get("sessionId").and_then(|value| value.as_str())
-                        }
-                        LocalCliDriver::OpenCode => {
-                            obj.get("sessionID").and_then(|value| value.as_str())
-                        }
-                        _ => None,
-                    };
-                    if let Some(session_id) = discovered_session_id {
-                        new_session_id = Some(session_id.to_owned());
-                    }
-                    if let Some(text) = structured_response_text(cli_driver, &obj) {
-                        response_text.push_str(&text);
-                    }
                     match msg_type {
-                        // ── Claude Code: session init ──
-                        "system" => {
-                            if let Some(sid) = obj.get("session_id").and_then(|s| s.as_str()) {
-                                tracing::info!(
-                                    session_key,
-                                    session_captured = true,
-                                    "claude init: captured session_id"
-                                );
-                                new_session_id = Some(sid.to_string());
-                            }
-                        }
-                        // ── Codex: thread init ──
-                        "thread.started" => {
-                            if let Some(tid) = obj.get("thread_id").and_then(|s| s.as_str()) {
-                                new_session_id = Some(tid.to_string());
-                            }
-                        }
-                        // ── Claude Code: final result ──
-                        "result" => {
-                            if let Some(result) = obj.get("result").and_then(|r| r.as_str()) {
-                                response_text = result.to_string();
-                            }
-                        }
                         // ── Codex: item completed (agent_message = reply text, todo_list = tasks) ──
                         "item.completed" => {
                             if let Some(item) = obj.get("item") {
                                 let item_type =
                                     item.get("type").and_then(|t| t.as_str()).unwrap_or("");
-                                if item_type == "agent_message" {
-                                    if let Some(text) = item.get("text").and_then(|t| t.as_str()) {
-                                        // Keep last agent_message as the response (final summary)
-                                        response_text = text.to_string();
-                                    }
-                                }
                                 // ── Codex: todo_list → task detection ──
                                 if item_type == "todo_list" {
                                     let codex_tasks = extract_codex_tasks(item);
@@ -966,13 +851,6 @@ impl ExecutorContext {
                                 if let Some(content) = msg.get("content").and_then(|c| c.as_array())
                                 {
                                     for block in content {
-                                        if let Some(text) =
-                                            block.get("text").and_then(|t| t.as_str())
-                                        {
-                                            if response_text.is_empty() {
-                                                response_text = text.to_string();
-                                            }
-                                        }
                                         // Detect tool_use blocks (outbox commands + task events)
                                         if block.get("type").and_then(|t| t.as_str())
                                             == Some("tool_use")
@@ -1007,12 +885,6 @@ impl ExecutorContext {
                         _ => {}
                     }
                 }
-            }
-
-            if cli_driver == LocalCliDriver::Muse {
-                let parsed = parse_output(cli_driver, &stdout);
-                response_text = parsed.response_text;
-                new_session_id = parsed.session_id;
             }
 
             // Write detected tasks to agent_task table
@@ -1225,24 +1097,11 @@ impl ExecutorContext {
 }
 
 // ---------------------------------------------------------------------------
-// Public API: execute_command (persistent session mode)
+// Public API: execute_command
 // ---------------------------------------------------------------------------
 
-/// Execute an agent command using a persistent session.
-///
-/// This is the main entry point called by the dispatch loop in pipeline.rs.
-/// It:
-/// 1. Validates the epoch (fencing)
-/// 2. Gets or creates a persistent claude process for the session
-/// 3. Logs the turn start in the local WAL
-/// 4. Injects the prompt via the CLI adapter
-/// 5. Reads the response from the session JSONL file
-/// 6. Records tool calls via Tool Gateway + local WAL
-/// 7. Logs the turn result in the WAL
-/// 8. Returns an AgentResult
-///
-/// Note: heartbeat and command status transitions (started / heartbeating)
-/// are managed by the dispatch loop in pipeline.rs, not here.
+/// Execute one fenced native CLI turn and record its outcome in the local WAL.
+/// The dispatch loop owns leases, heartbeats and command status transitions.
 pub async fn execute_command(ctx: &ExecutorContext, cmd: &AgentCommand) -> AgentResult {
     let start = Instant::now();
     let attempt_id = cmd.current_attempt_id.clone().unwrap_or_default();
@@ -1407,32 +1266,6 @@ pub(crate) fn is_auto_retriable_error(error: Option<&str>) -> bool {
     .any(|marker| error.contains(marker))
 }
 
-fn contains_resume_failure_phrase(text: &str) -> bool {
-    text.contains("no saved session")
-        || text.contains("invalid session identifier")
-        || text.contains("error resuming session")
-        || text.contains("no rollout found")
-        || text.contains("thread/resume failed")
-}
-
-/// Return true only for a structured CLI error event, never for assistant
-/// content carried in the same JSONL stream. This keeps a normal reply which
-/// merely discusses resume errors from clearing a valid binding session.
-fn structured_stdout_indicates_resume_failure(stdout: &str) -> bool {
-    stdout.lines().any(|line| {
-        let Ok(event) = serde_json::from_str::<serde_json::Value>(line) else {
-            return false;
-        };
-        if event.get("type").and_then(|kind| kind.as_str()) != Some("error") {
-            return false;
-        }
-        event
-            .get("message")
-            .and_then(|message| message.as_str())
-            .is_some_and(|message| contains_resume_failure_phrase(&message.to_lowercase()))
-    })
-}
-
 /// Inner implementation for persistent-session execution.
 async fn execute_command_inner(
     ctx: &ExecutorContext,
@@ -1574,39 +1407,6 @@ fn validate_cli_model_id(value: &str) -> Result<String, String> {
     choruz_agent_runtime::headless::validate_model(value)
         .map(str::to_owned)
         .map_err(|message| format!("{message} [kind=invalid_model]"))
-}
-
-fn structured_response_text(driver: LocalCliDriver, event: &serde_json::Value) -> Option<String> {
-    let event_type = event.get("type").and_then(|value| value.as_str())?;
-    match driver {
-        LocalCliDriver::Pi if event_type == "message_end" => {
-            let message = event.get("message")?;
-            if message.get("role").and_then(|value| value.as_str()) != Some("assistant")
-                || pi_message_is_failed(message)
-            {
-                return None;
-            }
-            let content = message.get("content")?;
-            if let Some(text) = content.as_str() {
-                return Some(text.to_owned());
-            }
-            let text = content
-                .as_array()?
-                .iter()
-                .filter_map(|part| part.get("text").and_then(|value| value.as_str()))
-                .collect::<String>();
-            (!text.is_empty()).then_some(text)
-        }
-        LocalCliDriver::Grok if event_type == "text" => {
-            event.get("data")?.as_str().map(ToOwned::to_owned)
-        }
-        LocalCliDriver::OpenCode if event_type == "text" => event
-            .get("part")?
-            .get("text")?
-            .as_str()
-            .map(ToOwned::to_owned),
-        _ => None,
-    }
 }
 
 #[derive(Debug, Eq, Ord, PartialEq, PartialOrd)]

@@ -1,3 +1,4 @@
+import { driverDisplayName } from "../../../../lib/drivers/driver-registry";
 import { NextRequest, NextResponse } from "next/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -42,7 +43,7 @@ describe("/api/drivers/availability", () => {
     });
     vi.mocked(getDriverAvailability).mockResolvedValue([
       {
-        label: "Codex Terminal",
+        label: driverDisplayName("codex_terminal"),
           driverId: "codex_terminal",
           available: true,
           status: "available",
@@ -57,7 +58,7 @@ describe("/api/drivers/availability", () => {
     await expect(response.json()).resolves.toEqual({
       drivers: [
         {
-          label: "Codex Terminal",
+          label: driverDisplayName("codex_terminal"),
           driverId: "codex_terminal",
           status: "available",
           reason: "Codex CLI is available.",
@@ -93,7 +94,7 @@ describe("/api/drivers/availability", () => {
     });
     vi.mocked(getDriverAvailability).mockResolvedValue([
       {
-        label: "Claude",
+        label: driverDisplayName("claude_terminal"),
         driverId: "claude_terminal",
         available: true,
         status: "available",
@@ -111,7 +112,7 @@ describe("/api/drivers/availability", () => {
     expect(body).toEqual({
       drivers: [
         {
-          label: "Claude",
+          label: driverDisplayName("claude_terminal"),
           driverId: "claude_terminal",
           status: "available",
           reason: "Claude CLI is available.",

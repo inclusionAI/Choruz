@@ -1038,6 +1038,10 @@ async fn supported_cli_driver_bindings_execute_with_fake_binaries() {
             result.error
         );
         assert_eq!(result.content.as_deref(), Some("stdout is internal"));
+        assert!(
+            !sandbox_dir.join(cmd.session_key.replace(':', "_")).exists(),
+            "the binding workspace is the only execution directory"
+        );
 
         assert!(
             workspace.join(case.expected_bootstrap).is_file(),
@@ -1716,19 +1720,6 @@ async fn codex_exec_does_not_resume_foreign_agent_session_or_workspace() {
 }
 
 #[test]
-fn structured_stdout_resume_failure_detection_ignores_assistant_text() {
-    assert!(structured_stdout_indicates_resume_failure(
-        r#"{"type":"error","message":"No saved session found with ID"}"#
-    ));
-    assert!(structured_stdout_indicates_resume_failure(
-        r#"{"type":"error","message":"Error: thread/resume: thread/resume failed: no rollout found for thread id opaque-id"}"#
-    ));
-    assert!(!structured_stdout_indicates_resume_failure(
-        r#"{"type":"item.completed","item":{"type":"agent_message","text":"The error resuming session was fixed."}}"#
-    ));
-}
-
-#[test]
 fn pi_captured_jsonl_fixture_persists_only_the_assistant_answer() {
     let user = serde_json::from_str::<serde_json::Value>(
             r#"{"type":"message_end","message":{"role":"user","content":[{"type":"text","text":"[choruz-incoming] user prompt"}]}}"#,
@@ -1739,10 +1730,14 @@ fn pi_captured_jsonl_fixture_persists_only_the_assistant_answer() {
         )
         .unwrap();
 
-    assert_eq!(structured_response_text(LocalCliDriver::Pi, &user), None);
+    assert!(
+        parse_output(LocalCliDriver::Pi, &user.to_string())
+            .response_text
+            .is_empty()
+    );
     assert_eq!(
-        structured_response_text(LocalCliDriver::Pi, &assistant).as_deref(),
-        Some("PI_IMPORT_RESUME_PI-MEM-0831-GREEN-ORBIT")
+        parse_output(LocalCliDriver::Pi, &assistant.to_string()).response_text,
+        "PI_IMPORT_RESUME_PI-MEM-0831-GREEN-ORBIT"
     );
 }
 
@@ -1772,9 +1767,6 @@ fn pi_captured_aborted_fixture_drops_partial_content_and_fails() {
 
     assert!(parsed.structured_error);
     assert!(parsed.response_text.is_empty());
-
-    let event = serde_json::from_str::<serde_json::Value>(stdout.lines().nth(1).unwrap()).unwrap();
-    assert_eq!(structured_response_text(LocalCliDriver::Pi, &event), None);
 }
 
 #[tokio::test]

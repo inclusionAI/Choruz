@@ -6,7 +6,7 @@ use axum::{
 use serde::Deserialize;
 
 use crate::{
-    ApiError, ApiState, authenticated_principal, db_persist, flush_webhooks, require_actor,
+    ApiError, ApiState, authenticated_principal, flush_webhooks, require_actor,
     require_human_operator, require_self,
 };
 
@@ -177,7 +177,7 @@ pub(crate) async fn create_direct_conversation(
     require_actor(&headers, &state, &payload.actor_id).await?;
     state.db.check_rate_limit(&payload.actor_id)?;
     let conversation = state.db.create_direct_conversation(payload).await?;
-    let _ = flush_webhooks(&state.app).await;
+    let _ = flush_webhooks(&state.db).await;
 
     Ok((StatusCode::CREATED, Json(conversation)))
 }
@@ -206,7 +206,7 @@ pub(crate) async fn create_group(
     let conversation = state.db.create_group(payload).await?;
     // Auto-create proxy bindings for agent members
     auto_create_proxy_bindings(&state, &conversation).await;
-    let _ = flush_webhooks(&state.app).await;
+    let _ = flush_webhooks(&state.db).await;
 
     Ok((StatusCode::CREATED, Json(conversation)))
 }
@@ -245,20 +245,10 @@ pub(crate) async fn migrate_conversation_workspace(
             "authenticated principal does not match actor_id".into(),
         )));
     }
-    let conversation = state.app.migrate_conversation_workspace(
-        &conversation_id,
-        &payload.workspace_id,
-        &operator.id,
-    )?;
-
-    // Persist workspace_id change to DB
-    db_persist(
-        &state.event_store,
-        "UPDATE conversation SET workspace_id = $1 WHERE id = $2",
-        &[&payload.workspace_id, &conversation_id],
-        "migrate_conversation_workspace",
-    )
-    .await;
+    let conversation = state
+        .db
+        .migrate_conversation_workspace(&conversation_id, &payload.workspace_id, &operator.id)
+        .await?;
 
     Ok(Json(conversation))
 }
@@ -278,7 +268,7 @@ pub(crate) async fn add_group_members(
         .await?;
     // Auto-create proxy bindings for newly added agent members
     auto_create_proxy_bindings(&state, &conversation).await;
-    let _ = flush_webhooks(&state.app).await;
+    let _ = flush_webhooks(&state.db).await;
 
     Ok(Json(conversation))
 }
@@ -301,7 +291,7 @@ pub(crate) async fn remove_group_member(
         .db
         .remove_group_member(&conversation_id, &query.actor_id, &principal_id)
         .await?;
-    let _ = flush_webhooks(&state.app).await;
+    let _ = flush_webhooks(&state.db).await;
 
     Ok(Json(conversation))
 }

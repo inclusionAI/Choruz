@@ -2975,11 +2975,10 @@ async fn runtime_binding_creation_defaults_mention_aliases_from_agent_name() {
         })
         .unwrap();
     // Persist principals and conversation to the test DB so DbService can find them.
-    let event_store = choruz_store::EventStore::new(&database.database_url);
-    persist_principal_to_db(&event_store, &operator).await;
-    persist_principal_to_db(&event_store, &human).await;
-    persist_principal_to_db(&event_store, &non_member).await;
-    persist_principal_to_db(&event_store, &agent.principal).await;
+    seed_principal_to_db(&database.database_url, &operator).await;
+    seed_principal_to_db(&database.database_url, &human).await;
+    seed_principal_to_db(&database.database_url, &non_member).await;
+    seed_principal_to_db(&database.database_url, &agent.principal).await;
     seed_conversation_to_db(&database.database_url, &conversation).await;
     let router = runtime_router_with_db(app, runtime.clone(), &database.database_url);
 
@@ -3054,7 +3053,6 @@ async fn runtime_binding_creation_defaults_mention_aliases_from_agent_name() {
 async fn harness_account_binding_trigger_rejects_unverified_models() {
     let database = TestDatabase::create().await;
     let runtime = RuntimeStore::new(database.database_url.clone());
-    let event_store = choruz_store::EventStore::new(&database.database_url);
     let app = choruz_application::ChatApp::new();
     let operator = LocalAuthConfig::from_env()
         .ensure_operator_sync(&app)
@@ -3075,8 +3073,8 @@ async fn harness_account_binding_trigger_rejects_unverified_models() {
             workspace_id: None,
         })
         .unwrap();
-    persist_principal_to_db(&event_store, &operator).await;
-    persist_principal_to_db(&event_store, &agent.principal).await;
+    seed_principal_to_db(&database.database_url, &operator).await;
+    seed_principal_to_db(&database.database_url, &agent.principal).await;
     seed_conversation_to_db(&database.database_url, &conversation).await;
 
     let account_id = Uuid::now_v7().to_string();

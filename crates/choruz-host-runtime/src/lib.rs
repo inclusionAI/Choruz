@@ -14,6 +14,7 @@ pub mod drivers;
 mod experience_source;
 pub mod filesystem;
 pub mod harness;
+pub mod headless;
 pub mod inbox;
 pub mod instructions;
 pub mod learning_executor;
@@ -37,6 +38,7 @@ use serde_json::{Value, json};
 
 pub use codex::{ImportedCodexSession, ManagedCodexHome};
 pub mod evaluation_replay;
+pub mod execution_identity;
 use choruz_computer_use as computer_use;
 pub use filesystem::{FilesystemEntry, FilesystemHome, FilesystemListing};
 pub use terminal::{

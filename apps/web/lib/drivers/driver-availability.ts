@@ -3,7 +3,7 @@ import { execFile } from "node:child_process";
 import path from "node:path";
 import { promisify } from "node:util";
 
-import { DRIVER_BINARIES, resolveDriverBinary, type DriverBinaryEnvVar, type DriverId } from "./driver-registry";
+import { DRIVER_BINARIES, DRIVER_DEFINITIONS, resolveDriverBinary, type DriverBinaryEnvVar, type DriverId } from "./driver-registry";
 
 export type DriverAvailabilityStatus = "available" | "unavailable";
 
@@ -31,59 +31,6 @@ export type PiRuntimeCheck = (
 
 const execFileAsync = promisify(execFile);
 
-type DriverDefinition = {
-  label: string;
-  driverId: DriverId;
-  setupHint: string;
-};
-
-const DRIVER_DEFINITIONS: DriverDefinition[] = [
-  {
-    label: "Muse Code",
-    driverId: "muse_terminal",
-    setupHint: "Install Muse Code or set CHORUZ_MUSE_BINARY to an executable path.",
-  },
-  {
-    label: "Claude",
-    driverId: "claude_terminal",
-    setupHint: "Install the Claude CLI or set CHORUZ_CLAUDE_BINARY to an executable path.",
-  },
-  {
-    label: "Codex Terminal",
-    driverId: "codex_terminal",
-    setupHint: "Install the Codex CLI or set CHORUZ_CODEX_BINARY to an executable path.",
-  },
-  {
-    label: "Codex (headless)",
-    driverId: "codex_exec",
-    setupHint: "Install the Codex CLI or set CHORUZ_CODEX_BINARY to an executable path.",
-  },
-  {
-    label: "Pi Agent",
-    driverId: "pi_terminal",
-    setupHint: "Install Pi Agent or set CHORUZ_PI_BINARY to an executable path.",
-  },
-  {
-    label: "Grok Build",
-    driverId: "grok_terminal",
-    setupHint: "Install Grok Build or set CHORUZ_GROK_BINARY to an executable path.",
-  },
-  {
-    label: "OpenCode",
-    driverId: "opencode_terminal",
-    setupHint: "Install OpenCode or set CHORUZ_OPENCODE_BINARY to an executable path.",
-  },
-  {
-    label: "MathCode",
-    driverId: "mathcode_terminal",
-    setupHint: "Install MathCode or set CHORUZ_MATHCODE_BINARY to an executable path.",
-  },
-  {
-    label: "Webhook",
-    driverId: "webhook_agent",
-    setupHint: "Provide an HTTPS webhook endpoint when creating the agent.",
-  },
-];
 
 export async function getDriverAvailability(options: {
   env?: DriverAvailabilityEnv;

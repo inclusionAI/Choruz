@@ -3,10 +3,7 @@
 use crate::attachments::{AttachmentRecord, UploadAttachmentRequest};
 use crate::handlers_workspace_sessions::native_session_import_lock_key;
 use crate::test_support::api_test_env_lock;
-use crate::{
-    ApiError, LocalAuthConfig, persist_principal_to_db, router, router_with_attachment_root,
-    router_with_runtime,
-};
+use crate::{ApiError, LocalAuthConfig, router, router_with_attachment_root, router_with_runtime};
 use axum::{
     Json as AxumJson, Router,
     body::{Body, to_bytes},
@@ -70,6 +67,7 @@ mod sessions_and_routes;
 mod sync;
 mod threads;
 mod workflow_tasks;
+mod workspace_migrations;
 
 static CHANNEL_TASK_ENV_LOCK: StdMutex<()> = StdMutex::new(());
 

@@ -273,11 +273,9 @@ impl DbService {
     /// Feedback is limited to conversations shared by this owner and the target
     /// Agent in the policy's Company. No other private conversation is exported.
     pub async fn experience_feedback(&self, claim: &ExperienceClaim) -> Result<Value, AppError> {
-        let client = self.store.connect().await?;
-        let rows = client.query("SELECT c.id,ARRAY_AGG(DISTINCT b.agent_principal_id) AS agents FROM conversation c JOIN conversation_member human ON human.conv_id=c.id AND human.principal_id=$1 AND human.removed_at IS NULL
-            JOIN agent_runtime_bindings b ON effective_experience_binding($3,b.id,$1)=$2 JOIN conversation_member agent ON agent.conv_id=c.id AND agent.principal_id=b.agent_principal_id
-            WHERE c.workspace_id=$3 AND agent.removed_at IS NULL GROUP BY c.id ORDER BY c.id", &[&claim.owner_id, &claim.binding_id, &claim.workspace_id]).await
-            .map_err(|e| AppError::Internal(format!("read feedback scopes: {e}")))?;
+        let scopes = self
+            .learning_feedback_scopes(&claim.workspace_id, &claim.owner_id, &claim.binding_id)
+            .await?;
         let mut cursors = claim.source_cursor["feedback"]
             .as_object()
             .cloned()
@@ -285,9 +283,7 @@ impl DbService {
         let mut records = Vec::new();
         let mut bytes = 0;
         let mut more = false;
-        for row in rows {
-            let id: String = row.get("id");
-            let agents: Vec<String> = row.get("agents");
+        for (id, agents) in scopes {
             let after = cursors.get(&id).and_then(Value::as_u64).unwrap_or(0);
             let messages = self
                 .store
@@ -363,35 +359,17 @@ impl DbService {
         references: &[String],
         committed: bool,
     ) -> Result<Vec<String>, AppError> {
-        let ids: Vec<_> = references
-            .iter()
-            .filter_map(|r| r.strip_prefix("message:"))
-            .collect();
-        if ids.is_empty() {
-            return Ok(Vec::new());
-        }
-        let client = self.store.connect().await?;
-        let rows = client.query("SELECT DISTINCT e.event_id,e.conversation_id,e.seq FROM conversation_events e
-            JOIN conversation c ON c.id=e.conversation_id
-            JOIN agent_runtime_bindings b ON effective_experience_binding($3,b.id,$1)=$2
-            JOIN conversation_member human ON human.conv_id=c.id AND human.principal_id=$1 AND human.removed_at IS NULL
-            JOIN conversation_member agent ON agent.conv_id=c.id AND agent.principal_id=b.agent_principal_id AND agent.removed_at IS NULL
-            WHERE c.workspace_id=$3 AND e.event_id=ANY($4)
-                AND e.event_type IN ('message','message.created','reply','runtime.decision') AND (e.sender_id=$1 OR e.sender_id=b.agent_principal_id)",
-            &[&claim.owner_id,&claim.binding_id,&claim.workspace_id,&ids]).await
-            .map_err(|e| AppError::Internal(format!("verify historical learning feedback: {e}")))?;
-        Ok(rows
+        Ok(self
+            .learning_feedback_records(
+                &claim.workspace_id,
+                &claim.owner_id,
+                &claim.binding_id,
+                committed.then_some(&claim.source_cursor),
+                references,
+            )
+            .await?
             .into_iter()
-            .filter_map(|row| {
-                let reference = format!("message:{}", row.get::<_, String>("event_id"));
-                if !committed {
-                    return Some(reference);
-                }
-                let conversation: String = row.get("conversation_id");
-                let seq: i64 = row.get("seq");
-                let after = claim.source_cursor["feedback"][&conversation].as_u64()?;
-                (u64::try_from(seq).ok()? <= after).then_some(reference)
-            })
+            .filter_map(|record| record["ref"].as_str().map(str::to_owned))
             .collect())
     }
 

@@ -412,16 +412,31 @@ async fn telemetry_batches_are_atomic_idempotent_and_actor_scoped() {
 
 #[tokio::test]
 async fn metrics_endpoint_reports_prometheus_text() {
+    let database = TestDatabase::create().await;
     let app = choruz_application::ChatApp::new();
-    app.create_principal(CreatePrincipalRequest {
-        workspace_id: "ws-acme".into(),
-        principal_type: PrincipalType::Human,
-        name: "Alice".into(),
-        avatar_url: None,
-    })
-    .unwrap();
+    let principal = app
+        .create_principal(CreatePrincipalRequest {
+            workspace_id: "ws-acme".into(),
+            principal_type: PrincipalType::Human,
+            name: "Alice".into(),
+            avatar_url: None,
+        })
+        .unwrap();
+    seed_principal_to_db(&database.database_url, &principal).await;
 
-    let response = router(app)
+    let router = router_with_db(choruz_application::ChatApp::new(), &database.database_url);
+    let health = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/healthz")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(health.status(), StatusCode::OK);
+    let response = router
         .oneshot(
             Request::builder()
                 .uri("/metrics")
@@ -637,7 +652,6 @@ async fn webhook_deliveries_retry_until_success() {
         .unwrap();
     assert_eq!(send.status(), StatusCode::CREATED);
 
-    tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(
         webhook_state.attempts.load(Ordering::SeqCst),
         1,
@@ -669,9 +683,13 @@ async fn webhook_deliveries_retry_until_success() {
     .await
     .unwrap();
     assert_eq!(payload["event_type"], "message.created");
+    assert_eq!(
+        payload["payload"]["content"], "deliver",
+        "webhooks must carry the canonical persisted message, not a second in-memory announcement"
+    );
     assert!(payload["event_id"].as_str().is_some());
-    let headers = webhook_state.headers.lock().await;
-    let headers = headers.first().expect("captured webhook headers");
+    let captured_headers = webhook_state.headers.lock().await;
+    let headers = captured_headers.first().expect("captured webhook headers");
     assert!(headers.contains_key("x-choruz-event-id"));
     assert!(headers.contains_key("x-choruz-timestamp"));
     assert!(headers.contains_key("x-choruz-signature"));
@@ -679,10 +697,51 @@ async fn webhook_deliveries_retry_until_success() {
     assert!(!headers.contains_key(format!("x-{legacy_prefix}-event-id")));
     assert!(!headers.contains_key(format!("x-{legacy_prefix}-timestamp")));
     assert!(!headers.contains_key(format!("x-{legacy_prefix}-signature")));
-    assert!(app.collect_pending_webhook_deliveries().is_empty());
+    drop(captured_headers);
+    let db =
+        choruz_application::DbService::new(choruz_store::EventStore::new(&database.database_url));
+    assert!(
+        db.collect_pending_webhook_deliveries()
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    let updated = db
+        .set_event_webhook(
+            &agent.principal.id,
+            SetEventWebhookRequest {
+                actor_id: operator.id.clone(),
+                url: format!("http://{webhook_address}/hook"),
+                event_types: vec!["message.created".into()],
+                secret: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        updated.cursor,
+        payload["delivery_seq"].as_u64().unwrap(),
+        "receiver updates retain the committed cursor"
+    );
+    let restarted = router_with_db(choruz_application::ChatApp::new(), &database.database_url);
+    let (status, body) = api_json_payload_request(
+        restarted,
+        &operator,
+        Method::POST,
+        "/v1/webhooks/flush".into(),
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body["attempted"], 0,
+        "a fresh process must not redeliver committed events"
+    );
 
     server.abort();
     webhook_server.abort();
+    let _ = server.await;
+    let _ = webhook_server.await;
 }
 
 #[tokio::test]

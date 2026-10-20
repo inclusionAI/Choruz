@@ -187,22 +187,14 @@ async fn prepare(state: &ApiState, claim: &BehaviorClaim) -> Result<BehaviorReco
     references.sort();
     references.dedup();
     let mut records = state.db.behavior_feedback(claim, &references).await?;
-    let host = RuntimeHost::for_binding(state, &target)?;
-    let anchor = target.valid_terminal_session_anchor_for_context(
-        None,
-        None,
-        Some(target.terminal_generation()),
-        None,
-    );
-    for cursor in claim
-        .cursor
-        .as_object()
-        .into_iter()
-        .flat_map(|map| map.values())
+    for source in
+        crate::learning_sources::native_sources(state, &actor, &claim.workspace_id, &target).await?
     {
-        let Ok(cursor) = serde_json::from_value::<Cursor>(cursor.clone()) else {
+        let Some(value) = claim.cursor.get(&source.key) else {
             continue;
         };
+        let cursor: Cursor = serde_json::from_value(value.clone())
+            .map_err(|_| AppError::Internal("Invalid stored behavior source cursor".into()))?;
         let requested: Vec<_> = references
             .iter()
             .filter(|r| r.starts_with(&format!("{}:", cursor.session)))
@@ -211,20 +203,20 @@ async fn prepare(state: &ApiState, claim: &BehaviorClaim) -> Result<BehaviorReco
         if requested.is_empty() {
             continue;
         }
-        let home = anchor
-            .as_ref()
-            .filter(|a| a.session_id == cursor.session)
-            .map(|a| a.native_home_path.clone())
-            .filter(|p| !p.is_empty());
-        let recovered: Vec<HistoricalRecord> = host
+        let mut spec = source.spec;
+        if spec
+            .resume_session_id
+            .as_deref()
+            .is_some_and(|session| session != cursor.session)
+        {
+            return Err(AppError::Conflict(
+                "Behavior evidence session changed".into(),
+            ));
+        }
+        spec.resume_session_id = Some(cursor.session.clone());
+        let recovered: Vec<HistoricalRecord> = RuntimeHost::for_binding(state, &source.binding)?
             .call(HostRequest::BehaviorReferences {
-                spec: Box::new(terminal_spec(
-                    &target,
-                    120,
-                    40,
-                    Some(cursor.session.clone()),
-                    home,
-                )),
+                spec: Box::new(spec),
                 cursor,
                 references: requested,
             })

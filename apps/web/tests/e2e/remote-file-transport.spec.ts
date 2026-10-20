@@ -4,8 +4,57 @@ import { join } from "node:path";
 import { createHmac, randomBytes } from "node:crypto";
 import { expect } from "@playwright/test";
 import { test, openRemoteDashboard } from "../fixtures/remote-dashboard";
-import { API_BASE, gotoDashboard, signup } from "../fixtures/auth";
-import { createCompany, createGroup, sendMessage, uniqueName } from "../fixtures/api";
+import { API_BASE, expandSidebarConversationSections, gotoDashboard, signup } from "../fixtures/auth";
+import { createAgent, createCompany, createGroup, sendMessage, uniqueName } from "../fixtures/api";
+
+test("remote thread receipts clear unread state on B rather than the hosted origin", async ({ page, hostedDashboard, ownedResources }) => {
+  const { token, principal } = await signup(page, uniqueName("r-thread"), "Owned-password-123!");
+  const company = await createCompany(page, token, principal.id, uniqueName("Remote threads"));
+  ownedResources.push(async (request) => {
+    expect((await request.delete(`${API_BASE}/v1/companies/${company.id}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })).ok()).toBeTruthy();
+  });
+  const agent = await createAgent(page, token, principal.id, uniqueName("Thread author"), company.id);
+  const group = await createGroup(page, token, principal.id, uniqueName("Thread group"), [agent.principal.id], company.id);
+  const root = await sendMessage(page, token, principal.id, group.id, "Review the release checklist");
+  const reply = await page.request.post(`${API_BASE}/v1/messages`, {
+    headers: { Authorization: `Bearer ${agent.secret}` },
+    data: {
+      actor_id: agent.principal.id,
+      conversation_id: group.id,
+      content: "The release checklist is ready",
+      content_type: "text",
+      idempotency_key: crypto.randomUUID(),
+      metadata: { reply_to_id: root.id, thread: true },
+    },
+  });
+  expect(reply.ok(), await reply.text()).toBeTruthy();
+  const ownerUnreadCount = async () => {
+    const result = await page.request.get(`${API_BASE}/v1/unreads`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    expect(result.ok()).toBeTruthy();
+    const rows = await result.json() as Array<{ conversation_id: string; thread_unread_count: number }>;
+    const row = rows.find((row) => row.conversation_id === group.id);
+    expect(row, "B retains the owned conversation's unread row").toBeDefined();
+    return row!.thread_unread_count;
+  };
+  expect(await ownerUnreadCount()).toBe(1);
+  await openRemoteDashboard(page, token, hostedDashboard.origin);
+  await page.locator(".company-selector-btn").click();
+  await page.locator(".company-dropdown-item-name").filter({ hasText: company.name }).click();
+  await expandSidebarConversationSections(page);
+  const item = page.locator(`[data-conversation-id="${group.id}"]`);
+  await expect(item.locator(".conv-thread-unread")).toHaveText("1");
+  await item.click();
+  expect(await ownerUnreadCount()).toBe(1);
+  await page.locator(".msg-thread-rollup").click();
+  await expect(page.locator(".thread-panel")).toContainText("The release checklist is ready");
+  await expect.poll(ownerUnreadCount).toBe(0);
+  await expect(item.locator(".conv-thread-unread")).toHaveCount(0);
+  expect(hostedDashboard.apiRequests).toEqual([]);
+});
 
 test("signed pairing registers only authenticated unexpired hosts", async ({ request }) => {
   const gateway = process.env.CHORUZ_REMOTE_CONTROL_GATEWAY_URL!;
