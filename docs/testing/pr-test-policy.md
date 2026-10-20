@@ -27,8 +27,8 @@ add gates, never remove them.**
 | `ui` | Component or unit test when behaviour changes; e2e for a critical path | Web unit + typecheck + build, the e2e specs mapped to the touched feature |
 | `api` / `database` | Tests for the behaviour change; a migration gets a smoke run | Rust tests, migration + API smoke; label `database` also runs the full e2e suite |
 | `security` / `auth` | Tests for the new rule; e2e regression for login or permission flows | Rust/web tests; label `security` also runs the full e2e suite |
-| `ci` / `build` / `deps` | Policy tests for CI scripts; nothing else | Full e2e suite (any change under `.github/**`), static checks, and whatever the touched paths select |
-| `docs` / `chore` | None | Nothing: only `Detect changes` and the aggregator, about 30 seconds |
+| `ci` / `build` / `deps` | Policy tests for CI scripts; nothing else | Full e2e suite for `.github/{workflows,actions,scripts}/**`, static checks, and whatever the touched paths select |
+| `docs` / `chore` | None for pure prose | Pure prose: only `Detect changes` and the aggregator. Executable/configuration changes select jobs by path regardless of the declared type. |
 
 ## Behaviour acceptance evidence
 
@@ -99,7 +99,7 @@ Static checks runs the [architecture boundary gate](architecture-boundaries.md) 
 | `services/remote-control-gateway/**` | Remote Control Gateway check + test |
 | `infra/ops/**` | Ops lint |
 | `scripts/**`, `infra/host/**` | Host lifecycle policy tests |
-| `.github/**` | CI gate policy tests, full e2e suite |
+| `.github/{workflows,actions,scripts}/**` | CI gate policy tests, full e2e suite and the selected Rust, web, database and packaging jobs |
 | Any non-documentation file | Security scan (cargo-deny, trivy) |
 | `main` (push) | Everything, plus the full e2e suite, performance smoke and release packaging |
 

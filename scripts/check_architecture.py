@@ -8,6 +8,7 @@ its negative control together.
 
 import argparse
 from dataclasses import dataclass
+from fnmatch import fnmatchcase
 from pathlib import Path
 import re
 import subprocess
@@ -174,7 +175,7 @@ def check(root: Path, files: list[str]) -> list[str]:
         for path in sorted(paths):
             if path in (rule.owner, SERVER_AUTH) or ".test." in path:
                 continue
-            if not any(Path(path).match(scope) for scope in rule.scopes):
+            if not any(fnmatchcase(path, scope) for scope in rule.scopes):
                 continue
             for match in re.finditer(rule.forbidden, source(path)):
                 line = source(path).count("\n", 0, match.start()) + 1

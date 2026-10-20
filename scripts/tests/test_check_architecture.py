@@ -86,6 +86,7 @@ await transport.fetch('/api/v1/messages');
 """)
         self.append("apps/web/lib/api/api-auth.ts", "await fetch('/v1/me');")
         self.append("apps/web/lib/api/new-client.test.ts", "await fetch('/fixture');")
+        self.append("apps/web/lib/api/clients/README.md", "Use fetch(url) only through the transport.")
         path = "services/choruz-connector/src/main.rs"
         self.append(path, '#[cfg(test)]\nmod tests { fn fixture() { Command::new("fixture"); } }')
         self.assertEqual(check(self.root, self.files), [])
@@ -117,11 +118,12 @@ await transport.fetch('/api/v1/messages');
         command = [sys.executable, str(SCRIPT), "--root", str(self.root)]
         before = subprocess.run(command, capture_output=True, text=True)
         self.assertEqual(before.returncode, 0, before.stdout + before.stderr)
-        self.append("apps/web/lib/api/new-client.ts", "await window.fetch('/api/v1/messages');")
-        subprocess.run(["git", "-C", str(self.root), "add", "."], check=True)
-        rejected = subprocess.run(command, capture_output=True, text=True)
-        self.assertEqual(rejected.returncode, 1, rejected.stdout + rejected.stderr)
-        self.assertIn("new-client.ts:2: browser-api-transport bypass", rejected.stdout)
+        for path in ("apps/web/lib/api/new-client.ts", "apps/web/lib/api/clients/nested/new-client.ts"):
+            self.append(path, "await window.fetch('/api/v1/messages');")
+            subprocess.run(["git", "-C", str(self.root), "add", "."], check=True)
+            rejected = subprocess.run(command, capture_output=True, text=True)
+            self.assertEqual(rejected.returncode, 1, rejected.stdout + rejected.stderr)
+            self.assertIn(path + ":2: browser-api-transport bypass", rejected.stdout)
 
 
 if __name__ == "__main__":
