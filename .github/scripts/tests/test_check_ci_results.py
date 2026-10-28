@@ -34,6 +34,45 @@ class CheckCiResultsTests(unittest.TestCase):
         self.assertIn("cargo tree -p choruz-router --no-default-features --edges normal", rust_job)
         self.assertIn("exit 1", rust_job)
 
+    def test_server_and_schema_pull_requests_require_the_load_smoke(self) -> None:
+        workflow = (SCRIPT.parents[2] / ".github/workflows/ci.yml").read_text()
+        step = workflow.split("        id: required\n", 1)[1].split("\n\n", 1)[0]
+        script = step.split("        run: |\n", 1)[1]
+        perf_job = workflow.split("  perf:\n", 1)[1].split("\n\n", 1)[0]
+        self.assertIn("needs.changes.outputs.db == 'true'", perf_job)
+
+        def required(**changes: str) -> list[str]:
+            env = {
+                "PATH": os.environ["PATH"],
+                "GITHUB_OUTPUT": os.devnull,
+                "EVENT": "pull_request",
+                "RUST_COUNT": "1",
+                "E2E_SHARDS": "1",
+                **changes,
+            }
+            result = subprocess.run(
+                ["bash", "-c", "\n".join(line[10:] for line in script.splitlines())],
+                env=env,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            return result.stdout.strip().removeprefix("required: ").split(",")
+
+        self.assertIn("perf", required(DB="true", RUST="true"))
+        self.assertIn("perf", required(DB="true"))
+        self.assertNotIn("perf", required(WEB="true"))
+        self.assertNotIn("perf", required(DOCS_ONLY="true"))
+
+    def test_every_job_runs_on_a_pinned_runner_image(self) -> None:
+        # A moving `ubuntu-latest` changed under the embedded PostgreSQL and
+        # Playwright, which do not support every new image on release day.
+        workflow = (SCRIPT.parents[2] / ".github/workflows/ci.yml").read_text()
+        runners = re.findall(r"^\s+runs-on:\s*(\S+)", workflow, re.MULTILINE)
+        self.assertTrue(runners)
+        for runner in runners:
+            self.assertRegex(runner, r"^ubuntu-\d{2}\.\d{2}$")
+
     def test_browser_failure_artifacts_survive_a_passing_retry(self) -> None:
         root = SCRIPT.parents[2]
         config = (root / "apps/web/playwright.config.ts").read_text()

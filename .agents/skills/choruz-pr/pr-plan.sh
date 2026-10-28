@@ -57,6 +57,7 @@ if matches '^(crates/choruz-host-runtime/assets/|apps/web/|package\.json|pnpm-lo
 fi
 if matches '^(migrations/|infra/host/|scripts/historical-migrations\.sha256|crates/|services/|apps/choruz-|Cargo\.|\.cargo/|rust-toolchain|infra/host/setup_test_database\.sh|\.github/(workflows|actions|scripts)/)'; then
   echo "  DB and API smoke"
+  echo "  Performance smoke (k6 load against a release gateway)"
 fi
 e2e_paths='^(crates/choruz-host-runtime/assets/|apps/web/|package\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml|\.github/(workflows|actions|scripts)/|infra/host/|migrations/|crates/|services/|apps/choruz-|Cargo\.|\.cargo/|rust-toolchain|infra/host/setup_test_database\.sh)'
 if [ -n "$specs" ] && matches "$e2e_paths"; then
@@ -85,6 +86,9 @@ if matches '^(crates/choruz-host-runtime/assets/|apps/web/|package\.json|pnpm-lo
 fi
 if [ -n "$specs" ] && matches "$e2e_paths"; then
   echo "  bash infra/host/web_e2e.sh $specs"
+fi
+if matches '^(migrations/|infra/host/|scripts/historical-migrations\.sha256|crates/|services/|apps/choruz-|Cargo\.|\.cargo/|rust-toolchain|\.github/(workflows|actions|scripts)/)'; then
+  echo "  pnpm perf:ws:smoke"
 fi
 echo
 echo "Labels: add 'database' or 'security' when the PR type is api/database or security/auth (runs the full e2e suite); 'ci-full' to ask for it on any PR."

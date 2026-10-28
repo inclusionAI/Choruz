@@ -423,7 +423,6 @@ async fn review(
     if program_pending {
         return Err(AppError::Validation("Core learning was saved, but program construction is pending. Check or reselect the program builder account and device in learning settings.".into()));
     }
-    state.db.finish_experience_window(claim).await?;
     Ok(())
 }
 

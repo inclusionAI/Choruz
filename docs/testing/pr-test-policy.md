@@ -90,18 +90,18 @@ Static checks runs the [architecture boundary gate](architecture-boundaries.md) 
 
 | Changed path | Jobs |
 |---|---|
-| `crates/**`, `services/**`, `apps/choruz-*/**` | Rust lint and tests for the changed crates and every crate that depends on them (`select_rust_packages.py`), DB and API smoke, e2e (P0 set) |
+| `crates/**`, `services/**`, `apps/choruz-*/**` | Rust lint and tests for the changed crates and every crate that depends on them (`select_rust_packages.py`), DB and API smoke, performance smoke, e2e (P0 set) |
 | `crates/choruz-host-runtime/assets/agent-templates/**` | Rust tests for `choruz-host-runtime` and its dependents, the web template unit test, e2e (P0 set) |
-| `migrations/**`, `Cargo.*`, `.cargo/**`, `rust-toolchain*` | Rust lint and tests for the whole workspace, DB and API smoke, e2e (P0 set) |
+| `migrations/**`, `Cargo.*`, `.cargo/**`, `rust-toolchain*` | Rust lint and tests for the whole workspace, DB and API smoke, performance smoke, e2e (P0 set) |
 | `apps/web/**`, `package.json`, `pnpm-lock.yaml` | Web: `vitest related` for the changed source files (the whole suite when the harness changes), typecheck, build; e2e for the touched feature (see below) |
-| `infra/host/**`, `scripts/historical-migrations.sha256` | DB and API smoke, e2e (P0 set) |
+| `infra/host/**`, `scripts/historical-migrations.sha256` | DB and API smoke, performance smoke, e2e (P0 set) |
 | `services/choruz-bridge/**` | Bridge build and tests |
 | `services/remote-control-gateway/**` | Remote Control Gateway check + test |
 | `infra/ops/**` | Ops lint |
 | `scripts/**`, `infra/host/**` | Host lifecycle policy tests |
 | `.github/{workflows,actions,scripts}/**` | CI gate policy tests, full e2e suite and the selected Rust, web, database and packaging jobs |
 | Any non-documentation file | Security scan (cargo-deny, trivy) |
-| `main` (push) | Everything, plus the full e2e suite, performance smoke and release packaging |
+| `main` (push) | Everything, plus the full e2e suite and release packaging |
 
 ### Which e2e specs a web change runs
 

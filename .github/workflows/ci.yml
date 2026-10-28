@@ -34,7 +34,7 @@ env:
 jobs:
   changes:
     name: Detect changes
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: read
@@ -186,6 +186,9 @@ jobs:
             [ "$DB" = true ] && add db-smoke
             [ "$E2E" = true ] && [ "$E2E_SHARDS" != 0 ] && add e2e
             [ "$FULL" = true ] && add e2e-full
+            # Pool starvation and lock contention only show under concurrent
+            # load, so any server or schema change runs the load smoke too.
+            [ "$DB" = true ] && add perf
             { [ "$CI_FILES" = true ] || [ "$OPS" = true ]; } && add release-package
           fi
           echo "full=$FULL" >> "$GITHUB_OUTPUT"
@@ -196,7 +199,7 @@ jobs:
     name: Rust lint
     needs: changes
     if: (github.event_name == 'push' || needs.changes.outputs.rust == 'true') && needs.changes.outputs.rust_count != '0'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -214,7 +217,7 @@ jobs:
     name: Rust tests
     needs: changes
     if: (github.event_name == 'push' || needs.changes.outputs.rust == 'true') && needs.changes.outputs.rust_count != '0'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -252,7 +255,7 @@ jobs:
     name: Web
     needs: changes
     if: github.event_name == 'push' || needs.changes.outputs.web == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -287,7 +290,7 @@ jobs:
     name: Static checks
     needs: changes
     if: github.event_name == 'push' || needs.changes.outputs.docs_only != 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
       PUSH: ${{ github.event_name == 'push' }}
@@ -345,7 +348,7 @@ jobs:
     name: DB and API smoke
     needs: changes
     if: github.event_name == 'push' || needs.changes.outputs.db == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -365,7 +368,7 @@ jobs:
     name: Web E2E (${{ matrix.shard }}/${{ needs.changes.outputs.e2e_shard_count }})
     needs: changes
     if: (github.event_name == 'push' || needs.changes.outputs.e2e == 'true') && needs.changes.outputs.e2e_shard_count != '0'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -395,7 +398,7 @@ jobs:
     name: Web E2E full (${{ matrix.shard }}/4)
     needs: changes
     if: needs.changes.outputs.full == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -420,8 +423,9 @@ jobs:
 
   perf:
     name: Performance smoke
-    if: github.event_name == 'push'
-    runs-on: ubuntu-latest
+    needs: changes
+    if: github.event_name == 'push' || needs.changes.outputs.db == 'true'
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -464,7 +468,7 @@ jobs:
     name: CI (linux) required
     if: always()
     needs: [changes, rust-lint, rust-test, web, checks, db-smoke, e2e, e2e-full, perf, release-package]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4

@@ -44,9 +44,14 @@ impl DbService {
         principal_id: &str,
     ) -> Result<std::collections::HashSet<String>, AppError> {
         let principal = self.get_principal(principal_id).await?;
-        let client = self.store.connect().await?;
+        // Release the connection before `list_companies` acquires its own:
+        // holding one while waiting for another starves the pool under load.
+        let native_accessible = {
+            let client = self.store.connect().await?;
+            workspace_access(&client, &principal, &principal.workspace_id).await?
+        };
         let mut ids = std::collections::HashSet::new();
-        if workspace_access(&client, &principal, &principal.workspace_id).await? {
+        if native_accessible {
             ids.insert(principal.workspace_id.clone());
         }
         for company in self.list_companies(principal_id).await? {

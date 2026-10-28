@@ -16,7 +16,9 @@ use futures_util::{SinkExt, StreamExt};
 use hkdf::Hkdf;
 use hmac::{Hmac, Mac};
 use p256::{
-    EncodedPoint, PublicKey, SecretKey, ecdh::diffie_hellman, elliptic_curve::sec1::ToEncodedPoint,
+    PublicKey, SecretKey,
+    ecdh::diffie_hellman,
+    elliptic_curve::{Generate, sec1::ToSec1Point},
 };
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
@@ -173,7 +175,7 @@ pub async fn pair(
 ) -> Result<RemoteCredentials, String> {
     install_tls_provider()?;
     let (pairing_id, credential_secret) = parse_credential(credential)?;
-    let secret = SecretKey::random(&mut rand::rngs::OsRng);
+    let secret = SecretKey::generate();
     let device_public_key = public_jwk(secret.public_key());
     let device_nonce = random_base64(16);
     let device_commitment = pairing_commitment(&device_public_key, &device_nonce);
@@ -809,7 +811,7 @@ fn random_base64(bytes: usize) -> String {
 }
 
 fn public_jwk(public_key: PublicKey) -> String {
-    let point = public_key.to_encoded_point(false);
+    let point = public_key.to_sec1_point(false);
     json!({
         "kty": "EC",
         "crv": "P-256",
@@ -835,9 +837,9 @@ fn peer_public_key(jwk: &str) -> Result<PublicKey, String> {
     if x.len() != 32 || y.len() != 32 {
         return Err("peer public key has invalid coordinates".into());
     }
-    let point =
-        EncodedPoint::from_affine_coordinates(x.as_slice().into(), y.as_slice().into(), false);
-    PublicKey::from_sec1_bytes(point.as_bytes()).map_err(|_| "peer public key is invalid".into())
+    // Uncompressed SEC1 encoding: 0x04 || x || y.
+    let point = [&[0x04][..], &x, &y].concat();
+    PublicKey::from_sec1_bytes(&point).map_err(|_| "peer public key is invalid".into())
 }
 
 fn pairing_secret(
