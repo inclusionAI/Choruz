@@ -137,6 +137,10 @@ you add a feature with its own spec.
 - Add the `ci-full` label to run the full e2e suite (four shards, about
   5 minutes). Later pushes keep running it.
 - Labels `database` and `security` run the full suite as well.
+- Change detection and `CI (linux) required` read the pull request's labels
+  when they run, not the triggering event's. A run that started before one of
+  these labels was applied fails the required check instead of passing
+  without the suite; re-run the run the label triggered.
 - The full suite always runs after merge on `main`; a failure there is a
   bug to fix forward, not a reason to skip it on the next PR.
 

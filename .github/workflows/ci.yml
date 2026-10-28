@@ -169,11 +169,13 @@ jobs:
           E2E_SHARDS: ${{ steps.e2e.outputs.shard_count }}
           RUST_COUNT: ${{ steps.rust.outputs.count }}
           DOCS_ONLY: ${{ steps.e2e.outputs.docs_only }}
-          # The full e2e suite runs on main, on a change to the workflow
-          # itself, and on request: the ci-full label or a label naming a
-          # high-risk area (see docs/testing/pr-test-policy.md).
-          FULL: ${{ github.event_name == 'push' || steps.filter.outputs.ci == 'true' || contains(github.event.pull_request.labels.*.name, 'ci-full') || contains(github.event.pull_request.labels.*.name, 'database') || contains(github.event.pull_request.labels.*.name, 'security') }}
+          # check_ci_results.py owns when the full e2e suite runs; it reads the
+          # pull request's current labels, not the triggering event's.
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
+          FULL="$(python3 .github/scripts/check_ci_results.py full)"
           if [ "$EVENT" = push ]; then
             list="rust-lint,rust-test,web,checks,db-smoke,e2e,e2e-full,perf,release-package"
           else
@@ -470,6 +472,9 @@ jobs:
     needs: [changes, rust-lint, rust-test, web, checks, db-smoke, e2e, e2e-full, perf, release-package]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with: { persist-credentials: false }
@@ -480,4 +485,9 @@ jobs:
           # Jobs the changes job skipped are not required; a job that was
           # skipped for any other reason (or failed) still fails the gate.
           REQUIRED_NEEDS: ${{ needs.changes.outputs.required }}
+          # A label applied after change detection must not pass a run that
+          # skipped the suite it requires.
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: python3 .github/scripts/check_ci_results.py

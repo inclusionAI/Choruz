@@ -125,6 +125,8 @@ affected checks. An earlier verdict does not certify a different diff.
 
   Without the label the full suite does not run for that type; the label is
   the author's responsibility, so add it in the same step as opening the PR.
+  Opening and labelling start two runs and one is cancelled; if the required
+  check reports that a label needs the full suite, re-run the labelled run.
 - Commit messages: Conventional Commits, and no model names or session URLs in
   titles or bodies beyond the trailers this repository already uses.
 
