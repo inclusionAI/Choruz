@@ -303,7 +303,20 @@ runtimeTest("removing a remote account stops its native process and preserves an
 });
 
 runtimeTest("background experience follows the selected remote Agent and applies only to later turns", async ({ page, device }) => {
-  test.setTimeout(180_000);
+  // Background work runs on worker cadences, not on request (each loop polls
+  // every 15 s): learning checks, automatic-evaluation queueing, and the two
+  // behavior-community stages. Each wait allows the cadences it crosses plus
+  // fixture work; under six parallel workers the measured maxima were
+  // candidate 15 s, activation 19 s, community card 56 s and team review 38 s.
+  const cycle = 15_000;
+  const work = 30_000;
+  const candidateBound = cycle + work;
+  const activationBound = cycle + work;
+  const cardBound = 3 * cycle + work;
+  const teamBound = 3 * cycle + work;
+  // The remaining steps (device setup, CLI build, direct turns) take about a
+  // minute; 120 s leaves room for them on a loaded runner.
+  test.setTimeout(candidateBound + activationBound + cardBound + teamBound + candidateBound + 120_000);
   const { company, host, headers, home } = device;
   const cli = path.join(home, "learning-source-cli");
   const analystCli = path.join(home, "learning-analyst-cli");
@@ -325,7 +338,6 @@ runtimeTest("background experience follows the selected remote Agent and applies
   const [target, analyst] = agents;
   const exec = promisify(execFile);
   const root = path.resolve("../..");
-  await exec("cargo", ["build", "-p", "choruz-cli"], { cwd: root, timeout: 120_000 });
   const settingsFile = path.join(home, "learning-settings.json");
   await writeFile(settingsFile, JSON.stringify({ enabled: false, analyst_binding_id: analyst.binding.id }));
   const runCli = async (...args: string[]) => JSON.parse((await exec(path.join(root, "target/debug/choruz"), args, {
@@ -388,7 +400,8 @@ runtimeTest("background experience follows the selected remote Agent and applies
     expect(response.ok(), await response.text()).toBe(true);
     return response.json();
   };
-  await expect.poll(async () => (await status()).policy?.active_revision_id, { timeout: 45_000 }).toBeTruthy();
+  await expect.poll(async () => (await status()).revisions.length, { timeout: candidateBound }).toBeGreaterThan(0);
+  await expect.poll(async () => (await status()).policy?.active_revision_id, { timeout: activationBound }).toBeTruthy();
   const learned = await status();
   expect(learned.policy.optimization_settings.suite.name).toBe("Verification format");
   expect(learned.policy.optimization_settings.suite.cases[0].check).toEqual({ type: "judge", expected: "CHECKED", rubric: "The answer must report the verified check result." });
@@ -412,7 +425,7 @@ runtimeTest("background experience follows the selected remote Agent and applies
   await session.getByRole("button", { name: "Experience learning", exact: true }).click();
   await expect(dialog.getByRole("region", { name: "Evaluation history" })).toContainText("Application: applied");
   const localCard = community.locator("details").filter({ hasText: "Completion without verification" }).first();
-  await expect(localCard.locator("summary")).toBeVisible({ timeout: 30_000 });
+  await expect(localCard.locator("summary")).toBeVisible({ timeout: cardBound });
   await localCard.locator("summary").click();
   await expect(localCard).toContainText("Execution model:");
   await expect(localCard).toContainText("The Agent claimed completion without checking.");
@@ -434,7 +447,18 @@ runtimeTest("background experience follows the selected remote Agent and applies
     await schedulingDb.query("UPDATE experience_policy SET next_check_at=NOW() WHERE binding_id=$1 AND lease_token IS NULL", [target.binding.id]);
     const result = await status();
     return result.revisions.find((row: { id: string }) => row.id === result.policy.active_revision_id)?.validation.team?.review;
-  }, { timeout: 75_000 }).toBe("passed");
+  }, { timeout: teamBound }).toBe("passed");
+  // Preparation rejects a selection that changes underneath it. Stop new
+  // learning checks, then wait until neither a check nor an automatic
+  // evaluation can still switch the active revision: no lease, nothing
+  // queued or running, and no reviewed candidate awaiting its evaluation.
+  await schedulingDb.query("UPDATE experience_policy SET next_check_at=NOW()+INTERVAL '1 day' WHERE binding_id=$1", [target.binding.id]);
+  await expect.poll(async () => (await schedulingDb.query(`SELECT p.lease_token IS NULL
+      AND NOT EXISTS (SELECT 1 FROM experience_evaluation e WHERE e.binding_id=p.binding_id AND e.status IN ('queued','running'))
+      AND NOT EXISTS (SELECT 1 FROM experience_revision r WHERE r.binding_id=p.binding_id AND r.policy_generation=p.generation
+        AND r.disposition='candidate' AND r.validation->>'review'='passed'
+        AND NOT EXISTS (SELECT 1 FROM experience_evaluation e WHERE e.binding_id=r.binding_id AND e.policy_generation=p.generation AND e.revision_id=r.id AND e.automatic)) AS idle
+    FROM experience_policy p WHERE p.binding_id=$1`, [target.binding.id])).rows[0].idle, { timeout: teamBound }).toBe(true);
   revision = (await status()).policy.active_revision_id;
   const selected = (await status()).revisions.find((row: { id: string }) => row.id === revision);
   expect(selected.validation.team.config.members.map((member: { name: string }) => member.name)).toEqual(["derive", "check"]);

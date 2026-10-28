@@ -22,7 +22,9 @@ pub use behavior::{BehaviorClaim, PublicationClaim};
 mod task_difficulty;
 mod trace_cases;
 pub use evaluation::{EvaluationClaim, EvaluationContext, OptimizationSetup};
-pub use experience::{ExperienceClaim, ExperiencePolicy, ExperienceReport, ExperienceRevision};
+pub use experience::{
+    CheckOutcome, ExperienceClaim, ExperiencePolicy, ExperienceReport, ExperienceRevision,
+};
 mod group_workflow_tasks;
 mod harness_account_retirement;
 pub use harness_account_retirement::AccountRetirement;

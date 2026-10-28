@@ -165,9 +165,47 @@ async fn learning_stage_checkpoints_reuse_completed_work_and_fence_revoked_claim
     )
     .await
     .unwrap();
-    db.release_experience(&claim, Some("research temporarily unavailable"))
+    db.release_experience(
+        &claim,
+        choruz_application::db_service::CheckOutcome::Failed("research temporarily unavailable"),
+    )
+    .await
+    .unwrap();
+    let runtime_probe = RuntimeStore::new(&database.database_url);
+    let probe = runtime_probe.connect().await.unwrap();
+    let failed: (Option<String>, bool) = probe
+        .query_one(
+            "SELECT last_error, next_check_at > NOW() + INTERVAL '1 minute' FROM experience_policy WHERE binding_id=$1",
+            &[&target],
+        )
         .await
+        .map(|row| (row.get(0), row.get(1)))
         .unwrap();
+    assert_eq!(
+        failed,
+        (Some("research temporarily unavailable".into()), true)
+    );
+    make_learning_due(&**probe, &target).await;
+    let busy = db.claim_experience().await.unwrap().unwrap();
+    db.release_experience(
+        &busy,
+        choruz_application::db_service::CheckOutcome::Deferred(Duration::from_secs(5)),
+    )
+    .await
+    .unwrap();
+    let deferred: (Option<String>, bool) = probe
+        .query_one(
+            "SELECT last_error, next_check_at BETWEEN NOW() + INTERVAL '3 seconds' AND NOW() + INTERVAL '6 seconds' FROM experience_policy WHERE binding_id=$1",
+            &[&target],
+        )
+        .await
+        .map(|row| (row.get(0), row.get(1)))
+        .unwrap();
+    assert_eq!(
+        deferred,
+        (None, true),
+        "a turn in progress retries within seconds and is not reported as an error"
+    );
     let runtime = RuntimeStore::new(&database.database_url);
     let client = runtime.connect().await.unwrap();
     make_learning_due(&**client, &target).await;
@@ -377,7 +415,12 @@ async fn new_tasks_share_owned_learning_without_copying_policy_state() {
         .await
         .unwrap()
         .unwrap();
-    db.release_experience(&claim, None).await.unwrap();
+    db.release_experience(
+        &claim,
+        choruz_application::db_service::CheckOutcome::Completed,
+    )
+    .await
+    .unwrap();
     client.execute("UPDATE experience_policy SET community_settings='{\"search\":false,\"automatic_trial\":false,\"contribute\":true}'::jsonb WHERE binding_id=$1", &[&root]).await.unwrap();
     client.execute("INSERT INTO experience_problem(binding_id,workspace_id,problem_key,description) VALUES($1,$2,'privacy','Consent scope fixture')", &[&root,&owner.workspace_id]).await.unwrap();
     for state in ["local", "publishing", "pending", "uncertain"] {
@@ -2787,7 +2830,12 @@ async fn evaluation_compares_frozen_revisions_with_judging_and_isolated_replay()
         .await
         .unwrap()
         .unwrap();
-    db.release_experience(&claim, None).await.unwrap();
+    db.release_experience(
+        &claim,
+        choruz_application::db_service::CheckOutcome::Completed,
+    )
+    .await
+    .unwrap();
     let runtime = RuntimeStore::new(&database.database_url);
     let client = runtime.connect().await.unwrap();
     // Upgrade an actual saved reviewer before exercising evaluation and rollback.

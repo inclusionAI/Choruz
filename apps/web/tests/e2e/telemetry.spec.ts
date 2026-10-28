@@ -10,7 +10,6 @@ test("the CLI exports every activity page and opt-in committed messages through 
   test.setTimeout(180_000);
   const exec = promisify(execFile);
   const root = resolve(process.cwd(), "../..");
-  await exec("cargo", ["build", "-p", "choruz-cli"], { cwd: root, timeout: 120_000 });
   const { token, principal } = await login(page);
   const traceId = uniqueName("activity-export");
   const since = new Date(Date.now() - 60_000).toISOString();

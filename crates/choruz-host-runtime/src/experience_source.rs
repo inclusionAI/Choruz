@@ -5,23 +5,26 @@ use choruz_common::AppError;
 use choruz_learning::native_source::{Harness, Source};
 use std::path::PathBuf;
 
-/// Only a finished platform turn may advance the analysis cursor. Historical
-/// reference recovery uses the explicitly selected session instead.
-pub(crate) fn for_read(spec: &TerminalSpec) -> Result<Source, AppError> {
+/// A turn in progress is expected and short-lived, so learning retries soon
+/// instead of treating it as a failed check.
+pub(crate) const BUSY_TURN_RETRY_MS: u64 = 5_000;
+
+/// Only a finished platform turn may advance the analysis cursor; `None`
+/// means the turn is still running. Historical reference recovery uses the
+/// explicitly selected session instead.
+pub(crate) fn for_read(spec: &TerminalSpec) -> Result<Option<Source>, AppError> {
     let live = crate::session::recorded_snapshot(spec);
     if let Ok(state) = &live
         && matches!(state.status.as_str(), "running" | "connecting" | "waiting")
     {
-        return Err(AppError::Conflict(
-            "Learning waits for the current turn to finish".into(),
-        ));
+        return Ok(None);
     }
     let id = spec.resume_session_id.as_deref().or_else(|| {
         live.as_ref()
             .ok()
             .and_then(|state| state.session_id.as_deref())
     });
-    resolve(spec, id)
+    resolve(spec, id).map(Some)
 }
 
 pub(crate) fn selected(
@@ -129,13 +132,15 @@ mod tests {
                 cursor: Default::default(),
             })
             .await;
+            let window = result.unwrap();
             if status == "idle" {
-                let window = result.unwrap();
                 assert_eq!(window["cursor"]["session"], "recorded");
                 assert_eq!(window["records"].as_array().unwrap().len(), 1);
             } else {
-                assert!(
-                    matches!(result, Err(AppError::Conflict(message)) if message.contains("turn to finish"))
+                assert_eq!(
+                    window,
+                    json!({"busy":true,"retry_after_ms":BUSY_TURN_RETRY_MS}),
+                    "a {status} turn defers learning instead of failing it"
                 );
             }
         }

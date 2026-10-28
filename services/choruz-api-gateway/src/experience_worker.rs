@@ -5,7 +5,7 @@ use crate::{
     handlers_terminals::{authorize_terminal_binding, terminal_spec},
     host_runtime::RuntimeHost,
 };
-use choruz_application::db_service::{ExperienceClaim, ExperienceReport};
+use choruz_application::db_service::{CheckOutcome, ExperienceClaim, ExperienceReport};
 use choruz_common::AppError;
 use choruz_host_runtime::HostRequest;
 use choruz_learning::analysis_workflow::finish_curation;
@@ -58,7 +58,7 @@ async fn run_analysis(state: &ApiState) {
     }
 }
 
-async fn process_claim(state: &ApiState, mut claim: ExperienceClaim) {
+pub(crate) async fn process_claim(state: &ApiState, mut claim: ExperienceClaim) {
     prepare_curation(&mut claim, chrono::Utc::now().timestamp());
     let check = LearningCheck::new(state, &claim);
     let outcome = async {
@@ -78,23 +78,56 @@ async fn process_claim(state: &ApiState, mut claim: ExperienceClaim) {
             }
         }
     }.await;
+    finish_check(state, &claim, &check, outcome).await;
+}
+
+/// Record how a check ended and release its lease. Only a busy source defers;
+/// every error, including a host or provider rate limit, is a visible failure.
+pub(crate) async fn finish_check(
+    state: &ApiState,
+    claim: &ExperienceClaim,
+    check: &LearningCheck<'_>,
+    outcome: Result<Reviewed, AppError>,
+) {
     let details = match &outcome {
-        Ok(()) => json!({"outcome":"completed"}),
+        Ok(Reviewed::Done) => json!({"outcome":"completed"}),
+        Ok(Reviewed::Deferred(delay)) => {
+            json!({"outcome":"deferred","retry_after_ms":delay.as_millis() as u64})
+        }
         Err(error) => failure(error),
     };
     if let Err(error) = check.record("check", details).await {
         tracing::warn!(trace_id=%check.id, binding_id=%claim.binding_id, %error, "learning diagnostic persistence failed");
     }
-    // Diagnostics never include the trace, model output or credentials.
-    let error = outcome.err().map(|error| match error {
-                        AppError::NotFound(message) | AppError::Conflict(message) | AppError::Validation(message) => message,
-                        AppError::Forbidden(_) | AppError::Unauthorized(_) => "Learning no longer has access to the selected Agent or workspace.".into(),
-                        _ => "Background analysis failed. Check the selected account and device; learning will retry.".into(),
-                    });
-    if let Err(error) = state.db.release_experience(&claim, error.as_deref()).await {
+    let message = failure_message(&outcome);
+    let released = match (&outcome, message.as_deref()) {
+        (Ok(Reviewed::Deferred(delay)), _) => CheckOutcome::Deferred(*delay),
+        (_, Some(message)) => CheckOutcome::Failed(message),
+        (_, None) => CheckOutcome::Completed,
+    };
+    if let Err(error) = state.db.release_experience(claim, released).await {
         tracing::warn!(binding_id=%claim.binding_id, %error, "learning lease release failed");
     }
-    tracing::info!(trace_id=%check.id, binding_id=%claim.binding_id, success=error.is_none(), "learning check finished");
+    tracing::info!(trace_id=%check.id, binding_id=%claim.binding_id, success=message.is_none(), "learning check finished");
+}
+
+/// How a learning review ended without an error.
+#[derive(Debug, PartialEq)]
+pub(crate) enum Reviewed {
+    Done,
+    /// The source turn was still running; check again after the delay.
+    Deferred(Duration),
+}
+
+/// The owner-visible reason a check failed, or `None` when it did not.
+/// Diagnostics never include the trace, model output or credentials.
+fn failure_message(outcome: &Result<Reviewed, AppError>) -> Option<String> {
+    match outcome {
+        Ok(_) => None,
+        Err(AppError::NotFound(message) | AppError::Conflict(message) | AppError::Validation(message)) => Some(message.clone()),
+        Err(AppError::Forbidden(_) | AppError::Unauthorized(_)) => Some("Learning no longer has access to the selected Agent or workspace.".into()),
+        Err(_) => Some("Background analysis failed. Check the selected account and device; learning will retry.".into()),
+    }
 }
 
 /// Revisit retained original evidence daily, after the preceding paged sweep
@@ -116,7 +149,7 @@ async fn review(
     state: &ApiState,
     claim: &ExperienceClaim,
     check: &LearningCheck<'_>,
-) -> Result<(), AppError> {
+) -> Result<Reviewed, AppError> {
     let actor = state.db.get_principal(&claim.owner_id).await?;
     // Recheck access at execution time, not only when the user enabled learning.
     let target = authorize_terminal_binding(state, &actor, &claim.binding_id)
@@ -158,6 +191,12 @@ async fn review(
                     },
                 )
                 .await?;
+            if window["busy"] == true {
+                let delay = window["retry_after_ms"].as_u64().ok_or_else(|| {
+                    AppError::Internal("Busy source window has no retry delay".into())
+                })?;
+                return Ok(Reviewed::Deferred(Duration::from_millis(delay)));
+            }
             if window["reset"] != true && cursor.offset > 0 {
                 spec.resume_session_id = Some(cursor.session.clone());
                 native_sources.push((spec, cursor));
@@ -256,7 +295,7 @@ async fn review(
                 )
                 .await?;
         }
-        return Ok(());
+        return Ok(Reviewed::Done);
     };
     // Do not activate guidance from feedback while older native work is unread.
     if retained_window.is_none() {
@@ -280,7 +319,7 @@ async fn review(
                 json!({"outcome":"already_analyzed","source_digest":digest}),
             )
             .await?;
-        return Ok(());
+        return Ok(Reviewed::Done);
     }
     let initial_input = choruz_learning::analysis_workflow::AnalysisInput {
         instruction: claim.instruction.clone(),
@@ -423,7 +462,7 @@ async fn review(
     if program_pending {
         return Err(AppError::Validation("Core learning was saved, but program construction is pending. Check or reselect the program builder account and device in learning settings.".into()));
     }
-    Ok(())
+    Ok(Reviewed::Done)
 }
 
 fn continuation_feedback_references(value: &Value, references: &mut Vec<String>) {
@@ -630,6 +669,25 @@ impl choruz_learning::task_quality::TaskServices for PlatformAnalysis<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_busy_source_defers_and_every_error_stays_visible() {
+        assert_eq!(
+            failure_message(&Ok(Reviewed::Deferred(Duration::from_secs(5)))),
+            None
+        );
+        // A provider or host rate limit is a failed check, not a busy turn.
+        assert!(
+            failure_message(&Err(AppError::RateLimited {
+                retry_after_ms: 5_000
+            }))
+            .is_some_and(|message| message.contains("learning will retry"))
+        );
+        assert_eq!(
+            failure_message(&Err(AppError::Conflict("context changed".into()))).as_deref(),
+            Some("context changed")
+        );
+    }
     use choruz_learning::analysis_workflow::{
         applied_before_failure, escalation_diagnostics, historical_applied_before_failure,
         repeated_after_prompt,
