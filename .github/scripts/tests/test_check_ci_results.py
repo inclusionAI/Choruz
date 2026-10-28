@@ -5,7 +5,10 @@ import re
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import unittest
+import urllib.error
+from unittest import mock
 
 
 SCRIPT = Path(__file__).parents[1] / "check_ci_results.py"
@@ -48,6 +51,7 @@ class CheckCiResultsTests(unittest.TestCase):
                 "EVENT": "pull_request",
                 "RUST_COUNT": "1",
                 "E2E_SHARDS": "1",
+                "PR_LABELS": "[]",
                 **changes,
             }
             result = subprocess.run(
@@ -72,6 +76,80 @@ class CheckCiResultsTests(unittest.TestCase):
         self.assertTrue(runners)
         for runner in runners:
             self.assertRegex(runner, r"^ubuntu-\d{2}\.\d{2}$")
+
+    def _required_script(self) -> str:
+        workflow = (SCRIPT.parents[2] / ".github/workflows/ci.yml").read_text()
+        step = workflow.split("        id: required\n", 1)[1].split("\n\n", 1)[0]
+        return "\n".join(line[10:] for line in step.split("        run: |\n", 1)[1].splitlines())
+
+    def _run_required(self, **env: str) -> tuple[list[str], dict[str, str]]:
+        """Run the real step as Actions does (`bash -e`) and return its job
+        list and the outputs it wrote."""
+        with tempfile.NamedTemporaryFile("r") as outputs:
+            result = subprocess.run(
+                ["bash", "-e", "-c", self._required_script()],
+                env={"PATH": os.environ["PATH"], "GITHUB_OUTPUT": outputs.name, "RUST_COUNT": "1",
+                     "E2E_SHARDS": "1", "EVENT": "pull_request", **env},
+                cwd=SCRIPT.parents[2], capture_output=True, text=True, check=True,
+            )
+            written = dict(line.split("=", 1) for line in outputs.read().splitlines())
+        return result.stdout.strip().rsplit("required: ", 1)[-1].split(","), written
+
+    def _selected(self, **env: str) -> list[str]:
+        return self._run_required(**env)[0]
+
+    def test_push_runs_the_full_suite_without_a_label_lookup(self) -> None:
+        # No PR number, token or PR_LABELS: a lookup would fail the step.
+        selected, outputs = self._run_required(EVENT="push")
+        self.assertIn("e2e-full", selected)
+        self.assertEqual(outputs["full"], "true", "the e2e-full job runs only when full=true")
+        printed = subprocess.run(
+            [sys.executable, str(SCRIPT), "full"], env={"PATH": os.environ["PATH"], "EVENT": "push"},
+            capture_output=True, text=True, check=True,
+        )
+        self.assertEqual(printed.stdout.strip(), "true")
+
+    def test_full_suite_follows_the_pull_requests_current_labels(self) -> None:
+        workflow = (SCRIPT.parents[2] / ".github/workflows/ci.yml").read_text()
+        # The event payload of an `opened` run predates a label applied right after.
+        self.assertNotIn("github.event.pull_request.labels", workflow)
+        for label in sorted(MODULE.FULL_SUITE_LABELS):
+            self.assertIn("e2e-full", self._selected(E2E="true", PR_LABELS=json.dumps([label])))
+        self.assertNotIn("e2e-full", self._selected(E2E="true", PR_LABELS='["documentation"]'))
+        self.assertIn("e2e-full", self._selected(E2E="true", CI_FILES="true", PR_LABELS="[]"))
+
+    def _gate(self, required: str, labels: str | None) -> subprocess.CompletedProcess:
+        needs = {name: {"result": "success"} for name in ("changes", *MODULE.applicable_needs(required))}
+        env = {"PATH": os.environ["PATH"], "EVENT_NAME": "pull_request",
+               "NEEDS": json.dumps(needs), "REQUIRED_NEEDS": required}
+        if labels is not None:
+            env["PR_LABELS"] = labels
+        return subprocess.run([sys.executable, str(SCRIPT)], env=env, capture_output=True, text=True)
+
+    def test_gate_rejects_a_run_that_predates_a_full_suite_label(self) -> None:
+        stale = self._gate("checks,e2e", '["database"]')
+        self.assertEqual(stale.returncode, 1, stale.stdout)
+        self.assertIn("database", stale.stdout)
+        self.assertIn("Re-run the run triggered by the label", stale.stdout)
+        self.assertEqual(self._gate("checks,e2e", "[]").returncode, 0)
+        self.assertEqual(self._gate("checks,e2e,e2e-full", '["database","security"]').returncode, 0)
+
+    def test_gate_fails_closed_when_labels_cannot_be_read(self) -> None:
+        unreadable = self._gate("checks,e2e", None)
+        self.assertNotEqual(unreadable.returncode, 0, "a missing label lookup must not pass the gate")
+        # A reachable configuration whose request fails must fail too, for both
+        # the selection and the gate, rather than fall back to "no labels".
+        api = {"REPOSITORY": "owner/repo", "PR_NUMBER": "1", "GITHUB_TOKEN": "token"}
+        def unavailable(*_args, **_kwargs):
+            raise urllib.error.URLError("network unavailable")
+        selection = {"EVENT": "pull_request", "CI_FILES": "false", **api}
+        gate = {"EVENT_NAME": "pull_request", "REQUIRED_NEEDS": "checks",
+                "NEEDS": json.dumps({"changes": {"result": "success"}, "checks": {"result": "success"}}), **api}
+        for entry, env in ((MODULE.print_full_suite, selection), (MODULE.main, gate)):
+            with mock.patch.dict(os.environ, env, clear=True), \
+                    mock.patch.object(MODULE.urllib.request, "urlopen", unavailable):
+                with self.assertRaises(urllib.error.URLError):
+                    entry()
 
     def test_browser_failure_artifacts_survive_a_passing_retry(self) -> None:
         root = SCRIPT.parents[2]
