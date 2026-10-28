@@ -16,9 +16,23 @@ impl EventStore {
     /// The connection string uses libpq key=value format, e.g.
     /// `"host=127.0.0.1 port=5432 user=me dbname=choruz"`.
     pub fn new(database_url: impl Into<String>) -> Self {
+        // 32 covers realistic concurrent load (multiple users + agents + CDC poller
+        // + LISTEN + outbox publishers). The earlier cap of 8 could not absorb
+        // even a 10-way concurrent send_message burst — requests queued on
+        // `pool.get()` until `connect_timeout` expired.
+        let max_size = std::env::var("CHORUZ_DB_POOL_SIZE")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(32);
+        Self::with_max_connections(database_url, max_size)
+    }
+
+    /// Create an event store whose pool never opens more than `max_size`
+    /// connections.
+    pub fn with_max_connections(database_url: impl Into<String>, max_size: usize) -> Self {
         let url = database_url.into();
         Self {
-            pool: build_pool(&url),
+            pool: build_pool(&url, max_size),
             database_url: url,
         }
     }
@@ -53,7 +67,7 @@ impl EventStore {
     }
 }
 
-fn build_pool(database_url: &str) -> Pool {
+fn build_pool(database_url: &str, max_size: usize) -> Pool {
     let mut pg_config: tokio_postgres::Config = database_url
         .parse()
         .expect("invalid database connection string");
@@ -64,14 +78,6 @@ fn build_pool(database_url: &str) -> Pool {
         recycling_method: RecyclingMethod::Verified,
     };
     let mgr = Manager::from_config(pg_config, tokio_postgres::NoTls, mgr_config);
-    // 32 covers realistic concurrent load (multiple users + agents + CDC poller
-    // + LISTEN + outbox publishers). The earlier cap of 8 could not absorb
-    // even a 10-way concurrent send_message burst — requests queued on
-    // `pool.get()` until `connect_timeout` expired.
-    let max_size = std::env::var("CHORUZ_DB_POOL_SIZE")
-        .ok()
-        .and_then(|v| v.parse::<usize>().ok())
-        .unwrap_or(32);
     Pool::builder(mgr)
         .max_size(max_size)
         .build()

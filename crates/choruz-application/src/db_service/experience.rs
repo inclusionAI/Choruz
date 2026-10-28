@@ -67,6 +67,24 @@ pub struct ExperienceTurn {
     pub team: Option<choruz_evaluation::team::Team>,
 }
 
+async fn discard_window_checkpoints(
+    tx: &deadpool_postgres::Transaction<'_>,
+    claim: &ExperienceClaim,
+) -> Result<(), AppError> {
+    for table in [
+        "experience_window_checkpoint",
+        "experience_stage_checkpoint",
+    ] {
+        tx.execute(
+            &format!("DELETE FROM {table} WHERE workspace_id=$1 AND binding_id=$2 AND policy_generation=$3"),
+            &[&claim.workspace_id, &claim.binding_id, &claim.generation],
+        )
+        .await
+        .map_err(|e| AppError::Internal(format!("discard learning window: {e}")))?;
+    }
+    Ok(())
+}
+
 impl DbService {
     /// One private, projected source window per opted-in binding. Saving settings
     /// cancels it through the policy-generation trigger, including stored results.
@@ -107,8 +125,7 @@ impl DbService {
         if tx.query_opt("SELECT binding_id FROM experience_policy WHERE workspace_id=$1 AND binding_id=$2 AND generation=$3 AND lease_token=$4 AND enabled AND lease_until>NOW() FOR UPDATE", &[&claim.workspace_id,&claim.binding_id,&claim.generation,&claim.token]).await.map_err(|e|AppError::Internal(e.to_string()))?.is_none() {
             return Err(AppError::Conflict("Learning settings changed before completing its window".into()));
         }
-        tx.execute("DELETE FROM experience_window_checkpoint WHERE workspace_id=$1 AND binding_id=$2 AND policy_generation=$3", &[&claim.workspace_id,&claim.binding_id,&claim.generation]).await.map_err(|e|AppError::Internal(e.to_string()))?;
-        tx.execute("DELETE FROM experience_stage_checkpoint WHERE workspace_id=$1 AND binding_id=$2 AND policy_generation=$3", &[&claim.workspace_id,&claim.binding_id,&claim.generation]).await.map_err(|e|AppError::Internal(e.to_string()))?;
+        discard_window_checkpoints(&tx, claim).await?;
         tx.commit()
             .await
             .map_err(|e| AppError::Internal(e.to_string()))?;
@@ -657,6 +674,11 @@ impl DbService {
             tx.execute("UPDATE experience_policy SET source_cursor=COALESCE($2::jsonb,source_cursor),source_summary=CASE WHEN $2::jsonb IS NULL THEN source_summary ELSE $3 END,updated_at=NOW() WHERE binding_id=$1",
                 &[&claim.binding_id, &checkpoint, &analysis]).await
                 .map_err(|e| AppError::Internal(format!("checkpoint experience: {e}")))?;
+            // A final report consumes its window in the same commit, so its
+            // outcome is never visible while the window could still resume.
+            if checkpoint.is_some() {
+                discard_window_checkpoints(&tx, claim).await?;
+            }
             if let Some(trace_id) = validation["trace_id"].as_str() {
                 tx.execute("INSERT INTO audit_log(id,workspace_id,actor_id,action,target_type,target_id,metadata,created_at) VALUES($1,$2,$3,'learning.check','agent_binding',$4,$5,NOW())",
                     &[&choruz_common::new_id(), &claim.workspace_id, &claim.owner_id, &claim.binding_id,

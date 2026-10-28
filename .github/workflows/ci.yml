@@ -186,6 +186,9 @@ jobs:
             [ "$DB" = true ] && add db-smoke
             [ "$E2E" = true ] && [ "$E2E_SHARDS" != 0 ] && add e2e
             [ "$FULL" = true ] && add e2e-full
+            # Pool starvation and lock contention only show under concurrent
+            # load, so any server or schema change runs the load smoke too.
+            [ "$DB" = true ] && add perf
             { [ "$CI_FILES" = true ] || [ "$OPS" = true ]; } && add release-package
           fi
           echo "full=$FULL" >> "$GITHUB_OUTPUT"
@@ -420,7 +423,8 @@ jobs:
 
   perf:
     name: Performance smoke
-    if: github.event_name == 'push'
+    needs: changes
+    if: github.event_name == 'push' || needs.changes.outputs.db == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:

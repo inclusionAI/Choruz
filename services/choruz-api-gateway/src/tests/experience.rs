@@ -292,6 +292,45 @@ async fn learning_stage_checkpoints_reuse_completed_work_and_fence_revoked_claim
             .contains("three observed attempts"),
         "known failures have a bounded automatic retry budget"
     );
+
+    db.experience_window(
+        &refreshed,
+        Some(&json!({"source":{"records":[{"ref":"final-window-record"}]}})),
+    )
+    .await
+    .unwrap();
+    db.save_experience_candidate(
+        &refreshed,
+        ExperienceReport {
+            digest: "final-window",
+            references: &json!([]),
+            analysis: "Final report",
+            instruction: None,
+            validation: &json!({}),
+            checkpoint: Some(&json!({"cursor":"final"})),
+            activate: false,
+        },
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    for table in [
+        "experience_stage_checkpoint",
+        "experience_window_checkpoint",
+    ] {
+        let retained: i64 = client
+            .query_one(
+                &format!("SELECT COUNT(*) FROM {table} WHERE binding_id=$1"),
+                &[&target],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(
+            retained, 0,
+            "a committed final report consumes its {table} in the same transaction"
+        );
+    }
 }
 
 #[tokio::test]

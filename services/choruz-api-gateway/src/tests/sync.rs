@@ -680,3 +680,37 @@ async fn message_pages_cover_history_and_incremental_bursts_without_gaps() {
     let (foreign_status, _) = api_message_page(router, &mallory, &conversation.id, "limit=4").await;
     assert_eq!(foreign_status, StatusCode::FORBIDDEN);
 }
+
+#[tokio::test]
+async fn bootstrap_never_waits_on_a_second_connection_while_holding_one() {
+    // A handler that holds a pooled connection while acquiring another
+    // starves the pool under concurrent bootstraps; with one slot it hangs.
+    let database = TestDatabase::create().await;
+    let app = choruz_application::ChatApp::new();
+    let event_store = choruz_store::EventStore::with_max_connections(&database.database_url, 1);
+    let router = router_with_runtime(
+        app.clone(),
+        std::env::temp_dir().join(format!("choruz-attachments-{}", choruz_common::new_id())),
+        LocalAuthConfig::from_env(),
+        RuntimeStore::new(&database.database_url),
+        PgSessionStore::new(&database.database_url),
+        event_store,
+    );
+    let alice = app
+        .create_principal(CreatePrincipalRequest {
+            workspace_id: "ws-bootstrap-single-connection".into(),
+            principal_type: PrincipalType::Human,
+            name: "Alice".into(),
+            avatar_url: None,
+        })
+        .unwrap();
+    seed_principal_to_db(&database.database_url, &alice).await;
+
+    let (status, _) = tokio::time::timeout(
+        Duration::from_secs(20),
+        api_bootstrap(router, &alice, "limit=10"),
+    )
+    .await
+    .expect("bootstrap must not wait on a nested pool acquisition");
+    assert_eq!(status, StatusCode::OK);
+}
