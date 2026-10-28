@@ -1,4 +1,6 @@
 use super::*;
+use choruz_host_runtime::HostRequest;
+use choruz_host_runtime::link::{ControllerFrame, LinkRequest};
 use std::os::unix::fs::PermissionsExt;
 
 #[tokio::test]
@@ -90,7 +92,12 @@ print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':
     .await
     .unwrap()
     .unwrap();
-    db.release_experience(&claim, None).await.unwrap();
+    db.release_experience(
+        &claim,
+        choruz_application::db_service::CheckOutcome::Completed,
+    )
+    .await
+    .unwrap();
     // The corpus represents objectives already checked earlier in this paged
     // sweep. This scenario targets builder recovery, not curation withdrawal.
     client.execute("UPDATE experience_policy SET source_cursor=$2 WHERE binding_id=$1",&[&target,&json!({"_curation_started":chrono::Utc::now().timestamp(),"_curation_seen":cases.iter().map(|case|&case.episode_ref).collect::<Vec<_>>(),"_more":true})]).await.unwrap();
@@ -294,4 +301,289 @@ print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':
     .await
     .expect("all released model processes must finish their owned work");
     drop(app);
+}
+
+#[tokio::test]
+async fn evaluations_of_other_bindings_do_not_wait_for_a_slow_one() {
+    let database = TestDatabase::create().await;
+    let db =
+        choruz_application::DbService::new(choruz_store::EventStore::new(&database.database_url));
+    let runtime = RuntimeStore::new(&database.database_url);
+    let client = runtime.connect().await.unwrap();
+    let files = tempfile::tempdir().unwrap();
+    let evaluator = files.path().join("evaluation-model");
+    fs::write(
+        &evaluator,
+        include_str!(
+            "../../../../crates/choruz-host-runtime/tests/fixtures/experience-evaluator.py"
+        ),
+    )
+    .unwrap();
+    // Only model generation is replaced; the slow device holds its case until
+    // released, while queueing, leases, dispatch and results stay production code.
+    let slow = files.path().join("slow-model");
+    fs::write(
+        &slow,
+        format!(
+            r#"#!/usr/bin/env python3
+import os, pathlib, sys, time
+root = pathlib.Path({root:?})
+(root / "slow.started").touch()
+while not (root / "slow.release").exists():
+    time.sleep(0.01)
+os.execv({evaluator:?}, [{evaluator:?}] + sys.argv[1:])
+"#,
+            root = files.path(),
+            evaluator = evaluator
+        ),
+    )
+    .unwrap();
+    for binary in [&evaluator, &slow] {
+        fs::set_permissions(binary, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let suite = json!({"name":"Number format","cases":[
+        {"id":"train","split":"train","input":"Increment 10","check":{"type":"exact","expected":"11"}},
+        {"id":"validation","split":"validation","input":"Increment 11","check":{"type":"exact","expected":"12"}},
+        {"id":"test","split":"test","input":"Increment 12","check":{"type":"exact","expected":"13"}}
+    ]});
+    let app = router_with_db(choruz_application::ChatApp::new(), &database.database_url);
+    let mut evaluations = Vec::new();
+    for (name, binary) in [("slow-evaluation", &slow), ("fast-evaluation", &evaluator)] {
+        let owner = db.create_human_user(name, "password-123").await.unwrap();
+        let target = learning_binding(&database, &owner).await;
+        let analyst = learning_binding(&database, &owner).await;
+        db.configure_experience(
+            &owner.workspace_id,
+            &owner.id,
+            &target,
+            &analyst,
+            true,
+            None,
+        )
+        .await
+        .unwrap();
+        let claim = db.claim_experience().await.unwrap().unwrap();
+        let revision = db
+            .save_experience_candidate(
+                &claim,
+                ExperienceReport {
+                    digest: "evaluation-candidate",
+                    references: &json!([]),
+                    analysis: "A reviewed format correction",
+                    instruction: Some("Return the number only."),
+                    validation: &json!({"review":"passed"}),
+                    checkpoint: None,
+                    activate: false,
+                },
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        db.release_experience(
+            &claim,
+            choruz_application::db_service::CheckOutcome::Completed,
+        )
+        .await
+        .unwrap();
+        client.execute("UPDATE experience_policy SET next_check_at=NOW()+INTERVAL '1 day' WHERE binding_id=$1", &[&target]).await.unwrap();
+        for binding in [&target, &analyst] {
+            client.execute("UPDATE agent_runtime_bindings SET driver_type='codex_terminal',config_json=$2 WHERE id=$1", &[binding,&json!({"binary_path":binary,"model":"evaluation-fixture"})]).await.unwrap();
+        }
+        let endpoint = format!("/v1/runtime/bindings/{target}/experience/evaluations");
+        let (status, queued) = api_json_payload_request(
+            app.clone(),
+            &owner,
+            Method::POST,
+            endpoint.clone(),
+            json!({"revision_id":revision,"suite":suite}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{queued}");
+        evaluations.push((
+            owner,
+            format!("{endpoint}?id={}", queued["id"].as_str().unwrap()),
+        ));
+        if name == "slow-evaluation" {
+            tokio::time::timeout(Duration::from_secs(30), async {
+                while !files.path().join("slow.started").exists() {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("the slow evaluation must hold its case before the fast one is queued");
+        }
+    }
+    let (fast_owner, fast_endpoint) = &evaluations[1];
+    let outcome = tokio::time::timeout(
+        Duration::from_secs(30),
+        finished_evaluation(&app, fast_owner, fast_endpoint.clone(), "completed"),
+    )
+    .await;
+    let slow_still_held = !files.path().join("slow.release").exists();
+    // Release the owned model process even if the assertion below fails.
+    fs::write(files.path().join("slow.release"), "").unwrap();
+    assert!(
+        outcome.is_ok() && slow_still_held,
+        "another binding's evaluation must complete while a slow one is still running"
+    );
+    let (slow_owner, slow_endpoint) = &evaluations[0];
+    finished_evaluation(&app, slow_owner, slow_endpoint.clone(), "completed").await;
+}
+
+#[tokio::test]
+async fn a_busy_source_defers_and_a_rate_limit_fails_through_the_worker() {
+    let database = TestDatabase::create().await;
+    let store = choruz_store::EventStore::new(&database.database_url);
+    let db = choruz_application::DbService::new(store.clone());
+    let owner = db
+        .create_human_user("busy-source", "password-123")
+        .await
+        .unwrap();
+    let target = learning_binding(&database, &owner).await;
+    let analyst = learning_binding(&database, &owner).await;
+    let runtime = RuntimeStore::new(&database.database_url);
+    let client = runtime.connect().await.unwrap();
+    let files = tempfile::tempdir().unwrap();
+    client
+        .execute(
+            "UPDATE agent_runtime_bindings SET workspace_path=$2 WHERE id=$1",
+            &[&target, &files.path().to_string_lossy().as_ref()],
+        )
+        .await
+        .unwrap();
+    db.configure_experience(
+        &owner.workspace_id,
+        &owner.id,
+        &target,
+        &analyst,
+        true,
+        None,
+    )
+    .await
+    .unwrap();
+    // A second source lives on a remote device that answers its read with a
+    // rate limit, sent through the device link's wire encoding.
+    let limited = learning_binding(&database, &owner).await;
+    client.execute("UPDATE agent_runtime_bindings SET config_json=config_json||'{\"runtime_host_id\":\"rate-limited-device\"}'::jsonb WHERE id=$1", &[&limited]).await.unwrap();
+    db.configure_experience(
+        &owner.workspace_id,
+        &owner.id,
+        &limited,
+        &analyst,
+        true,
+        None,
+    )
+    .await
+    .unwrap();
+    client
+        .execute(
+            "UPDATE experience_policy SET next_check_at=NOW()+INTERVAL '1 day' WHERE binding_id=$1",
+            &[&limited],
+        )
+        .await
+        .unwrap();
+    let links = crate::host_link::HostLinkHub::default();
+    let (device, mut incoming) = links.decision_fixture("rate-limited-device");
+    let state = crate::ApiState {
+        experience_worker: None,
+        account_retirement_worker: None,
+        app: choruz_application::ChatApp::new(),
+        db: db.clone(),
+        runtime,
+        session: PgSessionStore::new(&database.database_url),
+        event_store: store.clone(),
+        attachments: crate::attachments::AttachmentStore::new(files.path(), store),
+        auth: LocalAuthConfig::from_env(),
+        sync_wakeups: crate::sync_wakeup::SyncWakeupHub::spawn(database.database_url.clone()),
+        remote_control_bridges: crate::remote_control_bridge::RemoteControlBridgeHub::new().0,
+        local_host: crate::host_runtime::LocalHost::new(),
+        host_links: links,
+        online: crate::online_groups::OnlineHub::spawn(db.clone()),
+    };
+    // Record the source session as mid-turn through the journal wire contract,
+    // for exactly the specs the worker will read.
+    let binding = crate::handlers_terminals::authorize_terminal_binding(&state, &owner, &target)
+        .await
+        .map_err(|error| error.0)
+        .unwrap();
+    for source in
+        crate::learning_sources::native_sources(&state, &owner, &owner.workspace_id, &binding)
+            .await
+            .unwrap()
+    {
+        let spec = source.spec;
+        let key = choruz_host_runtime::session::owner_key(&spec);
+        let directory = std::path::Path::new(&spec.workspace_path).join(".choruz/sessions");
+        fs::create_dir_all(&directory).unwrap();
+        let account = &spec.harness_account;
+        fs::write(directory.join(format!("{}-{key}.json", spec.terminal_id)), json!({
+            "version":1,
+            "owner":{"binding":spec.terminal_id,"driver":spec.driver_type,"workspace":spec.workspace_path,
+                "account":account["harness_account_id"],"profile":account["harness_account_profile_kind"],
+                "generation":account["terminal_generation"],"host":account["runtime_host_id"],
+                "company":account["conversation_workspace_id"]},
+            "state":{"owner":key,"session_id":"busy","turn_id":null,"status":"running","items":[],"requests":[],"error":null}
+        }).to_string()).unwrap();
+    }
+    let claim = db.claim_experience().await.unwrap().unwrap();
+    crate::experience_worker::process_claim(&state, claim).await;
+    let (error, retry_in) = learning_retry(&client, &target).await;
+    assert!(
+        error.is_none() && (3.0..=6.0).contains(&retry_in),
+        "a busy source turn defers within seconds without an error: {error:?} {retry_in}"
+    );
+
+    client
+        .execute(
+            "UPDATE experience_policy SET next_check_at=NOW()+INTERVAL '1 day' WHERE binding_id=$1",
+            &[&target],
+        )
+        .await
+        .unwrap();
+    make_learning_due(&**client, &limited).await;
+    let claim = db.claim_experience().await.unwrap().unwrap();
+    assert_eq!(claim.binding_id, limited);
+    let answer = async {
+        while let Some(frame) = incoming.recv().await {
+            let ControllerFrame::Call { id, request } = serde_json::from_str(&frame).unwrap()
+            else {
+                panic!("expected a device call")
+            };
+            let LinkRequest::Host { request } = *request else {
+                panic!("expected a host request")
+            };
+            assert!(matches!(request, HostRequest::ExperienceTrace { .. }));
+            let wire: choruz_host_runtime::link::LinkError = serde_json::from_value(
+                serde_json::to_value(choruz_host_runtime::link::LinkError::from(
+                    AppError::RateLimited {
+                        retry_after_ms: 5_000,
+                    },
+                ))
+                .unwrap(),
+            )
+            .unwrap();
+            device.settle(&id, Err(wire.into()));
+        }
+    };
+    tokio::select! {
+        _ = crate::experience_worker::process_claim(&state, claim) => {}
+        _ = answer => panic!("the device link closed before the check finished"),
+    }
+    let (error, retry_in) = learning_retry(&client, &limited).await;
+    assert!(
+        error.is_some() && retry_in > 60.0,
+        "a host or provider rate limit is a visible failure with the normal retry: {error:?} {retry_in}"
+    );
+}
+
+/// The policy's visible error and seconds until its next check.
+async fn learning_retry(client: &tokio_postgres::Client, binding: &str) -> (Option<String>, f64) {
+    let row = client
+        .query_one(
+            "SELECT last_error, EXTRACT(EPOCH FROM next_check_at-NOW())::float8 FROM experience_policy WHERE binding_id=$1",
+            &[&binding],
+        )
+        .await
+        .unwrap();
+    (row.get(0), row.get(1))
 }

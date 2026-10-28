@@ -317,11 +317,13 @@ pub async fn execute(request: HostRequest) -> Result<Value, AppError> {
         }
         HostRequest::ExperienceTrace { spec, cursor } => {
             blocking(move || {
-                serde_json::to_value(choruz_learning::native_source::read(
-                    &experience_source::for_read(&spec)?,
-                    cursor,
-                )?)
-                .map_err(|e| AppError::Internal(format!("encode source window: {e}")))
+                let Some(source) = experience_source::for_read(&spec)? else {
+                    return Ok(
+                        json!({"busy":true,"retry_after_ms":experience_source::BUSY_TURN_RETRY_MS}),
+                    );
+                };
+                serde_json::to_value(choruz_learning::native_source::read(&source, cursor)?)
+                    .map_err(|e| AppError::Internal(format!("encode source window: {e}")))
             })
             .await
         }

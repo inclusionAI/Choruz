@@ -80,7 +80,8 @@ bash "${SCRIPT_DIR}/start.sh"
 bash "${SCRIPT_DIR}/migrate.sh" reset
 bash "${SCRIPT_DIR}/migrate.sh" up
 
-cargo build -p choruz-api-gateway -p choruz-pipeline -p choruz-connector
+# choruz-cli is built here so parallel specs never relink it while another runs it.
+cargo build -p choruz-api-gateway -p choruz-pipeline -p choruz-connector -p choruz-cli
 
 RUST_LOG=warn \
   CHORUZ_DATABASE_URL="${HOST_DATABASE_URL}" \

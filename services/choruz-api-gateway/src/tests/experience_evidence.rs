@@ -108,7 +108,12 @@ print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':
         validation:&json!({"review":"not_required","problems":[{"key":"verification","description":"The requested check was skipped.","episode_ref":references[0],"evidence":references,"applied_revision_id":null}]}),
         checkpoint:Some(&checkpoint),activate:false,
     }).await.unwrap().unwrap();
-    db.release_experience(&claim, None).await.unwrap();
+    db.release_experience(
+        &claim,
+        choruz_application::db_service::CheckOutcome::Completed,
+    )
+    .await
+    .unwrap();
     client
         .execute(
             "UPDATE experience_policy SET next_check_at=NOW()+INTERVAL '1 day' WHERE binding_id=$1",

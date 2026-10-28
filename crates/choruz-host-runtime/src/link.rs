@@ -121,10 +121,13 @@ pub enum LinkRequest {
 pub struct LinkError {
     pub kind: String,
     pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_after_ms: Option<u64>,
 }
 
 impl From<AppError> for LinkError {
     fn from(error: AppError) -> Self {
+        let mut retry_after = None;
         let (kind, message) = match error {
             AppError::Unauthorized(message) => ("unauthorized", message),
             AppError::NotFound(message) => ("not_found", message),
@@ -132,6 +135,7 @@ impl From<AppError> for LinkError {
             AppError::Validation(message) => ("validation", message),
             AppError::Forbidden(message) => ("forbidden", message),
             AppError::RateLimited { retry_after_ms } => {
+                retry_after = Some(retry_after_ms);
                 ("rate_limited", format!("retry after {retry_after_ms} ms"))
             }
             AppError::Internal(message) => ("internal", message),
@@ -139,18 +143,20 @@ impl From<AppError> for LinkError {
         Self {
             kind: kind.into(),
             message,
+            retry_after_ms: retry_after,
         }
     }
 }
 
 impl From<LinkError> for AppError {
     fn from(error: LinkError) -> Self {
-        match error.kind.as_str() {
-            "unauthorized" => AppError::Unauthorized(error.message),
-            "not_found" => AppError::NotFound(error.message),
-            "conflict" => AppError::Conflict(error.message),
-            "validation" => AppError::Validation(error.message),
-            "forbidden" => AppError::Forbidden(error.message),
+        match (error.kind.as_str(), error.retry_after_ms) {
+            ("unauthorized", _) => AppError::Unauthorized(error.message),
+            ("not_found", _) => AppError::NotFound(error.message),
+            ("conflict", _) => AppError::Conflict(error.message),
+            ("validation", _) => AppError::Validation(error.message),
+            ("forbidden", _) => AppError::Forbidden(error.message),
+            ("rate_limited", Some(retry_after_ms)) => AppError::RateLimited { retry_after_ms },
             _ => AppError::Internal(error.message),
         }
     }
@@ -437,6 +443,23 @@ fn stop_forwarder(attachments: &Attachments, terminal_id: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retry_later_errors_survive_the_device_link() {
+        let wire: LinkError = serde_json::from_value(
+            serde_json::to_value(LinkError::from(AppError::RateLimited {
+                retry_after_ms: 5_000,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(matches!(
+            AppError::from(wire),
+            AppError::RateLimited {
+                retry_after_ms: 5_000
+            }
+        ));
+    }
 
     async fn welcomed_link() -> (
         mpsc::Sender<String>,

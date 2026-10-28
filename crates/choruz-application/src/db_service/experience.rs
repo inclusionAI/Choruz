@@ -61,6 +61,15 @@ pub struct ExperienceRevision {
     pub created_at: DateTime<Utc>,
 }
 
+/// How a learning check ended, which decides when the next one runs.
+pub enum CheckOutcome<'a> {
+    Completed,
+    /// Shown to the owner; the next check waits two minutes.
+    Failed(&'a str),
+    /// A transient condition such as a turn in progress: not an error.
+    Deferred(std::time::Duration),
+}
+
 pub struct ExperienceTurn {
     pub revision_id: String,
     pub instruction: String,
@@ -497,13 +506,22 @@ impl DbService {
     pub async fn release_experience(
         &self,
         claim: &ExperienceClaim,
-        error: Option<&str>,
+        outcome: CheckOutcome<'_>,
     ) -> Result<(), AppError> {
+        let (error, defer_ms) = match outcome {
+            CheckOutcome::Completed => (None, None),
+            CheckOutcome::Failed(error) => (Some(error), None),
+            CheckOutcome::Deferred(delay) => (
+                None,
+                Some(i64::try_from(delay.as_millis()).unwrap_or(i64::MAX)),
+            ),
+        };
         let client = self.store.connect().await?;
         client.execute("UPDATE experience_policy SET lease_until=NULL,lease_token=NULL,checked_at=NOW(),next_check_at=NOW()+
-            CASE WHEN $4::text IS NULL AND source_cursor->>'_more'='true' THEN INTERVAL '1 second' ELSE INTERVAL '2 minutes' END,last_error=$4
+            CASE WHEN $5::bigint IS NOT NULL THEN $5::bigint * INTERVAL '1 millisecond'
+                 WHEN $4::text IS NULL AND source_cursor->>'_more'='true' THEN INTERVAL '1 second' ELSE INTERVAL '2 minutes' END,last_error=$4
             WHERE binding_id=$1 AND workspace_id=$2 AND lease_token=$3",
-            &[&claim.binding_id, &claim.workspace_id, &claim.token, &error]).await
+            &[&claim.binding_id, &claim.workspace_id, &claim.token, &error, &defer_ms]).await
             .map_err(|e| AppError::Internal(format!("finish learning check: {e}")))?;
         Ok(())
     }

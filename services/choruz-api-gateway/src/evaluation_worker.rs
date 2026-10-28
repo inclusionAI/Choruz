@@ -43,12 +43,21 @@ pub(crate) fn fingerprint(spec: &TerminalSpec) -> Result<String, AppError> {
     )))
 }
 
+/// Evaluations of different bindings run side by side: a slow device or judge
+/// must not hold up every other owner's measurement. The database lease keeps
+/// each evaluation on one executor at a time, across processes.
+const CONCURRENT_EVALUATIONS: usize = 4;
+
 pub(crate) async fn run(state: &ApiState) {
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut ticks = 0u8;
+    let mut cases = tokio::task::JoinSet::new();
     loop {
-        interval.tick().await;
+        tokio::select! {
+            _ = interval.tick() => {}
+            Some(_) = cases.join_next() => continue,
+        }
         if ticks == 0 {
             match state.db.pending_experience_optimizations().await {
                 Ok(jobs) => {
@@ -70,8 +79,18 @@ pub(crate) async fn run(state: &ApiState) {
             }
         }
         ticks = (ticks + 1) % 15;
-        if let Err(error) = step(state).await {
-            tracing::warn!(%error, "evaluation queue unavailable");
+        while cases.len() < CONCURRENT_EVALUATIONS {
+            match state.db.claim_experience_evaluation().await {
+                Ok(Some(claim)) => {
+                    let state = state.clone();
+                    cases.spawn(async move { evaluate_case(&state, claim).await });
+                }
+                Ok(None) => break,
+                Err(error) => {
+                    tracing::warn!(%error, "evaluation queue unavailable");
+                    break;
+                }
+            }
         }
     }
 }
@@ -159,10 +178,7 @@ async fn queue_automatic(state: &ApiState, job: &Value) -> Result<(), AppError> 
     Ok(())
 }
 
-async fn step(state: &ApiState) -> Result<(), AppError> {
-    let Some(mut claim) = state.db.claim_experience_evaluation().await? else {
-        return Ok(());
-    };
+async fn evaluate_case(state: &ApiState, mut claim: EvaluationClaim) {
     let started = std::time::Instant::now();
     let result = execute(state, &mut claim).await;
     let (mut report, error_code) = match result {
@@ -186,12 +202,18 @@ async fn step(state: &ApiState) -> Result<(), AppError> {
     if let Some(code) = error_code {
         report["error_code"] = json!(code);
     }
-    let committed = state
+    match state
         .db
         .finish_experience_evaluation_case(&claim, &report, error_code)
-        .await?;
-    tracing::info!(evaluation_id=%claim.id, binding_id=%claim.binding_id, ordinal=claim.next_case, committed, error_code, "evaluation case finished");
-    Ok(())
+        .await
+    {
+        Ok(committed) => {
+            tracing::info!(evaluation_id=%claim.id, binding_id=%claim.binding_id, ordinal=claim.next_case, committed, error_code, "evaluation case finished");
+        }
+        Err(error) => {
+            tracing::warn!(evaluation_id=%claim.id, binding_id=%claim.binding_id, %error, "evaluation case result unavailable");
+        }
+    }
 }
 
 async fn execute(state: &ApiState, claim: &mut EvaluationClaim) -> Result<Value, AppError> {
