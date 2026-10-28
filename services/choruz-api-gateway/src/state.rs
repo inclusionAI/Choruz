@@ -18,7 +18,10 @@ pub struct ApiState {
     pub event_store: choruz_store::EventStore,
     pub attachments: AttachmentStore,
     pub auth: LocalAuthConfig,
-    pub(crate) sync_wakeups: crate::sync_wakeup::SyncWakeupHub,
+    pub(crate) sync_wakeups: crate::wakeup::WakeupHub,
+    /// Wakes background workers when learning, evaluation or behavior work
+    /// becomes due, so they need not wait for their next poll.
+    pub(crate) worker_wakeups: crate::wakeup::WakeupHub,
     pub(crate) remote_control_bridges: crate::remote_control_bridge::RemoteControlBridgeHub,
     /// The gateway's own device.
     pub(crate) local_host: crate::host_runtime::LocalHost,

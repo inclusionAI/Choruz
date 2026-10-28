@@ -141,34 +141,42 @@ async fn prepare_public(
 async fn run_preparation(state: &ApiState) {
     let mut interval = tokio::time::interval(Duration::from_secs(15));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut wakeups = state.worker_wakeups.subscribe();
     loop {
-        interval.tick().await;
-        match state.db.claim_behavior().await {
-            Ok(Some(claim)) => {
-                let outcome = prepare(state, &claim).await;
-                let error = outcome.as_ref().err().map(|_| "Unable to prepare grounded behavior evidence. Check the analysis account and original source.");
-                if let Err(error) = state
-                    .db
-                    .finish_behavior(&claim, outcome.as_ref().ok(), error)
-                    .await
-                {
-                    tracing::warn!(event_id=%claim.id, %error, "behavior evidence commit failed");
+        crate::wakeup::next_round(&mut interval, &mut wakeups, "behavior").await;
+        // Drain the queue: a finished event leaves `preparing` (or keeps its
+        // lease), so it cannot be claimed again in the same round.
+        loop {
+            match state.db.claim_behavior().await {
+                Ok(Some(claim)) => {
+                    let outcome = prepare(state, &claim).await;
+                    let error = outcome.as_ref().err().map(|_| "Unable to prepare grounded behavior evidence. Check the analysis account and original source.");
+                    if let Err(error) = state
+                        .db
+                        .finish_behavior(&claim, outcome.as_ref().ok(), error)
+                        .await
+                    {
+                        tracing::warn!(event_id=%claim.id, %error, "behavior evidence commit failed");
+                    }
+                    state
+                        .db
+                        .record_audit(
+                            &claim.workspace_id,
+                            &claim.owner_id,
+                            "learning.behavior.prepare",
+                            "agent_binding",
+                            &claim.binding_id,
+                            json!({"event_id":claim.id,"success":outcome.is_ok()}),
+                        )
+                        .await
+                        .unwrap_or_else(|error| tracing::warn!(%error,"behavior audit failed"));
                 }
-                state
-                    .db
-                    .record_audit(
-                        &claim.workspace_id,
-                        &claim.owner_id,
-                        "learning.behavior.prepare",
-                        "agent_binding",
-                        &claim.binding_id,
-                        json!({"event_id":claim.id,"success":outcome.is_ok()}),
-                    )
-                    .await
-                    .unwrap_or_else(|error| tracing::warn!(%error,"behavior audit failed"));
+                Ok(None) => break,
+                Err(error) => {
+                    tracing::warn!(%error,"behavior queue unavailable");
+                    break;
+                }
             }
-            Ok(None) => {}
-            Err(error) => tracing::warn!(%error,"behavior queue unavailable"),
         }
     }
 }

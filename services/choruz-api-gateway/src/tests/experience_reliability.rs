@@ -346,8 +346,9 @@ os.execv({evaluator:?}, [{evaluator:?}] + sys.argv[1:])
         {"id":"validation","split":"validation","input":"Increment 11","check":{"type":"exact","expected":"12"}},
         {"id":"test","split":"test","input":"Increment 12","check":{"type":"exact","expected":"13"}}
     ]});
-    let app = router_with_db(choruz_application::ChatApp::new(), &database.database_url);
-    let mut evaluations = Vec::new();
+    // Prepare both candidates before the workers start: a running learning
+    // worker would otherwise claim these due policies first.
+    let mut candidates = Vec::new();
     for (name, binary) in [("slow-evaluation", &slow), ("fast-evaluation", &evaluator)] {
         let owner = db.create_human_user(name, "password-123").await.unwrap();
         let target = learning_binding(&database, &owner).await;
@@ -389,6 +390,11 @@ os.execv({evaluator:?}, [{evaluator:?}] + sys.argv[1:])
         for binding in [&target, &analyst] {
             client.execute("UPDATE agent_runtime_bindings SET driver_type='codex_terminal',config_json=$2 WHERE id=$1", &[binding,&json!({"binary_path":binary,"model":"evaluation-fixture"})]).await.unwrap();
         }
+        candidates.push((name, owner, target, revision));
+    }
+    let app = router_with_db(choruz_application::ChatApp::new(), &database.database_url);
+    let mut evaluations = Vec::new();
+    for (name, owner, target, revision) in candidates {
         let endpoint = format!("/v1/runtime/bindings/{target}/experience/evaluations");
         let (status, queued) = api_json_payload_request(
             app.clone(),
@@ -494,7 +500,14 @@ async fn a_busy_source_defers_and_a_rate_limit_fails_through_the_worker() {
         event_store: store.clone(),
         attachments: crate::attachments::AttachmentStore::new(files.path(), store),
         auth: LocalAuthConfig::from_env(),
-        sync_wakeups: crate::sync_wakeup::SyncWakeupHub::spawn(database.database_url.clone()),
+        sync_wakeups: crate::wakeup::WakeupHub::spawn(
+            database.database_url.clone(),
+            crate::wakeup::SYNC_CHANNEL,
+        ),
+        worker_wakeups: crate::wakeup::WakeupHub::spawn(
+            database.database_url.clone(),
+            crate::wakeup::WORKER_CHANNEL,
+        ),
         remote_control_bridges: crate::remote_control_bridge::RemoteControlBridgeHub::new().0,
         local_host: crate::host_runtime::LocalHost::new(),
         host_links: links,
@@ -586,4 +599,305 @@ async fn learning_retry(client: &tokio_postgres::Client, binding: &str) -> (Opti
         .await
         .unwrap();
     (row.get(0), row.get(1))
+}
+
+/// Wait for a background-work notification naming `worker`.
+async fn expect_wakeup(
+    wakeups: &mut tokio::sync::broadcast::Receiver<String>,
+    worker: &str,
+    action: &str,
+) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if wakeups.recv().await.unwrap() == worker {
+                break;
+            }
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("{action} must wake the {worker} worker"));
+}
+
+#[tokio::test]
+async fn due_background_work_notifies_its_worker() {
+    let database = TestDatabase::create().await;
+    let db =
+        choruz_application::DbService::new(choruz_store::EventStore::new(&database.database_url));
+    let hub = crate::wakeup::WakeupHub::spawn(
+        database.database_url.clone(),
+        crate::wakeup::WORKER_CHANNEL,
+    );
+    hub.wait_ready().await.unwrap();
+    let mut wakeups = hub.subscribe();
+    let owner = db
+        .create_human_user("wakeup-owner", "password-123")
+        .await
+        .unwrap();
+    let target = learning_binding(&database, &owner).await;
+    let analyst = learning_binding(&database, &owner).await;
+
+    db.configure_experience(
+        &owner.workspace_id,
+        &owner.id,
+        &target,
+        &analyst,
+        true,
+        None,
+    )
+    .await
+    .unwrap();
+    expect_wakeup(&mut wakeups, "learning", "saving learning settings").await;
+
+    let claim = db.claim_experience().await.unwrap().unwrap();
+    let revision = db.save_experience_candidate(
+        &claim,
+        ExperienceReport {
+            digest: "wakeup-candidate",
+            references: &json!([]),
+            analysis: "A reviewed correction",
+            instruction: Some("Verify before reporting completion."),
+            validation: &json!({"review":"passed","problems":[{"key":"unverified-completion",
+                "description":"Completion without verification","episode_ref":"episode-1","evidence":["source-1"]}]}),
+            checkpoint: None,
+            activate: false,
+        },
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    expect_wakeup(&mut wakeups, "evaluation", "saving a reviewed candidate").await;
+    expect_wakeup(&mut wakeups, "behavior", "recording behavior evidence").await;
+
+    db.release_experience(
+        &claim,
+        choruz_application::db_service::CheckOutcome::Completed,
+    )
+    .await
+    .unwrap();
+
+    let client = RuntimeStore::new(&database.database_url)
+        .connect()
+        .await
+        .unwrap();
+    for binding in [&target, &analyst] {
+        client.execute("UPDATE agent_runtime_bindings SET driver_type='codex_terminal',config_json=$2 WHERE id=$1", &[binding,&json!({"model":"evaluation-fixture"})]).await.unwrap();
+    }
+    let app = router_with_db(choruz_application::ChatApp::new(), &database.database_url);
+    let suite = json!({"name":"Number format","cases":[
+        {"id":"train","split":"train","input":"Increment 10","check":{"type":"exact","expected":"11"}},
+        {"id":"validation","split":"validation","input":"Increment 11","check":{"type":"exact","expected":"12"}},
+        {"id":"test","split":"test","input":"Increment 12","check":{"type":"exact","expected":"13"}}
+    ]});
+    let (status, queued) = api_json_payload_request(
+        app,
+        &owner,
+        Method::POST,
+        format!("/v1/runtime/bindings/{target}/experience/evaluations"),
+        json!({"revision_id":revision,"suite":suite}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{queued}");
+    expect_wakeup(&mut wakeups, "evaluation", "queueing an evaluation").await;
+}
+
+#[tokio::test]
+async fn saving_learning_settings_starts_a_check_without_waiting_for_the_poll() {
+    let database = TestDatabase::create().await;
+    let db =
+        choruz_application::DbService::new(choruz_store::EventStore::new(&database.database_url));
+    let owner = db
+        .create_human_user("prompt-learning", "password-123")
+        .await
+        .unwrap();
+    let target = learning_binding(&database, &owner).await;
+    let analyst = learning_binding(&database, &owner).await;
+    let client = RuntimeStore::new(&database.database_url)
+        .connect()
+        .await
+        .unwrap();
+    // A policy due before the workers start is taken by their first poll;
+    // seeing it checked proves that poll ran, so only a wakeup can start the
+    // next check before the 15 s interval.
+    let sentinel = learning_binding(&database, &owner).await;
+    db.configure_experience(
+        &owner.workspace_id,
+        &owner.id,
+        &sentinel,
+        &analyst,
+        true,
+        None,
+    )
+    .await
+    .unwrap();
+    let app = router_with_db(choruz_application::ChatApp::new(), &database.database_url);
+    wait_until_checked(
+        &client,
+        &sentinel,
+        "the first learning poll takes the due sentinel",
+    )
+    .await;
+    let saved = tokio::time::Instant::now();
+    db.configure_experience(
+        &owner.workspace_id,
+        &owner.id,
+        &target,
+        &analyst,
+        true,
+        None,
+    )
+    .await
+    .unwrap();
+    wait_until_checked(&client, &target, "a newly enabled policy is checked").await;
+    assert!(
+        saved.elapsed() < Duration::from_secs(5),
+        "a newly enabled policy is checked within seconds, not at the next 15 s poll"
+    );
+    drop(app);
+}
+
+async fn wait_until_checked(client: &tokio_postgres::Client, binding: &str, expectation: &str) {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let checked: Option<chrono::DateTime<chrono::Utc>> = client
+                .query_one(
+                    "SELECT checked_at FROM experience_policy WHERE binding_id=$1",
+                    &[&binding],
+                )
+                .await
+                .unwrap()
+                .get(0);
+            if checked.is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("{expectation}"));
+}
+
+#[tokio::test]
+async fn a_saved_candidate_wakes_evaluation_queueing_and_behavior_preparation() {
+    let database = TestDatabase::create().await;
+    let db =
+        choruz_application::DbService::new(choruz_store::EventStore::new(&database.database_url));
+    let client = RuntimeStore::new(&database.database_url)
+        .connect()
+        .await
+        .unwrap();
+    // Each policy's learning lease is held, so the running learning worker
+    // cannot act; only evaluation queueing and behavior preparation do.
+    let sentinel = optimized_policy(&database, &db, &client, "woken-sentinel").await;
+    let woken = optimized_policy(&database, &db, &client, "woken-pipeline").await;
+    save_reviewed_candidate(&db, &sentinel.2).await;
+    let app = router_with_db(choruz_application::ChatApp::new(), &database.database_url);
+    // The sentinel's candidate exists before the workers start, so their first
+    // poll handles it; once handled, only a wakeup can act before 15 s.
+    wait_for_woken_pipeline(
+        &client,
+        &sentinel.1,
+        Duration::from_secs(30),
+        "the workers' first poll handles the sentinel",
+    )
+    .await;
+    save_reviewed_candidate(&db, &woken.2).await;
+    wait_for_woken_pipeline(
+        &client,
+        &woken.1,
+        Duration::from_secs(5),
+        "a reviewed candidate is queued for evaluation and its behavior evidence is prepared within seconds, not at the next 15 s poll",
+    )
+    .await;
+    drop(app);
+}
+
+/// An owner, target and held learning claim with automatic optimization.
+async fn optimized_policy(
+    database: &TestDatabase,
+    db: &choruz_application::DbService,
+    client: &tokio_postgres::Client,
+    name: &str,
+) -> (
+    choruz_domain::Principal,
+    String,
+    choruz_application::db_service::ExperienceClaim,
+) {
+    let owner = db.create_human_user(name, "password-123").await.unwrap();
+    let target = learning_binding(database, &owner).await;
+    let analyst = learning_binding(database, &owner).await;
+    for binding in [&target, &analyst] {
+        client.execute("UPDATE agent_runtime_bindings SET driver_type='codex_terminal',config_json=$2 WHERE id=$1", &[binding,&json!({"model":"evaluation-fixture"})]).await.unwrap();
+    }
+    let settings: choruz_evaluation::optimization::OptimizationSettings =
+        serde_json::from_value(json!({"suite":{"name":"Measured formatting","cases":[
+            {"id":"training","split":"train","input":"Increment 10","check":{"type":"exact","expected":"11"}},
+            {"id":"validation","split":"validation","input":"Increment 20","check":{"type":"exact","expected":"21"}},
+            {"id":"test","split":"test","input":"Increment 30","check":{"type":"exact","expected":"31"}}
+        ]},"config":{"max_metric_calls":4,"max_proposals":1,"minibatch_size":1,"seed":7,"merge":false},"auto_apply":false}))
+        .unwrap();
+    db.configure_experience(
+        &owner.workspace_id,
+        &owner.id,
+        &target,
+        &analyst,
+        true,
+        Some(&settings),
+    )
+    .await
+    .unwrap();
+    let claim = db.claim_experience().await.unwrap().unwrap();
+    assert_eq!(claim.binding_id, target);
+    (owner, target, claim)
+}
+
+async fn save_reviewed_candidate(
+    db: &choruz_application::DbService,
+    claim: &choruz_application::db_service::ExperienceClaim,
+) {
+    db.save_experience_candidate(
+        claim,
+        ExperienceReport {
+            digest: "woken-candidate",
+            references: &json!([]),
+            analysis: "A reviewed correction",
+            instruction: Some("Verify before reporting completion."),
+            validation: &json!({"review":"passed","problems":[{"key":"unverified-completion",
+                "description":"Completion without verification","episode_ref":"episode-1","evidence":["source-1"]}]}),
+            checkpoint: None,
+            activate: false,
+        },
+    )
+    .await
+    .unwrap()
+    .unwrap();
+}
+
+/// The binding has an automatic evaluation queued and no behavior event
+/// still awaiting preparation.
+async fn wait_for_woken_pipeline(
+    client: &tokio_postgres::Client,
+    binding: &str,
+    within: Duration,
+    expectation: &str,
+) {
+    tokio::time::timeout(within, async {
+        loop {
+            let row = client
+                .query_one(
+                    "SELECT (SELECT COUNT(*) FROM experience_evaluation WHERE binding_id=$1 AND automatic),
+                            (SELECT COUNT(*) FROM experience_behavior_event WHERE binding_id=$1 AND publication_state='preparing'),
+                            (SELECT COUNT(*) FROM experience_behavior_event WHERE binding_id=$1)",
+                    &[&binding],
+                )
+                .await
+                .unwrap();
+            let (queued, preparing, events): (i64, i64, i64) = (row.get(0), row.get(1), row.get(2));
+            if queued > 0 && events > 0 && preparing == 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("{expectation}"));
 }

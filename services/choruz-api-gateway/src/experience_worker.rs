@@ -30,9 +30,10 @@ async fn run_analysis(state: &ApiState) {
     let mut interval = tokio::time::interval(Duration::from_secs(15));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut jobs = tokio::task::JoinSet::new();
+    let mut wakeups = state.worker_wakeups.subscribe();
     loop {
         tokio::select! {
-            _ = interval.tick() => {
+            _ = crate::wakeup::next_round(&mut interval, &mut wakeups, "learning") => {
                 // A slow device must not hold up every other learning profile.
                 // Database leases retain per-binding exclusion across processes.
                 while jobs.len() < 4 {

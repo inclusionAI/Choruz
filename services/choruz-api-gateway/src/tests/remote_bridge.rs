@@ -99,7 +99,14 @@ async fn exercise_sockets(silent: Option<&str>) {
             "test-user".into(),
             1,
         ),
-        sync_wakeups: crate::sync_wakeup::SyncWakeupHub::spawn(database.database_url.clone()),
+        sync_wakeups: crate::wakeup::WakeupHub::spawn(
+            database.database_url.clone(),
+            crate::wakeup::SYNC_CHANNEL,
+        ),
+        worker_wakeups: crate::wakeup::WakeupHub::spawn(
+            database.database_url.clone(),
+            crate::wakeup::WORKER_CHANNEL,
+        ),
         remote_control_bridges: RemoteControlBridgeHub::new().0,
         local_host: crate::host_runtime::LocalHost::new(),
         host_links: crate::host_link::HostLinkHub::default(),

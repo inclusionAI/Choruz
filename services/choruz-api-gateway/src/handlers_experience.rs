@@ -87,6 +87,17 @@ pub(crate) async fn prepare(
                     != context.as_ref().map(|context| context.revision_id.as_str()))
         })
     {
+        // Name the changed input so a rejected preparation can be traced to
+        // the binding write or the learning selection that superseded it.
+        tracing::warn!(
+            binding_id = %id,
+            binding_changed = current.updated_at != binding.updated_at,
+            generation_before = policy.generation,
+            generation_after = ?current_policy.as_ref().map(|current| current.generation),
+            revision_before = ?context.as_ref().map(|context| context.revision_id.as_str()),
+            revision_after = ?current_policy.as_ref().and_then(|current| current.active_revision_id.as_deref()),
+            "learning preparation superseded"
+        );
         return Err(AppError::Conflict("Learning or binding changed during preparation; prepare the next turn with the current selection".into()).into());
     }
     let experience = context.map(|context| (context.revision_id, context.instruction));
