@@ -29,7 +29,7 @@ The repository is a modular monolith: one Cargo workspace (`Cargo.toml`) with sh
 | `crates/choruz-router`, `services/choruz-pipeline/src/outbox_handler.rs`, `crates/choruz-host-runtime/src/instructions.rs`, `services/choruz-api-gateway/assets/choruz-send.sh`, `crates/choruz-host-runtime/assets/agent-templates` | The `[choruz-incoming]` envelope, `$CHORUZ_SEND` commands, instruction bootstrap and refresh | [agent-protocol](subsystems/agent-protocol.md) |
 | `crates/choruz-agent-runtime`, `crates/choruz-host-runtime`, `crates/choruz-session`, `crates/choruz-executor`, `crates/choruz-harness-login`, `services/choruz-pipeline/src/executor.rs` | `DriverType`, runtime bindings, headless and terminal sessions, the device-local operations behind `RuntimeHost`, harness accounts and their sign-in, command leases | [choruz-agent-runtime](subsystems/agent-runtime.md) |
 | `crates/choruz-application`, `crates/choruz-store`, `crates/choruz-writer` | `DbService`, `conversation_events`, `event_outbox`, `seq`, idempotency by `client_msg_id` and `turn_id` | [store](subsystems/store.md) |
-| `crates/choruz-application/src/db_service/sync.rs`, `services/choruz-api-gateway/src/handlers_sync_ws.rs`, `services/choruz-api-gateway/src/sync_wakeup.rs` | `sync_change`, `sync_device`, `/v1/bootstrap`, `/v1/sync`, unread counters | [sync-feed](subsystems/sync-feed.md) |
+| `crates/choruz-application/src/db_service/sync.rs`, `services/choruz-api-gateway/src/handlers_sync_ws.rs`, `services/choruz-api-gateway/src/wakeup.rs` | `sync_change`, `sync_device`, `/v1/bootstrap`, `/v1/sync`, unread counters | [sync-feed](subsystems/sync-feed.md) |
 | `apps/web` | Chat app, `hooks/use-chat-web-socket.ts`, `lib/messages/message-db.ts` (IndexedDB), `app/api` proxy routes, `app/docs`, `tests/e2e` | [web-client](subsystems/web-client.md) |
 | `services/choruz-api-gateway/src/plugins/kanban.rs`, `services/choruz-api-gateway/src/handlers_channel_tasks.rs`, `apps/web/plugins/kanban` | `group_workflow_task` board cards, assignee roster, `task_*` outbox commands | [channel-tasks](subsystems/channel-tasks.md) |
 | `services/choruz-api-gateway/src/handlers_threads.rs`, `apps/web/components/chat/thread-panel.tsx`, `apps/web/lib/messages/threads.ts` | Thread roots, replies, broadcast, `thread_read_receipt` | [threads](subsystems/threads.md) |
@@ -76,7 +76,7 @@ human types in apps/web
   -> agent output + drained .choruz-outbox/new/*.json (outbox_handler.rs)
   -> run_writer_loop (crates/choruz-writer) commits a reply row keyed by turn_id
        trigger publish_conversation_message -> outbox_event -> sync_change; NOTIFY choruz_sync_change
-  -> services/choruz-api-gateway/src/sync_wakeup.rs wakes /v1/ws/sync
+  -> services/choruz-api-gateway/src/wakeup.rs wakes /v1/ws/sync
   -> apps/web/hooks/use-chat-web-socket.ts applies the page, sends sync_ack, updates lib/messages/message-db.ts
 ```
 
@@ -125,7 +125,7 @@ Every row that carries user data carries `workspace_id`: `principal`, `conversat
 - `group_workflow_task`, `group_workflow_task_participant`, `group_workflow_event`, `channel_task_sequence`: the channel Tasks board (`migrations/0025_channel_kanban_board.sql`); `agent_task` is the agent-private planning surface and never appears on the board.
 - `agent_runtime_bindings` (one active binding per agent, `driver_type`, `workspace_path`), `harness_account`, `runtime_host`, `runtime_host_pairing`: where agents run.
 
-Migrations live in `migrations/` in two lexicographic series, `0001_init.sql` through `0032_native_session_import.sql` and `V001__message_pipeline_schema.sql` through `V039__company_multi_harness_accounts.sql`. Applied files are frozen: `scripts/historical-migrations.sha256` pins their checksums and `infra/host/migration_smoke.sh` verifies them, so a schema change is always a new `V0NN__name.sql`. Postgres `NOTIFY` channels `choruz_outbox`, `choruz_commands`, `choruz_file_outbox` (`migrations/V019__choruz_database_cutover.sql`) and `choruz_sync_change` (`V027`) are wakeups only; the tables remain the source of truth.
+Migrations live in `migrations/` in two lexicographic series, `0001_init.sql` through `0032_native_session_import.sql` and `V001__message_pipeline_schema.sql` through `V070__background_work_wakeups.sql`. Applied files are frozen: `scripts/historical-migrations.sha256` pins their checksums and `infra/host/migration_smoke.sh` verifies them, so a schema change is always a new `V0NN__name.sql`. Postgres `NOTIFY` channels `choruz_outbox`, `choruz_commands`, `choruz_file_outbox` (`migrations/V019__choruz_database_cutover.sql`) and `choruz_sync_change` (`V027`) are wakeups only; the tables remain the source of truth.
 
 ## Boundaries and invariants
 

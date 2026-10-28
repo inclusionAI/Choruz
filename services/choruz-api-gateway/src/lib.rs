@@ -52,7 +52,7 @@ mod remote_control_bridge;
 mod remote_control_executor;
 mod remote_control_pairing_host;
 mod state;
-mod sync_wakeup;
+mod wakeup;
 mod webhook;
 
 pub use config::Config;
@@ -517,8 +517,14 @@ pub fn router_with_runtime(
         .with_state({
             let db = choruz_application::DbService::new(event_store.clone());
             let attachments = AttachmentStore::new(attachment_root.into(), event_store.clone());
-            let sync_wakeups =
-                sync_wakeup::SyncWakeupHub::spawn(event_store.database_url().to_owned());
+            let sync_wakeups = wakeup::WakeupHub::spawn(
+                event_store.database_url().to_owned(),
+                wakeup::SYNC_CHANNEL,
+            );
+            let worker_wakeups = wakeup::WakeupHub::spawn(
+                event_store.database_url().to_owned(),
+                wakeup::WORKER_CHANNEL,
+            );
 
             let (remote_control_bridges, bridge_refreshes) =
                 remote_control_bridge::RemoteControlBridgeHub::new();
@@ -534,6 +540,7 @@ pub fn router_with_runtime(
                 attachments,
                 auth,
                 sync_wakeups,
+                worker_wakeups,
                 remote_control_bridges,
                 local_host,
                 host_links: host_link::HostLinkHub::default(),

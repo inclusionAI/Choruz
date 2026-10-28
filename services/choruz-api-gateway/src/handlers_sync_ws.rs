@@ -10,7 +10,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::{ApiError, ApiState, authenticated_principal, sync_wakeup::is_relevant_wakeup};
+use crate::{ApiError, ApiState, authenticated_principal, wakeup::is_relevant_wakeup};
 
 const PAGE_SIZE: u32 = 200;
 

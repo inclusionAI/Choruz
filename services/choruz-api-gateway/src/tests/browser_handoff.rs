@@ -90,7 +90,14 @@ print(json.dumps(out))
         event_store: store.clone(),
         attachments: crate::attachments::AttachmentStore::new(&a, store),
         auth: LocalAuthConfig::from_env(),
-        sync_wakeups: crate::sync_wakeup::SyncWakeupHub::spawn(database.database_url.clone()),
+        sync_wakeups: crate::wakeup::WakeupHub::spawn(
+            database.database_url.clone(),
+            crate::wakeup::SYNC_CHANNEL,
+        ),
+        worker_wakeups: crate::wakeup::WakeupHub::spawn(
+            database.database_url.clone(),
+            crate::wakeup::WORKER_CHANNEL,
+        ),
         remote_control_bridges: crate::remote_control_bridge::RemoteControlBridgeHub::new().0,
         local_host: crate::host_runtime::LocalHost::new(),
         host_links: links,

@@ -51,22 +51,27 @@ const CONCURRENT_EVALUATIONS: usize = 4;
 pub(crate) async fn run(state: &ApiState) {
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let mut ticks = 0u8;
+    let mut wakeups = state.worker_wakeups.subscribe();
+    let mut next_queue = tokio::time::Instant::now();
     let mut cases = tokio::task::JoinSet::new();
     loop {
-        tokio::select! {
-            _ = interval.tick() => {}
+        let notified = tokio::select! {
+            notified = crate::wakeup::next_round(&mut interval, &mut wakeups, "evaluation") => notified,
             Some(_) = cases.join_next() => continue,
-        }
-        if ticks == 0 {
+        };
+        // A new candidate or a queued case wakes the queue at once; otherwise
+        // automatic optimizations are queued every 15 s.
+        let now = tokio::time::Instant::now();
+        if notified || now >= next_queue {
+            next_queue = now + std::time::Duration::from_secs(15);
             match state.db.pending_experience_optimizations().await {
                 Ok(jobs) => {
                     for job in jobs {
                         let result = queue_automatic(state, &job).await;
                         let message = result.as_ref().err().map(|error| match error {
-                            AppError::Validation(message) => message.as_str(),
-                            _ => "Unable to queue evaluation. Check the selected Agents, explicit models and device access.",
-                        });
+                        AppError::Validation(message) => message.as_str(),
+                        _ => "Unable to queue evaluation. Check the selected Agents, explicit models and device access.",
+                    });
                         if let Err(error) = state.db.optimization_queue_error(&job, message).await {
                             tracing::warn!(%error, "optimization queue diagnostic unavailable");
                         }
@@ -78,7 +83,6 @@ pub(crate) async fn run(state: &ApiState) {
                 Err(error) => tracing::warn!(%error, "automatic optimization queue unavailable"),
             }
         }
-        ticks = (ticks + 1) % 15;
         while cases.len() < CONCURRENT_EVALUATIONS {
             match state.db.claim_experience_evaluation().await {
                 Ok(Some(claim)) => {
