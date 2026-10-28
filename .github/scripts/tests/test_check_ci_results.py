@@ -64,6 +64,15 @@ class CheckCiResultsTests(unittest.TestCase):
         self.assertNotIn("perf", required(WEB="true"))
         self.assertNotIn("perf", required(DOCS_ONLY="true"))
 
+    def test_every_job_runs_on_a_pinned_runner_image(self) -> None:
+        # A moving `ubuntu-latest` changed under the embedded PostgreSQL and
+        # Playwright, which do not support every new image on release day.
+        workflow = (SCRIPT.parents[2] / ".github/workflows/ci.yml").read_text()
+        runners = re.findall(r"^\s+runs-on:\s*(\S+)", workflow, re.MULTILINE)
+        self.assertTrue(runners)
+        for runner in runners:
+            self.assertRegex(runner, r"^ubuntu-\d{2}\.\d{2}$")
+
     def test_browser_failure_artifacts_survive_a_passing_retry(self) -> None:
         root = SCRIPT.parents[2]
         config = (root / "apps/web/playwright.config.ts").read_text()
