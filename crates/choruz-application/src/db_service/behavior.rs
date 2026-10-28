@@ -230,9 +230,17 @@ impl DbService {
         settings.validate().map_err(AppError::Validation)?;
         let mut client = self.store.connect().await?;
         let tx = client.transaction().await.map_err(storage)?;
-        if tx.execute("UPDATE experience_policy SET community_settings=$4,generation=generation+1,lease_token=NULL,lease_until=NULL,updated_at=NOW() WHERE workspace_id=$1 AND owner_id=$2 AND binding_id=$3", &[&workspace,&owner,&binding,&json!(settings)]).await.map_err(storage)? == 0 {
-            return Err(AppError::NotFound("Learning policy not configured".into()));
+        let current = tx.query_opt("SELECT community_settings FROM experience_policy WHERE workspace_id=$1 AND owner_id=$2 AND binding_id=$3 FOR UPDATE", &[&workspace,&owner,&binding]).await.map_err(storage)?
+            .ok_or_else(|| AppError::NotFound("Learning policy not configured".into()))?;
+        // Only a consent change fences generation-scoped work. Re-saving the
+        // same permissions must not orphan reviewed candidates or leases.
+        let unchanged =
+            serde_json::from_value::<CommunitySettings>(current.get("community_settings"))
+                .is_ok_and(|current| &current == settings);
+        if unchanged {
+            return tx.commit().await.map_err(storage);
         }
+        tx.execute("UPDATE experience_policy SET community_settings=$4,generation=generation+1,lease_token=NULL,lease_until=NULL,updated_at=NOW() WHERE workspace_id=$1 AND owner_id=$2 AND binding_id=$3", &[&workspace,&owner,&binding,&json!(settings)]).await.map_err(storage)?;
         tx.execute("UPDATE experience_behavior_event SET lease_token=NULL,lease_until=NULL WHERE workspace_id=$1 AND binding_id=$2 AND publication_state!='publishing'", &[&workspace,&binding]).await.map_err(storage)?;
         tx.commit().await.map_err(storage)
     }

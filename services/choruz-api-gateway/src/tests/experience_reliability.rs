@@ -901,3 +901,73 @@ async fn wait_for_woken_pipeline(
     .await
     .unwrap_or_else(|_| panic!("{expectation}"));
 }
+
+#[tokio::test]
+async fn saving_unchanged_community_permissions_keeps_the_learning_generation() {
+    let database = TestDatabase::create().await;
+    let db =
+        choruz_application::DbService::new(choruz_store::EventStore::new(&database.database_url));
+    let client = RuntimeStore::new(&database.database_url)
+        .connect()
+        .await
+        .unwrap();
+    let (owner, target, claim) =
+        optimized_policy(&database, &db, &client, "community-resave").await;
+    save_reviewed_candidate(&db, &claim).await;
+    db.release_experience(
+        &claim,
+        choruz_application::db_service::CheckOutcome::Completed,
+    )
+    .await
+    .unwrap();
+    let before = policy_generation(&client, &target).await;
+    // The browser saves the dialog's permissions as they are; that is not a
+    // consent change and must not orphan the reviewed candidate.
+    db.configure_behavior_community(
+        &owner.workspace_id,
+        &owner.id,
+        &target,
+        &choruz_community::behavior::CommunitySettings::default(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        policy_generation(&client, &target).await,
+        before,
+        "an unchanged save keeps the generation"
+    );
+    let jobs = db.pending_experience_optimizations().await.unwrap();
+    assert!(
+        jobs.iter().any(|job| job["binding"] == target),
+        "the reviewed candidate still awaits its automatic evaluation: {jobs:?}"
+    );
+
+    db.configure_behavior_community(
+        &owner.workspace_id,
+        &owner.id,
+        &target,
+        &choruz_community::behavior::CommunitySettings {
+            search: true,
+            automatic_trial: false,
+            contribute: false,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        policy_generation(&client, &target).await,
+        before + 1,
+        "a changed consent still fences generation-scoped work"
+    );
+}
+
+async fn policy_generation(client: &tokio_postgres::Client, binding: &str) -> i64 {
+    client
+        .query_one(
+            "SELECT generation FROM experience_policy WHERE binding_id=$1",
+            &[&binding],
+        )
+        .await
+        .unwrap()
+        .get(0)
+}

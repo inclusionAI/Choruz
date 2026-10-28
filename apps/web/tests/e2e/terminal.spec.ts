@@ -401,7 +401,17 @@ runtimeTest("background experience follows the selected remote Agent and applies
     return response.json();
   };
   await expect.poll(async () => (await status()).revisions.length, { timeout: candidateBound }).toBeGreaterThan(0);
-  await expect.poll(async () => (await status()).policy?.active_revision_id, { timeout: activationBound }).toBeTruthy();
+  try {
+    await expect.poll(async () => (await status()).policy?.active_revision_id, { timeout: activationBound }).toBeTruthy();
+  } catch (error) {
+    // Name the stalled stage: queueing, a running case, a failure or application.
+    const queue = await (await page.request.get(`${endpoint}/evaluations`, { headers })).json();
+    const policy = (await status()).policy;
+    throw new Error(`${(error as Error).message}\nEvaluations when activation timed out: ${JSON.stringify(
+      (queue.evaluations ?? []).map((e: Record<string, unknown>) => ({ status: e.status, error_code: e.error_code, next_case: e.next_case,
+        application_status: e.application_status, automatic: e.automatic, created_at: e.created_at, updated_at: e.updated_at })),
+    )}\nPolicy: ${JSON.stringify({ optimization_error: policy?.optimization_error, last_error: policy?.last_error, checked_at: policy?.checked_at })}`);
+  }
   const learned = await status();
   expect(learned.policy.optimization_settings.suite.name).toBe("Verification format");
   expect(learned.policy.optimization_settings.suite.cases[0].check).toEqual({ type: "judge", expected: "CHECKED", rubric: "The answer must report the verified check result." });
